@@ -106,7 +106,7 @@ Write endpoints are **token-gated over HTTP** and **policy-allowlisted**. Before
 .\studio-stud policy explain --path synced/foo.luau
 ```
 
-`/studio-stud/write/*` requires the plugin write-token handshake (`GET /write/token`, header `X-StudioStud-Token`). Hidden local CLI: `write-validate`, `write-preview`, `write-apply` (no token). See `docs/studio-stud.md` § Write Protocol.
+`/studio-stud/write/*` requires the plugin write-token handshake (`GET /write/token`, header `X-StudioStud-Token`). Hidden local CLI: `write-validate`, `write-preview`, `write-apply` (no token). See the [usage guide](https://github.com/tyleradams2002/studio-stud/blob/main/docs/usage.md) § Write Protocol.
 
 ## Project Diff (Stage 4)
 
@@ -118,7 +118,7 @@ Read-only structural diff: repo `default.project.json` projection vs live SQLite
 .\studio-stud project diff <PLACE> --under ServerScriptService --limit 50
 ```
 
-Use for "what does the repo expect vs what's in the place?" Ownership-aware: Studio-only under `$ignoreUnknownInstances: true` service roots ⇒ `studioOwned`; under repo-projected folders (default false) ⇒ `extraInStudio`. See `docs/studio-stud.md` § Project Diff.
+Use for "what does the repo expect vs what's in the place?" Ownership-aware: Studio-only under `$ignoreUnknownInstances: true` service roots ⇒ `studioOwned`; under repo-projected folders (default false) ⇒ `extraInStudio`. See the [usage guide](https://github.com/tyleradams2002/studio-stud/blob/main/docs/usage.md) § Project Diff.
 
 ## Output Contract
 
