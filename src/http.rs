@@ -3,7 +3,10 @@ use std::{
     io::{Read, Write},
     net::TcpStream,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -18,14 +21,35 @@ use crate::util::{
     DEFAULT_HOST, DEFAULT_PORT, MAX_CHUNK_BYTES, MIN_PLUGIN_PROTOCOL_VERSION, PROTOCOL_VERSION,
     make_id, now_utc, required_query, split_url,
 };
+use crate::setup_core::install::{disable_addon, enable_addon, list_bundled_addons};
+use crate::setup_core::registry::RepoResolveError;
+use crate::setup_core::RepoResolver;
 use crate::write::WriteMode;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ServeConfig {
     pub storage_root: Option<PathBuf>,
     pub project_key: String,
-    pub repo_root: PathBuf,
     pub write_token: String,
+    pub registry: RepoResolver,
+    pub install_root: PathBuf,
+    pub plugins_dir: PathBuf,
+    pub port: u16,
+    pub shutdown: Arc<AtomicBool>,
+}
+
+fn parse_place_id_query(query: &HashMap<String, String>) -> Option<i64> {
+    query
+        .get("placeId")
+        .and_then(|s| s.parse::<i64>().ok())
+        .or_else(|| query.get("place_id").and_then(|s| s.parse().ok()))
+}
+
+fn parse_place_id_payload(payload: &Value) -> Option<i64> {
+    payload
+        .get("placeId")
+        .or_else(|| payload.get("place_id"))
+        .and_then(Value::as_i64)
 }
 
 #[derive(Default)]
@@ -294,6 +318,24 @@ pub(crate) fn handle_daemon_request(
             (tiny_http::Method::Post, "/studio-stud/write/apply") => {
                 handle_write_route(&mut request, config, WriteMode::Apply)?
             }
+            (tiny_http::Method::Get, "/studio-stud/context") => {
+                handle_context_route(&query, config)?
+            }
+            (tiny_http::Method::Post, "/studio-stud/context/bind") => {
+                handle_context_bind(&mut request, config)?
+            }
+            (tiny_http::Method::Get, "/studio-stud/addons") => {
+                handle_addons_list(&query, config)?
+            }
+            (tiny_http::Method::Post, "/studio-stud/addons/enable") => {
+                handle_addons_enable(&mut request, config)?
+            }
+            (tiny_http::Method::Post, "/studio-stud/addons/disable") => {
+                handle_addons_disable(&mut request, config)?
+            }
+            (tiny_http::Method::Post, "/studio-stud/admin/shutdown") => {
+                handle_admin_shutdown(&mut request, config)?
+            }
             _ => json!({ "ok": false, "error": "not_found" }),
         })
     })();
@@ -403,9 +445,13 @@ fn handle_write_route(
     };
     let expected_hash = payload.get("expectedHash").and_then(Value::as_str);
     let generated_by = payload.get("generatedBy").and_then(Value::as_str);
-    let place_id = payload.get("placeId").and_then(Value::as_i64);
+    let place_id = parse_place_id_payload(&payload);
+    let repo_root = match config.registry.resolve_repo_root(place_id) {
+        Ok(p) => p,
+        Err(e) => return Ok(e.to_json()),
+    };
     let outcome = run_write(
-        &config.repo_root,
+        &repo_root,
         path,
         content.as_bytes(),
         place_id,
@@ -414,6 +460,145 @@ fn handle_write_route(
         mode,
     );
     Ok(write_outcome_to_json(&outcome))
+}
+
+fn handle_context_route(query: &HashMap<String, String>, config: &ServeConfig) -> Result<Value> {
+    let place_id = parse_place_id_query(query);
+    match config.registry.resolve_repo_root(place_id) {
+        Ok(repo) => Ok(json!({
+            "ok": true,
+            "status": "bound",
+            "placeId": place_id,
+            "repoRoot": repo.display().to_string(),
+        })),
+        Err(RepoResolveError::Unbound { place_id, registered }) => Ok(json!({
+            "ok": true,
+            "status": "unbound",
+            "placeId": place_id,
+            "registeredRepos": registered,
+        })),
+        Err(RepoResolveError::NoRegistry) => Ok(RepoResolveError::NoRegistry.to_json()),
+    }
+}
+
+fn handle_context_bind(request: &mut tiny_http::Request, config: &ServeConfig) -> Result<Value> {
+    let payload = read_request_json(request)?;
+    let place_id = parse_place_id_payload(&payload)
+        .ok_or_else(|| anyhow!("placeId is required"))?;
+    let repo_path = payload
+        .get("repoPath")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("repoPath is required"))?;
+    let changed = config
+        .registry
+        .bind_place(place_id, std::path::Path::new(repo_path))
+        .map_err(|e| anyhow!(e))?;
+    Ok(json!({ "ok": true, "bound": changed, "placeId": place_id, "repoPath": repo_path }))
+}
+
+fn handle_addons_list(query: &HashMap<String, String>, config: &ServeConfig) -> Result<Value> {
+    let place_id = parse_place_id_query(query);
+    let snapshot = config.registry.config_snapshot();
+    let repo_entry = match place_id {
+        Some(pid) => snapshot.repos.iter().find(|r| r.place_id == Some(pid)),
+        None => snapshot.repos.first(),
+    };
+    let enabled: Vec<String> = repo_entry
+        .map(|r| r.enabled_addons.clone())
+        .unwrap_or_default();
+    let available = list_bundled_addons(&config.install_root)?
+        .into_iter()
+        .map(|(id, _)| {
+            json!({
+                "id": id,
+                "enabled": enabled.iter().any(|e| e == &id),
+            })
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({ "ok": true, "addons": available, "placeId": place_id }))
+}
+
+fn handle_addons_enable(request: &mut tiny_http::Request, config: &ServeConfig) -> Result<Value> {
+    let payload = read_request_json(request)?;
+    let token = payload.get("token").and_then(Value::as_str).unwrap_or_default();
+    if token != config.write_token {
+        return Ok(json!({ "ok": false, "blockedReason": "tokenInvalid" }));
+    }
+    let place_id = parse_place_id_payload(&payload)
+        .ok_or_else(|| anyhow!("placeId required"))?;
+    let addon_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("id required"))?;
+    let repo_root = match config.registry.resolve_repo_root(Some(place_id)) {
+        Ok(p) => p,
+        Err(e) => return Ok(e.to_json()),
+    };
+    enable_addon(
+        &config.install_root,
+        &config.plugins_dir,
+        &repo_root,
+        addon_id,
+    )?;
+    let mut cfg = config.registry.config_snapshot();
+    if let Some(entry) = cfg
+        .repos
+        .iter_mut()
+        .find(|r| r.place_id == Some(place_id))
+    {
+        if !entry.enabled_addons.iter().any(|a| a == addon_id) {
+            entry.enabled_addons.push(addon_id.to_string());
+            crate::setup_core::save_config(&cfg)?;
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "enabled": addon_id,
+        "reloadStudioHint": "If the addon panel does not appear, reload Studio.",
+    }))
+}
+
+fn handle_addons_disable(request: &mut tiny_http::Request, config: &ServeConfig) -> Result<Value> {
+    let payload = read_request_json(request)?;
+    let token = payload.get("token").and_then(Value::as_str).unwrap_or_default();
+    if token != config.write_token {
+        return Ok(json!({ "ok": false, "blockedReason": "tokenInvalid" }));
+    }
+    let place_id = parse_place_id_payload(&payload)
+        .ok_or_else(|| anyhow!("placeId required"))?;
+    let addon_id = payload
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| anyhow!("id required"))?;
+    let repo_root = config.registry.resolve_repo_root(Some(place_id)).map_err(|e| {
+        anyhow!("{}", serde_json::to_string(&e.to_json()).unwrap_or_default())
+    })?;
+    disable_addon(&config.plugins_dir, &repo_root, addon_id)?;
+    let mut cfg = config.registry.config_snapshot();
+    if let Some(entry) = cfg
+        .repos
+        .iter_mut()
+        .find(|r| r.place_id == Some(place_id))
+    {
+        entry.enabled_addons.retain(|a| a != addon_id);
+        crate::setup_core::save_config(&cfg)?;
+    }
+    Ok(json!({ "ok": true, "disabled": addon_id }))
+}
+
+fn handle_admin_shutdown(request: &mut tiny_http::Request, config: &ServeConfig) -> Result<Value> {
+    let payload = read_request_json(request)?;
+    let token = payload.get("token").and_then(Value::as_str).unwrap_or_default();
+    if token != config.write_token {
+        return Ok(json!({ "ok": false, "blockedReason": "tokenInvalid" }));
+    }
+    let _ = crate::setup_core::config::remove_daemon_lock();
+    config.shutdown.store(true, Ordering::SeqCst);
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_millis(100));
+        std::process::exit(0);
+    });
+    Ok(json!({ "ok": true, "shuttingDown": true }))
 }
 
 pub(crate) fn complete_daemon_upload(
@@ -447,6 +632,10 @@ pub(crate) fn complete_daemon_upload(
         && let Some(place_id) = result.get("placeId").and_then(Value::as_str)
     {
         set_active_place(&storage, place_id);
+        if let Ok(pid) = place_id.parse::<i64>() {
+            let resolver = crate::RepoResolver::load();
+            let _ = resolver.learn_place_from_cwd(pid);
+        }
     }
     let completion = json!({
         "ok": true,
