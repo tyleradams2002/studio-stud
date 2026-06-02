@@ -1,0 +1,23 @@
+---
+description: Studio Stud project map, architecture, and working principles. Always loaded.
+alwaysApply: true
+---
+
+# Studio Stud — project map
+
+Studio Stud is a Roblox **Studio** development tool, not a game. Three languages, strict division of labor:
+
+- **Rust (~72%)** — the engine. Owns all heavy, deterministic work: the local server/CLI, file watching, DataModel snapshot + diff, asset processing, codegen, telemetry. All real logic lives here.
+- **Luau (~25%)** — `plugin/`: a **thin** Studio plugin. Toolbar/widgets, reads/writes the DataModel, relays to the engine over the bridge. No business logic.
+- **PowerShell (~3%)** — `scripts/`: build, install, and sync glue.
+
+Dataflow: `Studio plugin (Luau) ⇄ bridge ⇄ Rust engine ⇄ disk/Studio`. Same shape as Rojo: a Rust process and a Luau plugin talking over a local protocol.
+
+## Working principles (every change)
+- **Logic goes in Rust, not Luau.** Tempted to add real logic to the plugin? Add an engine command/endpoint and have the plugin call it.
+- **Prefer the project's own commands over re-deriving answers.** Run the CLI / a skill / `cargo` to get deterministic facts (build status, schema, snapshot diffs) instead of reasoning about them or reading large files end to end.
+- **Keep context small.** Touch the fewest files needed; don't read generated files; ask the engine for a summary instead of scanning raw output.
+- **Never hand-edit generated code or generated protocol types.** Change the source and regenerate.
+- **The Rust↔Luau contract is sacred.** Changing one side without the other breaks the tool — see the `bridge-protocol` rule and the `add-protocol-message` skill.
+
+Scoped detail: the `rust-core`, `luau-plugin`, `bridge-protocol`, `powershell-glue` rules and the `.cursor/skills/` workflows.

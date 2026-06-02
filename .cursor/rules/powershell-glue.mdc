@@ -1,0 +1,16 @@
+---
+description: PowerShell conventions for Studio Stud build/install/automation scripts.
+globs: ["**/*.ps1", "**/*.psm1", "**/*.psd1"]
+alwaysApply: false
+---
+
+# PowerShell — automation glue
+
+These scripts wrap the build/install/sync flow. They are infrastructure: deterministic, idempotent, CI- and hook-safe.
+
+- Start every script with `#Requires -Version 7.0`, `[CmdletBinding()]`, a typed `param(…)` block, `Set-StrictMode -Version Latest`, and `$ErrorActionPreference = 'Stop'`.
+- Use approved verbs for functions (`Get-`, `New-`, `Set-`, `Invoke-`, `Test-`). Note `Build` / `Package` / `Sync` are **not** approved verbs — name functions `Invoke-Build`, `New-Package`, `Sync-` is fine, etc.
+- Logic and diagnostics go through `Write-Verbose` / `Write-Warning` / `Write-Error` / `throw`. `Write-Host` only for intentional user-facing console output, never for data — return objects instead.
+- Idempotent: re-running a script must be safe. Check before create. No interactive prompts on any path that CI or a hook runs.
+- Shell out to `cargo`, `rojo`, `rokit`, `lune` explicitly; check `$LASTEXITCODE` after every external call and fail loudly.
+- Keep scripts thin — they orchestrate the Rust CLI and Rojo; they don't reimplement logic that belongs in the engine.

@@ -1,0 +1,8 @@
+{
+  "version": 1,
+  "hooks": {
+    "afterFileEdit": [
+      { "command": "pwsh -NoProfile -File ./.cursor/hooks/format-after-edit.ps1" }
+    ]
+  }
+}

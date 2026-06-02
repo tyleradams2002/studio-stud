@@ -1,0 +1,29 @@
+---
+description: Roblox Studio PLUGIN conventions for the thin Luau client (toolbar, widgets, bridge calls). Not game runtime.
+globs: ["**/*.luau", "**/*.lua"]
+alwaysApply: false
+---
+
+# Luau — Studio plugin (thin client)
+
+All Luau in this repo is plugin code. It runs **inside Studio at edit time**, not in a running game — most Roblox-runtime assumptions are wrong here.
+
+## Plugin lifecycle & API
+- Entry receives the `plugin` object. Build UI with `plugin:CreateToolbar`, `:CreateButton`, `plugin:CreateDockWidgetPluginGui(id, DockWidgetPluginGuiInfo.new(…))`, and `plugin:CreatePluginAction` for keybindable actions.
+- Persist settings with `plugin:SetSetting` / `:GetSetting` — never `_G`, never a Value object in the DataModel.
+- **Every DataModel mutation must be wrapped in `ChangeHistoryService:TryBeginRecording(name)` / `:FinishRecording(id, Enum.FinishRecordingOperation.Commit)`** so user undo/redo works. Unrecorded edits are a bug.
+- Clean up on teardown: connect `plugin.Unloading`, disconnect every connection, destroy every widget/instance you created. No leaked connections across reloads.
+
+## Studio-only surface
+- Use `StudioService`, `Selection`, `ScriptEditorService`, `CoreGui` sparingly and correctly. Do **not** use `Players`, runtime `RunService` game logic, or character/replication APIs — there is no game here.
+- Talking to the engine uses `HttpService` (JSON). Studio requires the user to allow HTTP requests; detect that and surface a clear "enable HTTP / allow localhost" message instead of failing silently. Wrap every request in `pcall`.
+
+## Thin-client discipline
+- The plugin **relays**; it does not compute. No diffing, no asset processing, no business rules here — call an engine endpoint/command and render the result.
+- Stay resilient to the engine being down: connect / retry / backoff, show status, never block the Studio main thread. Long work belongs to the engine; the plugin shows progress.
+
+## Luau hygiene
+- `--!strict` at the top of every module; fix type errors, don't `:: any` them away.
+- Cache service lookups once (`local HttpService = game:GetService("HttpService")`). Pure modules return a table; no side effects on require.
+- No yielding in render paths; debounce UI handlers.
+- (Optional, if this repo adopts them) run `stylua` + `selene` before considering Luau changes done; otherwise rely on `luau-analyze` / the LSP typecheck.
