@@ -1,0 +1,11 @@
+{
+  "name": "boat-modification",
+  "displayName": "Boat Modification",
+  "version": "0.1.0",
+  "description": "Authoring panel for boat modification data (slot enablement, tier limits, allowed-item whitelists, mount metadata). Writes a project config via the Studio Stud daemon. SKELETON — not yet implemented.",
+  "entry": "BoatModification.plugin.lua",
+  "minCorePluginVersion": "0.3.7",
+  "minCoreProtocolVersion": 1,
+  "addonProtocolVersion": 1,
+  "status": "scaffold"
+}

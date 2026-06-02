@@ -1,0 +1,10 @@
+{
+  "name": "addon-template",
+  "displayName": "Addon Template",
+  "version": "0.1.0",
+  "description": "Starter scaffold for a Studio Stud addon plugin. Copy this folder to begin.",
+  "entry": "Addon.plugin.lua",
+  "minCorePluginVersion": "0.3.7",
+  "minCoreProtocolVersion": 1,
+  "addonProtocolVersion": 1
+}

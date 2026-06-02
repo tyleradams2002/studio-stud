@@ -59,7 +59,8 @@ Repo layout:
 ```
 src/                 Rust daemon/CLI (cli, http, storage, capture, live, write, project, diff, ...)
 tests/               unit + golden + integration fixtures
-plugin/              StudioStud.plugin.lua + assets
+plugin/              StudioStud.plugin.lua + assets (core plugin)
+addon-plugins/       extension plugins built on the core (sdk/, _template/, one folder per addon)
 scripts/             build-local.ps1, package-release.ps1, launcher templates
 site/                GitHub Pages: install.ps1, latest.json, index.html
 consumer-template/   files the installer drops into a consumer repo
