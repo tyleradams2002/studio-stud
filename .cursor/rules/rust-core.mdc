@@ -1,0 +1,38 @@
+---
+description: Rust conventions for the Studio Stud engine (CLI/server, snapshotting, codegen, telemetry).
+globs: ["**/*.rs", "**/Cargo.toml"]
+alwaysApply: false
+---
+
+# Rust — engine conventions
+
+This is the bulk of Studio Stud. Treat it as a real systems codebase, not glue.
+
+## Errors
+- Library/crate code returns `Result<_, E>` with typed errors via `thiserror`. One error enum per module/domain; use `#[from]` for wrapping.
+- `anyhow` is allowed **only** at the binary boundary (`main.rs`, command handlers) for ergonomic `?` + context — never in library APIs.
+- No `unwrap()`, `expect()`, `panic!`, or unchecked indexing in library paths. If something "can't fail," prove it with the type system or return an error. `expect()` is acceptable only in tests and in `main` for genuinely unrecoverable startup invariants, with a message that says *why* it can't fail.
+- Add context on the way up (`.with_context(|| …)` / an `#[error("…: {0}")]` chain). Errors should read top to bottom as a story.
+
+## Style & API design
+- Edition 2021+. `cargo fmt` is non-negotiable; `cargo clippy -- -D warnings` must be clean before a change is "done."
+- Accept `&str` / `&Path` / `impl AsRef<…>` in public fn signatures; return owned types. Avoid `String` / `PathBuf` params.
+- Prefer iterators and `?` over manual loops and early-return ladders. Prefer `match` / `if let` over `unwrap`.
+- Cohesive modules: `mod foo;` files, not 2,000-line god-modules. One responsibility per module.
+- Derive `Debug` everywhere; derive `Clone` / `PartialEq` where cheap. `#[non_exhaustive]` on public enums that will grow.
+- Logging is `tracing` (spans + structured fields), never `println!` / `eprintln!` outside the CLI's user-facing output path.
+
+## Async / server (if this crate runs the bridge)
+- One runtime (`tokio`), established at the binary. Don't spawn ad-hoc runtimes in libraries — take handles / `impl Future` instead.
+- No blocking calls on async tasks; use `spawn_blocking` for filesystem/CPU-heavy work (snapshot diffing, asset processing).
+- Bound every channel; manage every spawned task's lifecycle. No leaked tasks on shutdown.
+
+## CLI output (the flctl pattern)
+- Every subcommand supports machine-readable output (`--json`) alongside human output. The JSON shape is stable and documented.
+- Human output is terse and scannable; JSON is what an agent consumes. Push deterministic work here so the agent reads a small structured result instead of doing the work in-context.
+- Exit codes are meaningful (0 ok, non-zero categorized). Errors → stderr, data → stdout.
+
+## Testing
+- Unit tests in `#[cfg(test)] mod tests` next to the code; integration tests in `tests/`.
+- Snapshot/diff logic and the protocol get the heaviest coverage — they're the failure-prone core.
+- After any change: `cargo check` → `cargo clippy -- -D warnings` → `cargo test`. Don't claim done without running them (use `/check` or the `build-and-package` skill).
