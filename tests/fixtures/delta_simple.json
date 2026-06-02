@@ -1,0 +1,41 @@
+{
+  "placeId": "139581542512435",
+  "baseRevision": 1,
+  "ops": {
+    "upserted": [
+      {
+        "id": "inst_spawn_part",
+        "path": "Workspace/BoatSpawnPoints/DockA",
+        "name": "DockA",
+        "className": "Part",
+        "parentId": "inst_boat_spawn",
+        "depth": 2,
+        "childCount": 0,
+        "siblingIndex": 0,
+        "properties": {
+          "Position": { "x": 15, "y": 2, "z": 20 },
+          "Size": { "x": 4, "y": 1, "z": 4 }
+        },
+        "attributes": {},
+        "tags": []
+      },
+      {
+        "id": "inst_new_part",
+        "path": "Workspace/BoatSpawnPoints/DockB",
+        "name": "DockB",
+        "className": "Part",
+        "parentId": "inst_boat_spawn",
+        "depth": 2,
+        "childCount": 0,
+        "siblingIndex": 1,
+        "properties": {
+          "Position": { "x": -10, "y": 2, "z": 20 },
+          "Size": { "x": 4, "y": 1, "z": 4 }
+        },
+        "attributes": {},
+        "tags": []
+      }
+    ],
+    "removed": ["inst_trader"]
+  }
+}

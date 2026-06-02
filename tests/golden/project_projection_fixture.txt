@@ -1,0 +1,65 @@
+{
+  "classCounts": {
+    "Folder": 1,
+    "ModuleScript": 3,
+    "Script": 1,
+    "ServerScriptService": 1,
+    "Workspace": 1
+  },
+  "errors": [],
+  "instanceCount": 7,
+  "instances": [
+    {
+      "className": "ServerScriptService",
+      "ignoreUnknown": true,
+      "normalizedKey": "serverscriptservice",
+      "studioPath": "ServerScriptService"
+    },
+    {
+      "className": "ModuleScript",
+      "ignoreUnknown": false,
+      "normalizedKey": "serverscriptservice/core",
+      "sourceRepoPath": "server/Core/init.luau",
+      "studioPath": "ServerScriptService/Core"
+    },
+    {
+      "className": "ModuleScript",
+      "ignoreUnknown": false,
+      "normalizedKey": "serverscriptservice/core/datamanager",
+      "sourceRepoPath": "server/Core/DataManager.luau",
+      "studioPath": "ServerScriptService/Core/DataManager"
+    },
+    {
+      "className": "Folder",
+      "ignoreUnknown": false,
+      "normalizedKey": "serverscriptservice/systems",
+      "studioPath": "ServerScriptService/Systems"
+    },
+    {
+      "className": "ModuleScript",
+      "ignoreUnknown": false,
+      "normalizedKey": "serverscriptservice/systems/combat",
+      "sourceRepoPath": "server/Systems/Combat.luau",
+      "studioPath": "ServerScriptService/Systems/Combat"
+    },
+    {
+      "className": "Script",
+      "ignoreUnknown": false,
+      "normalizedKey": "serverscriptservice/main",
+      "sourceRepoPath": "server/main.server.luau",
+      "studioPath": "ServerScriptService/main"
+    },
+    {
+      "className": "Workspace",
+      "ignoreUnknown": true,
+      "normalizedKey": "workspace",
+      "studioPath": "Workspace"
+    }
+  ],
+  "limit": 500,
+  "ok": true,
+  "projectionErrors": 0,
+  "projectionWarnings": 0,
+  "truncated": false,
+  "warnings": []
+}

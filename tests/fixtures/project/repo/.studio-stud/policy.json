@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "allowedPlaceIds": [90000000000001],
+  "allowedWritePaths": [],
+  "maxPatchBytes": 1048576
+}

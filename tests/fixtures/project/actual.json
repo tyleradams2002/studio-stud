@@ -1,0 +1,145 @@
+{
+  "pluginVersion": "fixture-stage4",
+  "place": {
+    "placeId": "90000000000001",
+    "placeKey": "Place90000000000001",
+    "name": "Project Diff Fixture",
+    "gameId": 1
+  },
+  "sync": {
+    "syncId": "capture_project_fixture",
+    "startedAtUtc": "2026-01-01T00:00:00Z",
+    "finishedAtUtc": "2026-01-01T00:00:01Z"
+  },
+  "instances": [
+    {
+      "id": "sss",
+      "path": "ServerScriptService[1]",
+      "name": "ServerScriptService",
+      "className": "ServerScriptService",
+      "depth": 0,
+      "childCount": 6,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "main",
+      "path": "ServerScriptService[1]/main[1]",
+      "name": "main",
+      "className": "LocalScript",
+      "parentId": "sss",
+      "depth": 1,
+      "childCount": 0,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "core",
+      "path": "ServerScriptService[1]/Core[1]",
+      "name": "Core",
+      "className": "ModuleScript",
+      "parentId": "sss",
+      "depth": 1,
+      "childCount": 2,
+      "siblingIndex": 2,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "dm1",
+      "path": "ServerScriptService[1]/Core[1]/DataManager[1]",
+      "name": "DataManager",
+      "className": "ModuleScript",
+      "parentId": "core",
+      "depth": 2,
+      "childCount": 0,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "dm2",
+      "path": "ServerScriptService[1]/Core[1]/DataManager[2]",
+      "name": "DataManager",
+      "className": "ModuleScript",
+      "parentId": "core",
+      "depth": 2,
+      "childCount": 0,
+      "siblingIndex": 2,
+      "duplicateSiblingName": true,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "systems",
+      "path": "ServerScriptService[1]/Systems[1]",
+      "name": "Systems",
+      "className": "Folder",
+      "parentId": "sss",
+      "depth": 1,
+      "childCount": 0,
+      "siblingIndex": 3,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "studio_root",
+      "path": "ServerScriptService[1]/StudioOnlyAtRoot[1]",
+      "name": "StudioOnlyAtRoot",
+      "className": "Folder",
+      "parentId": "sss",
+      "depth": 1,
+      "childCount": 0,
+      "siblingIndex": 4,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "studio_core",
+      "path": "ServerScriptService[1]/Core[1]/StudioOnlyInCore[1]",
+      "name": "StudioOnlyInCore",
+      "className": "Folder",
+      "parentId": "core",
+      "depth": 2,
+      "childCount": 0,
+      "siblingIndex": 3,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "workspace",
+      "path": "Workspace[1]",
+      "name": "Workspace",
+      "className": "Workspace",
+      "depth": 0,
+      "childCount": 1,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "decor",
+      "path": "Workspace[1]/Decor[1]",
+      "name": "Decor",
+      "className": "Part",
+      "parentId": "workspace",
+      "depth": 1,
+      "childCount": 0,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+# Golden tests and fixtures are byte-exact: force LF in the repo and on checkout
+# (cross-platform, so Windows CI does not corrupt them with CRLF).
+* text=auto eol=lf
+
+# Scripts that must stay CRLF-tolerant but are fine as LF
+*.ps1 text eol=lf
+*.cmd text eol=crlf
+
+# Binary assets — never normalize
+*.png binary
+*.exe binary
+*.gz binary
+*.rbxm binary
+*.rbxmx binary

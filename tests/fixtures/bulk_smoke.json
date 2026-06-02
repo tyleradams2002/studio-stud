@@ -1,0 +1,1 @@
+{"queries":[{"key":"hotfix","find":"Hotfix","limit":5},{"key":"prompts","find":"LootCratePad","class":"ProximityPrompt","limit":5},{"key":"screenFind","find":"ScreenGlass","limit":3}]}

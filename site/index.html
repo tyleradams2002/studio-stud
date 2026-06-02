@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Studio Stud</title>
+<style>
+  :root { --navy:#0c1a2b; --copper:#c8794a; --teal:#39b3a6; --ink:#e8eef5; --muted:#9fb1c4; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:"Segoe UI",system-ui,sans-serif; background:var(--navy); color:var(--ink); line-height:1.55; }
+  .wrap { max-width:760px; margin:0 auto; padding:64px 24px 96px; }
+  h1 { font-size:2.4rem; margin:0 0 4px; }
+  .tag { color:var(--teal); font-weight:600; letter-spacing:.04em; }
+  p.lead { color:var(--muted); font-size:1.1rem; }
+  pre { background:#08131f; border:1px solid #1d3147; border-radius:10px; padding:16px 18px; overflow:auto; }
+  code { color:var(--copper); }
+  a { color:var(--teal); }
+  h2 { margin-top:40px; border-bottom:1px solid #1d3147; padding-bottom:6px; }
+  .pill { display:inline-block; background:#08131f; border:1px solid #1d3147; border-radius:999px; padding:2px 12px; color:var(--muted); font-size:.85rem; margin-right:6px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="tag">LIVE ROBLOX STUDIO INSPECTOR</p>
+  <h1>Studio Stud</h1>
+  <p class="lead">An AI-first, read-only live picture of a Roblox place's DataModel. A local Rust
+  daemon + one Studio plugin, compact JSON for agents, policy-gated writes, and a Rojo-style project
+  diff. Windows-only, localhost-only, never mutates the place.</p>
+
+  <h2>Install into any repo</h2>
+  <pre><code>irm https://tyleradams2002.github.io/studio-stud/install.ps1 | iex</code></pre>
+  <p>With the AI workflow rule + command:</p>
+  <pre><code>&amp; ([scriptblock]::Create((irm https://tyleradams2002.github.io/studio-stud/install.ps1))) -WithCursorRule</code></pre>
+
+  <h2>Then</h2>
+  <pre><code>.\studio-stud doctor
+.\studio-stud serve      # leave running
+.\studio-stud capture
+.\studio-stud analyze</code></pre>
+
+  <h2>Links</h2>
+  <p>
+    <span class="pill"><a href="https://github.com/tyleradams2002/studio-stud">GitHub</a></span>
+    <span class="pill"><a href="latest.json">latest.json</a></span>
+    <span class="pill"><a href="https://github.com/tyleradams2002/studio-stud/releases">Releases</a></span>
+  </p>
+</div>
+</body>
+</html>

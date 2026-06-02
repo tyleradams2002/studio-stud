@@ -1,0 +1,15 @@
+{
+  "place": { "placeId": "999001", "placeKey": "LiveTest", "name": "LiveTest" },
+  "sync": { "syncId": "live_full_after" },
+  "instances": [
+    { "id": "ws", "parentId": null, "path": "Workspace", "name": "Workspace", "className": "Workspace", "depth": 0, "childCount": 2, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "folder", "parentId": "ws", "path": "Workspace/Folder", "name": "Folder", "className": "Folder", "depth": 1, "childCount": 4, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "dup_a", "parentId": "folder", "path": "Workspace/Folder/Item", "name": "Item", "className": "Part", "depth": 2, "childCount": 0, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "newchild", "parentId": "folder", "path": "Workspace/Folder/NewPart", "name": "NewPart", "className": "Part", "depth": 2, "childCount": 0, "siblingIndex": 1, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "sub", "parentId": "folder", "path": "Workspace/Folder/Sub", "name": "Sub", "className": "Folder", "depth": 2, "childCount": 1, "siblingIndex": 2, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "sub_child", "parentId": "sub", "path": "Workspace/Folder/Sub/Child", "name": "Child", "className": "Part", "depth": 3, "childCount": 0, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "move_src", "parentId": "ws", "path": "Workspace/MoveDst", "name": "MoveDst", "className": "Folder", "depth": 1, "childCount": 0, "siblingIndex": 1, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "move_node", "parentId": "folder", "path": "Workspace/Folder/Node", "name": "Node", "className": "Folder", "depth": 2, "childCount": 1, "siblingIndex": 3, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "move_leaf", "parentId": "move_node", "path": "Workspace/Folder/Node/Leaf", "name": "Leaf", "className": "Part", "depth": 3, "childCount": 0, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] }
+  ]
+}

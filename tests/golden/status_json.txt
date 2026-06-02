@@ -1,0 +1,1 @@
+{"daemon":{"state":"not-running"},"places":[{"liveState":{"captureId":"capture_fixture_stage0","instanceCount":5,"placeId":"139581542512435","placeKey":"Place139581542512435","revision":0,"updatedAtUtc":"TIMESTAMP"},"place":"139581542512435"}],"projectKey":"FishersLife","service":"studio-stud"}

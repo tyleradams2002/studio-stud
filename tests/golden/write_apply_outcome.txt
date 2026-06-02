@@ -1,0 +1,1 @@
+﻿{"ok":true,"blocked":false,"path":"synced/foo.luau","changed":true,"diff":"--- a/synced/foo.luau\n+++ b/synced/foo.luau\n@@ -0,0 +1,3 @@\n+--!strict\n+local value: number = 42\n+return value\n","bytes":48,"hashBefore":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","hashAfter":"4289bdbcd80c598bbf1cee70f775097733223e70406cd329edfbc9452700fbbd"}
