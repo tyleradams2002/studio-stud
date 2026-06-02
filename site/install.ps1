@@ -13,7 +13,11 @@ param(
     [string]$RawBase   = "https://raw.githubusercontent.com/tyleradams2002/studio-stud/main"
 )
 $ErrorActionPreference = "Stop"
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocol]::Tls12
+# Ensure TLS 1.2 on Windows PowerShell 5.1 (no-op / already default on PS 7+).
+try {
+    [Net.ServicePointManager]::SecurityProtocol = `
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+} catch {}
 
 if (-not $Dir) {
     try { $Dir = (& git rev-parse --show-toplevel 2>$null) } catch { $Dir = $null }
