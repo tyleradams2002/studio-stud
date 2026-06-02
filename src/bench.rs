@@ -5,7 +5,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
-use crate::capture::{capture_meta, decode_raw_snapshot, delete_instance_rows, ingest_sqlite, upsert_instance};
+use crate::capture::{
+    capture_meta, decode_raw_snapshot, delete_instance_rows, ingest_sqlite, upsert_instance,
+};
 use crate::live::parse_delta_request;
 use crate::storage::init_schema;
 
@@ -136,7 +138,12 @@ pub fn cmd_bench(
         println!("{}", serde_json::to_string(&payload)?);
     } else {
         println!("Studio Stud bench (daemon-side ingest pipeline only)");
-        println!("fixture: {} ({} bytes, {} instances)", raw.display(), raw_bytes_len, instance_count);
+        println!(
+            "fixture: {} ({} bytes, {} instances)",
+            raw.display(),
+            raw_bytes_len,
+            instance_count
+        );
         println!("iterations: {}", iterations);
         println!("note: capture walk + HTTP transfer are not measured here.");
         for (name, stats) in [
@@ -167,4 +174,3 @@ pub fn cmd_bench(
     }
     Ok(())
 }
-

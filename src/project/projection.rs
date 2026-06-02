@@ -14,9 +14,9 @@ use crate::{
 use super::{
     index::{FileRole, RepoIndex, classify_file},
     manifest::{
-        PathNodeResolution, ProjectManifest, ProjectNode, ProjectError, effective_ignore_unknown,
-        emit_legacy_scripts_default, resolve_class_name, resolve_path_node, resolve_node_class_name,
-        validate_class_name,
+        PathNodeResolution, ProjectError, ProjectManifest, ProjectNode, effective_ignore_unknown,
+        emit_legacy_scripts_default, resolve_class_name, resolve_node_class_name,
+        resolve_path_node, validate_class_name,
     },
 };
 
@@ -72,8 +72,8 @@ pub fn build_projection(
     index: &RepoIndex,
 ) -> DesiredProjection {
     let _ = index;
-    let ignore_globs = compile_glob_ignore(&manifest.glob_ignore_paths)
-        .unwrap_or_else(|_| GlobSet::empty());
+    let ignore_globs =
+        compile_glob_ignore(&manifest.glob_ignore_paths).unwrap_or_else(|_| GlobSet::empty());
     let mut ctx = ProjectionCtx {
         repo_root,
         ignore_globs,
@@ -125,7 +125,8 @@ impl ProjectionCtx<'_> {
             match resolve_path_node(self.repo_root, path_node)? {
                 PathNodeResolution::SkippedOptional => return Ok(()),
                 PathNodeResolution::Directory { abs_path, rel_path } => {
-                    let class = resolve_node_class_name(node, instance_name, parent_class, self.repo_root)?;
+                    let class =
+                        resolve_node_class_name(node, instance_name, parent_class, self.repo_root)?;
                     let class = class.ok_or_else(|| {
                         ProjectError::new(format!("no class for `{instance_name}`"))
                     })?;
@@ -258,15 +259,7 @@ impl ProjectionCtx<'_> {
             let child_studio = join_studio(studio_parent, &dir_name);
             self.expand_dir_children(&child_studio, abs_dir, rel_dir, true)?;
         } else {
-            self.insert_instance(
-                studio_parent,
-                &dir_name,
-                "Folder",
-                false,
-                None,
-                None,
-                None,
-            )?;
+            self.insert_instance(studio_parent, &dir_name, "Folder", false, None, None, None)?;
             let child_studio = join_studio(studio_parent, &dir_name);
             self.expand_dir_children(&child_studio, abs_dir, rel_dir, false)?;
         }
@@ -381,10 +374,7 @@ fn join_studio(parent: &str, name: &str) -> String {
     }
 }
 
-fn find_init_collapse(
-    abs_dir: &Path,
-    rel_dir: &str,
-) -> Option<(String, String, PathBuf)> {
+fn find_init_collapse(abs_dir: &Path, rel_dir: &str) -> Option<(String, String, PathBuf)> {
     let candidates = [
         ("init.luau", "ModuleScript"),
         ("init.lua", "ModuleScript"),
@@ -432,7 +422,8 @@ fn script_instance_from_file(path: &Path, legacy: bool) -> Result<(String, Strin
 }
 
 fn script_source_meta(path: &Path) -> Result<(String, Option<bool>), ProjectError> {
-    let bytes = fs::read(path).map_err(|e| ProjectError::with_detail("read script", e.to_string()))?;
+    let bytes =
+        fs::read(path).map_err(|e| ProjectError::with_detail("read script", e.to_string()))?;
     let text = String::from_utf8_lossy(&bytes);
     let normalized = normalize_newlines(&text);
     let hash = sha256_hex(normalized.as_bytes());

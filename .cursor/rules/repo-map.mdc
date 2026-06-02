@@ -1,0 +1,37 @@
+---
+description: Signature-only repo map for cheap symbol lookup before searching source
+alwaysApply: true
+---
+
+# Repo Map (token-cheap navigation)
+
+A committed, signature-only index of the Rust engine lives at `docs/repo-map.md`
+(one block per file: path + public surface — `fn` signatures, structs/enums/
+traits, type aliases, consts, `impl` headers; no bodies, `mod tests` skipped).
+Use it BEFORE grepping or reading source — it turns a multi-file search into a
+few lines. It covers `src/` (the engine); the single plugin file and the
+PowerShell scripts are small enough to read directly.
+
+## Use it first
+
+- **Locate a symbol:** grep the map, then open the file directly.
+
+```powershell
+Select-String -Path docs/repo-map.md -Pattern "live_fingerprint"
+```
+
+- **Understand a file's API:** read its block in the map instead of the source.
+- **Broad architecture question:** read the whole map (~6k tokens for the
+  entire engine) rather than many files.
+
+## Keep it fresh
+
+`.cursor/hooks.json` auto-regenerates the map on every prompt submit (only when
+a `.rs` file is newer than the map), so it should already be current. To
+regenerate manually:
+
+```powershell
+python tools/repomap.py            # or: python tools/repomap.py --if-stale
+```
+
+Generator: `tools/repomap.py`. Command shortcut: `/repo-map`.

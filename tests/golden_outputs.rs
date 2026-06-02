@@ -33,10 +33,8 @@ fn normalize_json(value: &mut serde_json::Value) {
         serde_json::Value::Object(map) => {
             // Normalize the "Local server manifest" doctor check — its detail and status
             // change depending on whether `studio-stud serve` is running during the test.
-            let is_local_server_check = map
-                .get("name")
-                .and_then(|v| v.as_str())
-                == Some("Local server manifest");
+            let is_local_server_check =
+                map.get("name").and_then(|v| v.as_str()) == Some("Local server manifest");
             if is_local_server_check {
                 map.insert(
                     "detail".into(),
@@ -85,21 +83,14 @@ fn run_cli(args: &[&str], storage_root: &Path) -> String {
 }
 
 fn prepare_storage() -> PathBuf {
-    let tmp = std::env::temp_dir().join(format!(
-        "studio_stud_golden_test_{}",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("studio_stud_golden_test_{}", std::process::id()));
     if tmp.exists() {
         fs::remove_dir_all(&tmp).ok();
     }
     fs::create_dir_all(&tmp).expect("temp storage dir");
     let fixture = fixture_path();
     let ingest = run_cli(
-        &[
-            "ingest",
-            "--raw",
-            fixture.to_str().expect("fixture path"),
-        ],
+        &["ingest", "--raw", fixture.to_str().expect("fixture path")],
         &tmp,
     );
     assert!(ingest.contains("\"ok\":true"));
@@ -116,13 +107,7 @@ fn golden_outputs_match_fixture_ingest() {
         (
             "analyze_context_findings_critical",
             vec![
-                "analyze",
-                place,
-                "--report",
-                "context",
-                "--report",
-                "findings",
-                "--report",
+                "analyze", place, "--report", "context", "--report", "findings", "--report",
                 "critical",
             ],
         ),

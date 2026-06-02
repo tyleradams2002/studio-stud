@@ -7,11 +7,11 @@ alwaysApply: true
 
 Studio Stud is a Roblox **Studio** development tool, not a game. Three languages, strict division of labor:
 
-- **Rust (~72%)** — the engine. Owns all heavy, deterministic work: the local server/CLI, file watching, DataModel snapshot + diff, asset processing, codegen, telemetry. All real logic lives here.
-- **Luau (~25%)** — `plugin/`: a **thin** Studio plugin. Toolbar/widgets, reads/writes the DataModel, relays to the engine over the bridge. No business logic.
-- **PowerShell (~3%)** — `scripts/`: build, install, and sync glue.
+- **Rust** — the bulk of the codebase (`src/`): the engine. Owns all heavy, deterministic work: the local CLI + HTTP daemon, DataModel capture + analyze + query + diff, project diff, the policy-gated write path, SQLite storage. All real logic lives here.
+- **Luau** — `plugin/StudioStud.plugin.lua`: a single **thin** Studio plugin. Toolbar/widget, reads/writes the DataModel, relays to the engine over the bridge. No business logic.
+- **PowerShell** — `scripts/`: build, package, and install glue.
 
-Dataflow: `Studio plugin (Luau) ⇄ bridge ⇄ Rust engine ⇄ disk/Studio`. Same shape as Rojo: a Rust process and a Luau plugin talking over a local protocol.
+Dataflow: `Studio plugin (Luau) ⇄ HTTP bridge ⇄ Rust engine ⇄ disk/Studio`. Same shape as Rojo: a Rust process and a Luau plugin talking over a local protocol.
 
 ## Working principles (every change)
 - **Logic goes in Rust, not Luau.** Tempted to add real logic to the plugin? Add an engine command/endpoint and have the plugin call it.

@@ -1,19 +1,23 @@
 ---
 name: build-and-package
-description: Build the full Studio Stud distributable — compile the Rust engine and build the Luau plugin into an installable .rbxm, then assemble dist/. Use when asked to build, package, produce a plugin file, or verify the whole thing compiles end to end.
+description: Build the full Studio Stud distributable — compile the Rust engine and assemble dist/ with the engine exe and the plugin .lua. Use when asked to build, package, produce a plugin file, or verify the whole thing compiles end to end.
 ---
 
 # Build & package Studio Stud
 
-Produces both halves and assembles the distributable. Run from the repo root.
+Compiles the engine and assembles the runtime bundle. The plugin is a hand-written `plugin/StudioStud.plugin.lua` — it is **copied**, not built (no Rojo, no `.rbxm`). Run from the repo root (Windows / PowerShell 7).
 
 ## Steps
-1. **Toolchain check.** Ensure pinned tools are present: `rokit install` (installs Rojo/Lune/etc. per `rokit.toml`), and `rustup show` matches `rust-toolchain.toml`. If `rokit` / `cargo` are missing, stop and report — don't silently skip.
-2. **Build the engine (Rust).** `cargo build --release`, and `cargo clippy --release -- -D warnings`. Treat warnings as failures. If it fails, fix or report; don't proceed to packaging.
-3. **Build the plugin (Luau).** `rojo build plugin.project.json -o build/StudioStud.rbxm` (adjust the project file / output path to this repo). If the project builds via a Lune script instead, run that.
-4. **Assemble.** Copy the release binary and the `.rbxm` into `dist/`, plus run `scripts/package.ps1` if present.
-5. **Verify.** Confirm `dist/` contains both artifacts; print their paths and sizes. Confirm the `.rbxm` is non-empty and Rojo emitted no errors.
+1. **Toolchain check.** `cargo` must be on PATH (or `$env:CARGO` / `~/.cargo/bin/cargo.exe`). If it's missing, stop and report — don't silently skip.
+2. **Build the engine.** Run `scripts/build-local.ps1`. It runs `cargo build --release` (with `CARGO_TARGET_DIR=target`) and copies the exe to `bin/studio-stud.exe`. If `studio-stud serve` is running it can't overwrite `bin/` — stop it and rerun. Then run `cargo clippy --all-targets -- -D warnings` and treat warnings as failures.
+3. **Package.** Run `scripts/package-release.ps1` (pass `-SkipBuild` if step 2 already built). It assembles:
+   - `dist/.studio-stud-tool/bin/studio-stud.exe`
+   - `dist/.studio-stud-tool/plugin/StudioStud.plugin.lua`
+   - `dist/.studio-stud-tool/version.json`
+   - `dist/studio-stud.exe` and `dist/StudioStud.plugin.lua` (release assets)
+   - `site/latest.json` (Pages version manifest)
+4. **Verify.** Confirm `dist/` contains the exe and the plugin `.lua`; print their paths and sizes. The script reads the version numbers (daemon / plugin / protocol) and prints them — confirm they look right.
 
 ## Notes
 - This is the deterministic "does it all still build" path — prefer running this over reasoning about whether a change compiles.
-- Exact invocations (project file name, output paths, packaging script) are repo-specific — match them to this repo's real layout.
+- Versions come from `Cargo.toml` (daemon), `PLUGIN_VERSION` in the plugin, and `PROTOCOL_VERSION` / `MIN_PLUGIN_PROTOCOL_VERSION` in `src/util.rs`. See the `release` skill before bumping them.

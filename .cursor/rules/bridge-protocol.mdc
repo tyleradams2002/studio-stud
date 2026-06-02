@@ -1,19 +1,19 @@
 ---
 description: The Rust↔Luau wire contract. Read whenever touching protocol, request/response shapes, shared types, serialization, or anything that crosses the bridge.
-globs: ["**/protocol/**", "**/proto/**", "**/schema/**", "plugin/**/net/**", "plugin/**/api/**"]
+globs: ["src/util.rs", "src/http.rs", "src/capture.rs", "plugin/**/*.lua", "plugin/**/*.luau"]
 alwaysApply: false
 ---
 
 # The bridge contract (Rust ⇄ Luau)
 
-The single most breakage-prone part of Studio Stud is the boundary between the engine and the plugin. Treat the protocol as one artifact with two implementations.
+The single most breakage-prone part of Studio Stud is the boundary between the engine and the plugin. Treat the protocol as one artifact with two implementations. Transport is JSON over HTTP — the engine runs a local HTTP daemon (`tiny_http` on `127.0.0.1:31878` today) and the plugin polls it.
 
 ## Rules
-- **One source of truth.** The message schema is defined once (in Rust). The Luau side mirrors it. If types are generated, the Luau / JSON schema is generated from the Rust types — never hand-maintained in parallel.
-- **Both sides move together.** You may not change a request or response shape on one side only. A protocol change = Rust type + Luau handler + schema doc + version bump, in one change. Use the `add-protocol-message` skill so nothing is skipped.
-- **Version the protocol.** Every envelope carries a protocol version. Bump it on any breaking shape change; the plugin and engine refuse to talk across an incompatible version with a clear error — not a silent deserialize failure.
-- **Wire conventions.** JSON over the transport; `snake_case` field names on the wire; a uniform error envelope (`{ "ok": false, "error": { "code", "message" } }`). Optional fields are explicit; never rely on positional ordering.
+- **One source of truth.** The message schema is defined once (in Rust). The Luau plugin mirrors it by hand — there is no codegen, so the two must be kept in sync deliberately.
+- **Both sides move together.** You may not change a request or response shape on one side only. A protocol change = Rust DTO + Luau handler + doc + version bump, in one change. Use the `add-protocol-message` skill so nothing is skipped.
+- **Version the protocol.** `PROTOCOL_VERSION` and `MIN_PLUGIN_PROTOCOL_VERSION` live in the engine's util module (`src/util.rs` today); the plugin carries `PLUGIN_VERSION` and `MIN_DAEMON_PROTOCOL_VERSION`. Bump on any breaking shape change so the two refuse to talk across an incompatible version with a clear error — not a silent deserialize failure.
+- **Wire conventions.** JSON over HTTP; **`camelCase`** field names on the wire (`#[serde(rename_all = "camelCase")]` on DTOs, e.g. `placeId`, `limitSiblings`). Responses use an `{ "ok": true | false, ... }` envelope with an `error` field on failure. Optional fields are explicit; never rely on positional ordering.
 - **Serialize at the edge.** `serde` derives on dedicated wire structs (DTOs); don't serialize internal engine types directly — keep an explicit DTO layer so refactors don't leak into the protocol.
 - **Backward-compatible first.** Prefer additive changes (new optional field, new message) over breaking ones. When you must break, bump the version and update both sides + the doc in the same change.
 
-When in doubt about a field's meaning, the schema doc — not memory — is authoritative.
+When in doubt about a field's meaning, the protocol doc (`docs/usage.md`) and the Rust DTO — not memory — are authoritative.

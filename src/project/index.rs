@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -138,11 +135,7 @@ fn walk_dir(
     });
 
     for name in names {
-        if name == ".git"
-            || name == "target"
-            || name == "node_modules"
-            || name == ".cursor"
-        {
+        if name == ".git" || name == "target" || name == "node_modules" || name == ".cursor" {
             continue;
         }
         let rel = rel_prefix.join(&name);

@@ -92,8 +92,8 @@ fn cmd_project_index(repo_root: &PathBuf, full: bool, markdown: bool) -> Result<
     let mut projected = 0usize;
     let mut unprojected = 0usize;
     for entry in &index.entries {
-        let role_key = serde_json::to_string(&entry.role)
-            .unwrap_or_else(|_| "\"Unknown\"".to_string());
+        let role_key =
+            serde_json::to_string(&entry.role).unwrap_or_else(|_| "\"Unknown\"".to_string());
         *role_counts.entry(role_key).or_insert(0) += 1;
         if entry.projected {
             projected += 1;
@@ -170,7 +170,9 @@ fn cmd_project_check(repo_root: &PathBuf, markdown: bool) -> Result<()> {
     let manifest = parse_manifest(repo_root).map_err(|e| project_err(&e))?;
     let index = build_index(&manifest, repo_root)?;
     let projection = build_projection(&manifest, repo_root, &index);
-    let policy = crate::policy::load_compiled_policy(repo_root).ok().flatten();
+    let policy = crate::policy::load_compiled_policy(repo_root)
+        .ok()
+        .flatten();
     let mut synced = 0usize;
     let mut blocked = 0usize;
     for inst in projection.by_key.values() {
@@ -218,6 +220,7 @@ fn emit(value: serde_json::Value, markdown: bool) -> Result<()> {
 fn project_err(e: &crate::project::ProjectError) -> anyhow::Error {
     anyhow!(
         "{}",
-        serde_json::to_string(&json!({ "ok": false, "error": e.message, "detail": e.detail })).unwrap()
+        serde_json::to_string(&json!({ "ok": false, "error": e.message, "detail": e.detail }))
+            .unwrap()
     )
 }

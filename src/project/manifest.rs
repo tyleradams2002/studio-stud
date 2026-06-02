@@ -165,7 +165,9 @@ fn parse_path_node(value: &Value) -> Result<PathNode, ProjectError> {
     {
         return Ok(PathNode::Optional(PathBuf::from(opt)));
     }
-    Err(ProjectError::new("$path must be a string or { \"optional\": \"...\" }"))
+    Err(ProjectError::new(
+        "$path must be a string or { \"optional\": \"...\" }",
+    ))
 }
 
 fn reflection_db() -> &'static rbx_reflection::ReflectionDatabase<'static> {
@@ -206,7 +208,10 @@ pub fn class_name_from_path(resolved: &PathNodeResolution) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub enum PathNodeResolution {
-    Directory { abs_path: PathBuf, rel_path: String },
+    Directory {
+        abs_path: PathBuf,
+        rel_path: String,
+    },
     File {
         abs_path: PathBuf,
         rel_path: String,
@@ -235,9 +240,15 @@ pub fn resolve_path_node(
     }
 }
 
-fn resolve_existing_path(abs: PathBuf, rel_path: String) -> Result<PathNodeResolution, ProjectError> {
+fn resolve_existing_path(
+    abs: PathBuf,
+    rel_path: String,
+) -> Result<PathNodeResolution, ProjectError> {
     if abs.is_dir() {
-        return Ok(PathNodeResolution::Directory { abs_path: abs, rel_path });
+        return Ok(PathNodeResolution::Directory {
+            abs_path: abs,
+            rel_path,
+        });
     }
     if abs.is_file() {
         let class_name = script_class_for_file(&abs).ok_or_else(|| {
@@ -403,9 +414,10 @@ mod tests {
             abs_path: PathBuf::from("/tmp/src/Server"),
             rel_path: "src/Server".to_string(),
         };
-        let class = resolve_class_name(&node, "ServerScriptService", "DataModel", Some(&resolution))
-            .unwrap()
-            .unwrap();
+        let class =
+            resolve_class_name(&node, "ServerScriptService", "DataModel", Some(&resolution))
+                .unwrap()
+                .unwrap();
         assert_eq!(class, "ServerScriptService");
     }
 }

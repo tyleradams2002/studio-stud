@@ -66,8 +66,8 @@ pub fn fetch_latest(url: &str) -> Result<Value> {
         .body_mut()
         .read_to_string()
         .map_err(|e| anyhow!("could not read {url}: {e}"))?;
-    let value: Value = serde_json::from_str(&text)
-        .map_err(|e| anyhow!("malformed latest.json: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| anyhow!("malformed latest.json: {e}"))?;
     Ok(value)
 }
 
@@ -222,7 +222,10 @@ fn stage(url_meta: &Value, exe: &Path) -> Result<String> {
         let _ = download_to(plugin_url, &plugin_dest);
     }
 
-    let mut obj = read_version_json(exe).as_object().cloned().unwrap_or_default();
+    let mut obj = read_version_json(exe)
+        .as_object()
+        .cloned()
+        .unwrap_or_default();
     obj.insert("stagedDaemonVersion".into(), json!(latest_daemon));
     if let Some(p) = url_meta.get("pluginVersion").and_then(Value::as_str) {
         obj.insert("pluginVersion".into(), json!(p));

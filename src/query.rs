@@ -6,10 +6,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::cli::CommonArgs;
-use crate::storage::{Storage, current_state, resolve_place, NO_BASELINE_MSG};
+use crate::storage::{NO_BASELINE_MSG, Storage, current_state, resolve_place};
 use crate::util::{
-    escape_like, is_empty_json, normalize_query_path, open_db_readonly, prune_empty_json,
-    scalar_i64_dynamic, STALE_DB_SCHEMA_MSG,
+    STALE_DB_SCHEMA_MSG, escape_like, is_empty_json, normalize_query_path, open_db_readonly,
+    prune_empty_json, scalar_i64_dynamic,
 };
 
 #[allow(clippy::too_many_arguments)]
@@ -88,7 +88,10 @@ pub(crate) fn cmd_query(
         )?
     };
     if markdown {
-        println!("# Studio Stud Query\n\n```json\n{}\n```", serde_json::to_string_pretty(&payload)?);
+        println!(
+            "# Studio Stud Query\n\n```json\n{}\n```",
+            serde_json::to_string_pretty(&payload)?
+        );
     } else {
         println!("{}", serde_json::to_string(&payload)?);
     }
@@ -134,9 +137,7 @@ impl DetailSelector {
         if all {
             return Self::All;
         }
-        let props = props
-            .map(parse_prop_list)
-            .filter(|items| !items.is_empty());
+        let props = props.map(parse_prop_list).filter(|items| !items.is_empty());
         match props {
             Some(props) => Self::Props(props),
             None => Self::Missing,
@@ -191,7 +192,12 @@ struct BulkQuerySpec {
     limit: Option<usize>,
 }
 
-pub(crate) fn query_find(conn: &Connection, capture_id: &str, pattern: &str, limit: usize) -> Result<Value> {
+pub(crate) fn query_find(
+    conn: &Connection,
+    capture_id: &str,
+    pattern: &str,
+    limit: usize,
+) -> Result<Value> {
     query_filtered(
         conn,
         capture_id,
@@ -264,8 +270,7 @@ fn query_bulk(
             .clone()
             .unwrap_or_else(|| format!("query{}", index + 1));
         let limit = spec.limit.unwrap_or(default_limit);
-        let detail_selector =
-            DetailSelector::from_bulk(spec.all, spec.props.as_deref());
+        let detail_selector = DetailSelector::from_bulk(spec.all, spec.props.as_deref());
         let output = QueryOutputOptions {
             full_paths: spec.full_paths.unwrap_or(false),
         };
@@ -584,7 +589,11 @@ fn query_tree(
     let root_id = resolve_instance_locator(conn, capture_id, root)?;
     let root_result = instance_by_id(conn, capture_id, &root_id)?;
     let base_value = if output.full_paths {
-        root_result.display_path.as_deref().unwrap_or(&root_result.path).to_string()
+        root_result
+            .display_path
+            .as_deref()
+            .unwrap_or(&root_result.path)
+            .to_string()
     } else {
         root_result.path.clone()
     };
@@ -667,7 +676,11 @@ fn tree_children(
     }))
 }
 
-fn instance_by_id(conn: &Connection, capture_id: &str, instance_id: &str) -> Result<InstanceResult> {
+fn instance_by_id(
+    conn: &Connection,
+    capture_id: &str,
+    instance_id: &str,
+) -> Result<InstanceResult> {
     conn.query_row(
         "SELECT instance_id, path, display_path, name, class_name, parent_id, child_count
          FROM instances
@@ -705,7 +718,11 @@ impl InstanceResult {
 
     fn output_path(&self, output: QueryOutputOptions, base_path: Option<&str>) -> String {
         if output.full_paths {
-            return self.display_path.as_deref().unwrap_or(&self.path).to_string();
+            return self
+                .display_path
+                .as_deref()
+                .unwrap_or(&self.path)
+                .to_string();
         }
         if let Some(base) = base_path {
             if self.path == base {

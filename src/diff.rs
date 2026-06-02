@@ -11,10 +11,10 @@ use serde_json::{Value, json};
 use crate::{
     policy::{check_path, load_compiled_policy, normalize_rel_path},
     project::{
-        DesiredInstance, DesiredProjection, RepoIndex, FileRole, build_index, build_projection,
+        DesiredInstance, DesiredProjection, FileRole, RepoIndex, build_index, build_projection,
         parse_manifest,
     },
-    storage::{read_live_state, resolve_place, Storage},
+    storage::{Storage, read_live_state, resolve_place},
     util::{STALE_DB_SCHEMA_MSG, normalize_query_path, open_db_readonly},
 };
 
@@ -144,8 +144,7 @@ pub(crate) fn compute_diff(
 
     let place_storage = resolve_place(storage, place)?;
     let conn = open_db_readonly(&place_storage.db_path).context("open db readonly")?;
-    let live = read_live_state(&conn)?
-        .ok_or_else(|| anyhow!(STALE_DB_SCHEMA_MSG))?;
+    let live = read_live_state(&conn)?.ok_or_else(|| anyhow!(STALE_DB_SCHEMA_MSG))?;
 
     let actual_rows = load_actual_rows(&conn, &live.capture_id)?;
     if actual_rows.is_empty() && live.instance_count > 0 {
@@ -202,9 +201,14 @@ fn load_actual_rows(conn: &Connection, capture_id: &str) -> Result<Vec<ActualRow
     Ok(out)
 }
 
-fn classify(projection: &DesiredProjection, actual_rows: &[ActualRow], index: &RepoIndex) -> Classification {
+fn classify(
+    projection: &DesiredProjection,
+    actual_rows: &[ActualRow],
+    index: &RepoIndex,
+) -> Classification {
     let _ = index;
-    let mut unconsumed: HashSet<String> = actual_rows.iter().map(|r| r.instance_id.clone()).collect();
+    let mut unconsumed: HashSet<String> =
+        actual_rows.iter().map(|r| r.instance_id.clone()).collect();
 
     let mut by_key: HashMap<String, Vec<&ActualRow>> = HashMap::new();
     for row in actual_rows {
@@ -262,7 +266,10 @@ fn classify(projection: &DesiredProjection, actual_rows: &[ActualRow], index: &R
             }
             Some(inst) => {
                 let owner = owner_root_for_extra(&row.key, &projection.by_key);
-                extra_in_studio.push((row.clone(), owner.unwrap_or_else(|| inst.studio_path.clone())));
+                extra_in_studio.push((
+                    row.clone(),
+                    owner.unwrap_or_else(|| inst.studio_path.clone()),
+                ));
             }
             None => studio_owned.push(row.clone()),
         }
@@ -323,9 +330,7 @@ fn filter_classification(mut class: Classification, prefix: &str) -> Classificat
     class
         .missing_in_studio
         .retain(|d| matches(&d.normalized_key));
-    class
-        .extra_in_studio
-        .retain(|(r, _)| matches(&r.key));
+    class.extra_in_studio.retain(|(r, _)| matches(&r.key));
     class.studio_owned.retain(|r| matches(&r.key));
     class
 }
@@ -334,7 +339,8 @@ fn policy_readiness_report(
     repo_root: &Path,
     projection: &DesiredProjection,
 ) -> Result<PolicyReadiness> {
-    let compiled = load_compiled_policy(repo_root).map_err(|(reason, _)| anyhow!("{:?}", reason))?;
+    let compiled =
+        load_compiled_policy(repo_root).map_err(|(reason, _)| anyhow!("{:?}", reason))?;
     let mut allowed = 0usize;
     let mut blocked = 0usize;
     let mut blocked_samples = Vec::new();
@@ -483,10 +489,16 @@ fn bounded<T: Serialize>(mut items: Vec<T>, limit: usize) -> BoundedCategory<T> 
     items.sort_by(|a, b| {
         let sa = serde_json::to_value(a).ok();
         let sb = serde_json::to_value(b).ok();
-        sa.and_then(|va| va.get("studioPath").and_then(|v| v.as_str()).map(str::to_string))
-            .cmp(
-                &sb.and_then(|vb| vb.get("studioPath").and_then(|v| v.as_str()).map(str::to_string)),
-            )
+        sa.and_then(|va| {
+            va.get("studioPath")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .cmp(&sb.and_then(|vb| {
+            vb.get("studioPath")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        }))
     });
     let truncated = total > limit;
     let returned = total.min(limit);
