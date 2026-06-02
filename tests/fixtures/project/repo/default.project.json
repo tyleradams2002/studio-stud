@@ -1,0 +1,16 @@
+{
+  "name": "FixtureProject",
+  "globIgnorePaths": ["**/*.spec.luau"],
+  "tree": {
+    "$className": "DataModel",
+    "ServerScriptService": {
+      "$className": "ServerScriptService",
+      "$ignoreUnknownInstances": true,
+      "$path": "server"
+    },
+    "Workspace": {
+      "$className": "Workspace",
+      "$ignoreUnknownInstances": true
+    }
+  }
+}

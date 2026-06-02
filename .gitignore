@@ -1,0 +1,21 @@
+# Rust build output
+/target
+/bin
+**/*.rs.bk
+
+# Local runtime install (if this repo is ever used as a consumer)
+.studio-stud-tool/
+
+# Local scratch
+.tmp/
+
+# Roblox place files
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+world/
+
+# OS
+.DS_Store
+Thumbs.db

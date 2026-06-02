@@ -1,0 +1,82 @@
+{
+  "pluginVersion": "fixture-stage0",
+  "place": {
+    "placeId": "100000000000001",
+    "placeKey": "Place100000000000001",
+    "name": "Fixture Place",
+    "gameId": 8093592114
+  },
+  "sync": {
+    "syncId": "capture_fixture_stage0",
+    "startedAtUtc": "2026-01-01T00:00:00Z",
+    "finishedAtUtc": "2026-01-01T00:00:01Z"
+  },
+  "instances": [
+    {
+      "id": "inst_workspace",
+      "path": "Workspace",
+      "name": "Workspace",
+      "className": "Workspace",
+      "depth": 0,
+      "childCount": 2,
+      "siblingIndex": 0,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "inst_boat_spawn",
+      "path": "Workspace/BoatSpawnPoints",
+      "name": "BoatSpawnPoints",
+      "className": "Folder",
+      "parentId": "inst_workspace",
+      "depth": 1,
+      "childCount": 1,
+      "siblingIndex": 0,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "inst_spawn_part",
+      "path": "Workspace/BoatSpawnPoints/DockA",
+      "name": "DockA",
+      "className": "Part",
+      "parentId": "inst_boat_spawn",
+      "depth": 2,
+      "childCount": 0,
+      "siblingIndex": 0,
+      "properties": {
+        "Position": { "x": 10, "y": 2, "z": 20 },
+        "Size": { "x": 4, "y": 1, "z": 4 }
+      },
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "inst_trader",
+      "path": "Workspace/TraderNPC_Mike",
+      "name": "TraderNPC_Mike",
+      "className": "Model",
+      "parentId": "inst_workspace",
+      "depth": 1,
+      "childCount": 0,
+      "siblingIndex": 1,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    },
+    {
+      "id": "inst_replicated",
+      "path": "ReplicatedStorage",
+      "name": "ReplicatedStorage",
+      "className": "ReplicatedStorage",
+      "depth": 0,
+      "childCount": 0,
+      "siblingIndex": 0,
+      "properties": {},
+      "attributes": {},
+      "tags": []
+    }
+  ]
+}

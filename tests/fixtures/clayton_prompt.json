@@ -1,0 +1,8 @@
+{"queries":[
+  {"key":"lootCratePad","tree":"Workspace/LootCratePad","depth":1,"limitSiblings":20},
+  {"key":"laptop","tree":"Workspace/LootCratePad/Laptop","depth":2,"limitSiblings":20},
+  {"key":"screenGlass","detail":"Workspace/LootCratePad/Laptop/ScreenGlass","props":["Size","Position","Color","Transparency","Material"]},
+  {"key":"lighting","tree":"Workspace/LootCratePad/Lighting","depth":1,"limitSiblings":30},
+  {"key":"hotfixCrate","find":"HotFixCrate","limit":10},
+  {"key":"padGlow","find":"PadGlow","limit":5}
+]}

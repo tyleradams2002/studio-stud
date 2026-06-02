@@ -1,0 +1,144 @@
+---
+description: Studio Stud detailed reference — live capture, analyze, query modes, audit IDs, output contract, and rbxlx fallback
+globs: .studio-stud-tool/**,.studio-stud/**,.cursor/commands/studio-stud.md
+alwaysApply: false
+---
+
+# Studio Stud Reference
+
+Default for AI world-state research and post-build hierarchy verification. For the fast path, use `/studio-stud`. Read-only Studio MCP is only for active-session/PlaceId spot-checks or when Stud is unavailable.
+
+## Shell Prefix
+
+```powershell
+.\studio-stud <subcommand> [args]
+```
+
+Windows only. Daemon: `127.0.0.1:31878`. Storage: `%LOCALAPPDATA%/StudioStud/` (one live SQLite DB per place, no capture history). Does not mutate the place.
+
+## Place IDs
+
+| Island | PlaceId |
+|--------|---------|
+| ExamplePlaceA | `100000000000001` |
+| ExamplePlaceB | `100000000000003` |
+
+Other islands have PlaceId `0` in repo config until added. `<PLACE>` = PlaceId or storage folder name from `status`.
+
+## Workflow
+
+```powershell
+.\studio-stud status
+.\studio-stud capture          # requires serve + plugin loaded in Studio
+.\studio-stud analyze <PLACE> --report context
+.\studio-stud query <PLACE> --find <term> --count-only
+.\studio-stud query <PLACE> --path Workspace/<Name> --limit 10
+```
+
+Setup/troubleshooting only: `doctor`, `serve` (foreground terminal). Plugin polls automatically when loaded; widget `Connect` is health-check only. Captures are CLI-only (`capture`).
+
+Stale capture: after Studio changes, post-build scripts, hierarchy debugging, island switch. Ask Tyler to ensure `serve` is running and Studio has the plugin loaded, then run `capture`.
+
+## Report Views
+
+Default if omitted: `context`. Valid: `context`, `findings`, `critical`. (`comparison` was removed in Stage 2 — there is only one live DB per place now.) Avoid dumping multiple reports; use bounded `query` instead.
+
+```powershell
+.\studio-stud analyze <PLACE> --report context
+.\studio-stud analyze <PLACE> --report critical
+.\studio-stud analyze <PLACE> --focus Trader Dock --limit 10
+```
+
+## Query Modes (one mode per call)
+
+**Filters** — combine `--class`, `--find`, `--name`, `--path`, `--under`:
+
+```powershell
+.\studio-stud query <PLACE> --name BoatSpawnPoints
+.\studio-stud query <PLACE> --under Workspace/BoatSpawnPoints --class Part --limit 10
+.\studio-stud query <PLACE> --class ProximityPrompt --limit 50
+```
+
+**Tree** — not combinable with filters:
+
+```powershell
+.\studio-stud query <PLACE> --tree Workspace/BoatSpawnPoints --depth 1 --limit-siblings 25
+```
+
+**Detail** — requires `--props` or `--all` (bare `--detail` errors):
+
+```powershell
+.\studio-stud query <PLACE> --detail Workspace/Dock --props Position,Size
+.\studio-stud query <PLACE> --detail MeshPart:000123 --all
+```
+
+**Audit** — use IDs from `analyze --report context` findings:
+
+| audit_id | topic |
+|----------|-------|
+| `prompts.missingText` | ProximityPrompt text gaps |
+| `identity.duplicateSiblingNames` | duplicate sibling names |
+| `replication.bulkAssets` | MeshPart/Union in ReplicatedStorage |
+| `collision.invisibleCollidable` | nearly invisible collidable parts |
+| `collision.invisibleHelperParts` | recognized helper exclusions |
+| `performance.unionCount` | high UnionOperation count |
+
+```powershell
+.\studio-stud query <PLACE> --audit prompts.missingText --limit 25
+```
+
+**Bulk** — separate from all other flags; prefer inline JSON or `@file` (avoid stdin `-` on Windows):
+
+```powershell
+.\studio-stud query <PLACE> --bulk '{"queries":[{"key":"spawns","path":"Workspace/BoatSpawnPoints"},{"key":"tree","tree":"Workspace/BoatSpawnPoints","depth":1,"limitSiblings":10}]}'
+.\studio-stud query <PLACE> --bulk @bulk.json
+```
+
+Default `--limit 25`. Use `--full-paths` only when Explorer paths are required. Default output is compact JSON on stdout — parse directly or `ConvertFrom-Json`; do **not** `ConvertTo-Json` on stdout. `--markdown` is for humans only.
+
+## Policy + Write (Stage 3)
+
+Write endpoints are **token-gated over HTTP** and **policy-allowlisted**. Before assuming a path is writable, run `policy explain --path <rel>` — default `allowedWritePaths` is empty until Stage 5/8 broaden it.
+
+```powershell
+.\studio-stud policy init
+.\studio-stud policy check
+.\studio-stud policy explain --path synced/foo.luau
+```
+
+`/studio-stud/write/*` requires the plugin write-token handshake (`GET /write/token`, header `X-StudioStud-Token`). Hidden local CLI: `write-validate`, `write-preview`, `write-apply` (no token). See `docs/studio-stud.md` § Write Protocol.
+
+## Project Diff (Stage 4)
+
+Read-only structural diff: repo `default.project.json` projection vs live SQLite capture. **Does not detect changed script bodies** (no `Source` in capture — Stage 5).
+
+```powershell
+.\studio-stud project check
+.\studio-stud project diff <PLACE>
+.\studio-stud project diff <PLACE> --under ServerScriptService --limit 50
+```
+
+Use for "what does the repo expect vs what's in the place?" Ownership-aware: Studio-only under `$ignoreUnknownInstances: true` service roots ⇒ `studioOwned`; under repo-projected folders (default false) ⇒ `extraInStudio`. See `docs/studio-stud.md` § Project Diff.
+
+## Output Contract
+
+List items: `id`, `p` (path), `n` (name), `c` (class), optional `ch` (child count). Wrapper: `returned`, `total`, `limit`, `truncated`, `items`. If `truncated: true`, narrow filter or raise `--limit`; do not load raw snapshot.
+
+## Hard Stops
+
+- No routine `Select-String` / Read of `world/*.rbxlx` for research
+- No `raw.json.gz` in chat
+- No syncback-first requests when Stud is available
+- No bare `--detail`; no mixing `--bulk` with other query flags
+- No broad multi-report dumps
+
+## Tier-3 Fallback (rbxlx)
+
+Use syncback only when: Stud `doctor` fails, daemon/plugin unavailable, durable archive needed, or `tools/perf/Analyze-RbxlxWorldMetrics.ps1` requires rbxlx input.
+
+```powershell
+# User: Studio → File → Download a Copy → save .rbxl
+.\tools\syncback.ps1 -PlaceName ExamplePlaceA
+```
+
+Snapshots live in `world/<PlaceName>.rbxlx` (gitignored).

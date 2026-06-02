@@ -1,0 +1,1 @@
+{"items":[{"childCount":1,"class":"Folder","id":"inst_boat_spawn","name":"BoatSpawnPoints","path":"Workspace/BoatSpawnPoints"}],"limit":25,"returned":1,"total":1,"truncated":false}

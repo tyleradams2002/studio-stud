@@ -1,0 +1,1 @@
+{"daemon":{"state":"not-running"},"places":[{"liveState":{"captureId":"capture_fixture_stage0","instanceCount":5,"placeId":"100000000000001","placeKey":"Place100000000000001","revision":0,"updatedAtUtc":"TIMESTAMP"},"place":"100000000000001"}],"projectKey":"ExampleProject","service":"studio-stud"}

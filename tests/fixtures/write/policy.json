@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "allowedPlaceIds": [100000000000001, 100000000000003],
+  "allowedWritePaths": ["synced/**/*.luau", "generated/*.luau"],
+  "requireGeneratedHeaderPaths": ["generated/*.luau"],
+  "maxPatchBytes": 256,
+  "maxPatchItems": 500,
+  "maxDeleteCount": 50,
+  "ownedPaths": [],
+  "ownedServices": ["ServerScriptService", "ReplicatedStorage", "StarterPlayer"],
+  "liveCaptureScope": null,
+  "unsupportedFeatureBehavior": "block",
+  "lease": { "enabled": true, "ttlSeconds": 60 }
+}

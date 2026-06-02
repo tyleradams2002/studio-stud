@@ -1,0 +1,11 @@
+# Studio Stud Context
+
+- place: `Place100000000000001`
+- placeId: `100000000000001`
+- captureId: `capture_fixture_stage0`
+- capturedAtUtc: `2026-06-01T18:38:23Z`
+- totalItems: `5`
+
+## Findings
+
+Use `studio-stud query` for bounded drilldowns. Do not load raw snapshots into chat.

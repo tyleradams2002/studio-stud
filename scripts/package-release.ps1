@@ -1,0 +1,90 @@
+<#
+.SYNOPSIS
+  Build the release binary and assemble the runtime bundle + version manifests.
+
+.DESCRIPTION
+  Produces:
+    dist/.studio-stud-tool/bin/studio-stud.exe
+    dist/.studio-stud-tool/plugin/StudioStud.plugin.lua
+    dist/.studio-stud-tool/version.json
+    dist/StudioStud.plugin.lua          (release asset)
+    dist/studio-stud.exe                (release asset)
+    site/latest.json                    (Pages version manifest)
+
+  Version source of truth: Cargo.toml (daemon), PLUGIN_VERSION (plugin),
+  PROTOCOL_VERSION / MIN_PLUGIN_PROTOCOL_VERSION (src/util.rs),
+  MIN_DAEMON_PROTOCOL_VERSION (plugin).
+#>
+param(
+    [string]$Repo   = "tyleradams2002/studio-stud",
+    [string]$PagesBase = "https://tyleradams2002.github.io/studio-stud",
+    [switch]$SkipBuild
+)
+$ErrorActionPreference = "Stop"
+$Root = Split-Path -Parent $PSScriptRoot
+
+function Get-Match([string]$Path, [string]$Pattern) {
+    $m = Select-String -Path $Path -Pattern $Pattern | Select-Object -First 1
+    if (-not $m) { throw "Pattern not found in ${Path}: $Pattern" }
+    return $m.Matches[0].Groups[1].Value
+}
+
+$cargoToml  = Join-Path $Root "Cargo.toml"
+$utilRs     = Join-Path $Root "src/util.rs"
+$pluginLua  = Join-Path $Root "plugin/StudioStud.plugin.lua"
+$exePath    = Join-Path $Root "bin/studio-stud.exe"
+
+$daemonVersion  = Get-Match $cargoToml '^version\s*=\s*"([^"]+)"'
+$protocol       = [int](Get-Match $utilRs 'PROTOCOL_VERSION:\s*i64\s*=\s*(\d+)')
+$minPlugin      = [int](Get-Match $utilRs 'MIN_PLUGIN_PROTOCOL_VERSION:\s*i64\s*=\s*(\d+)')
+$pluginVersion  = Get-Match $pluginLua 'PLUGIN_VERSION\s*=\s*"([^"]+)"'
+try { $minDaemon = [int](Get-Match $pluginLua 'MIN_DAEMON_PROTOCOL_VERSION\s*=\s*(\d+)') } catch { $minDaemon = 1 }
+
+Write-Host "daemon=$daemonVersion plugin=$pluginVersion protocol=$protocol minPlugin=$minPlugin minDaemon=$minDaemon"
+
+if (-not $SkipBuild) {
+    & (Join-Path $PSScriptRoot "build-local.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+if (-not (Test-Path $exePath)) { throw "Missing built exe: $exePath" }
+
+$dist   = Join-Path $Root "dist"
+$tool   = Join-Path $dist ".studio-stud-tool"
+if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+New-Item -ItemType Directory -Force "$tool/bin","$tool/plugin" | Out-Null
+
+Copy-Item $exePath   "$tool/bin/studio-stud.exe" -Force
+Copy-Item $pluginLua "$tool/plugin/StudioStud.plugin.lua" -Force
+Copy-Item $exePath   "$dist/studio-stud.exe" -Force
+Copy-Item $pluginLua "$dist/StudioStud.plugin.lua" -Force
+
+$now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+$versionJson = [ordered]@{
+    daemonVersion           = $daemonVersion
+    pluginVersion           = $pluginVersion
+    protocolVersion         = $protocol
+    minPluginProtocolVersion = $minPlugin
+    minDaemonProtocolVersion = $minDaemon
+    source                  = "https://github.com/$Repo"
+    installedAt             = $now
+}
+$versionJson | ConvertTo-Json | Set-Content "$tool/version.json" -Encoding utf8
+
+$tag = "v$daemonVersion"
+$latest = [ordered]@{
+    daemonVersion            = $daemonVersion
+    pluginVersion            = $pluginVersion
+    protocolVersion          = $protocol
+    minPluginProtocolVersion = $minPlugin
+    minDaemonProtocolVersion = $minDaemon
+    binaryUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud.exe"
+    pluginUrl                = "https://github.com/$Repo/releases/download/$tag/StudioStud.plugin.lua"
+    installUrl               = "$PagesBase/install.ps1"
+    releasedAt               = $now
+}
+New-Item -ItemType Directory -Force (Join-Path $Root "site") | Out-Null
+$latest | ConvertTo-Json | Set-Content (Join-Path $Root "site/latest.json") -Encoding utf8
+
+Write-Host "Bundle assembled under: $tool"
+Write-Host "Pages manifest written: site/latest.json (tag $tag)"
