@@ -210,12 +210,33 @@ dedicated rule/command returns later via the installer's `--with-cursor-rule`.
       `latest.json` formats. Build + tests green; `update --check` degrades gracefully when offline.
 - [x] **Step 3 — Authoring**: `install.ps1`, `package-release.ps1`, Pages `site/` (index + latest.json),
       `.github/workflows/release.yml`.
-- [ ] **Step 4 — First push + tag** to `origin/main` → CI builds the first Release + deploys Pages.
-      (Requires Tyler's go-ahead: this is the first persistent push to the public repo.)
-- [ ] **Step 5 — Strip FishersLife** per section 7 (delete Group A, neutralize Group B).
-      (Requires Tyler's go-ahead: deletes files from FishersLife; git-reversible.)
-- [ ] **Step 6 — Reinstall into FishersLife** via the one-liner (`--with-cursor-rule`) and smoke-test
-      `.\studio-stud doctor` + a capture.
+- [x] **Step 4 — First push + tag** to `origin/main` → CI built the v0.4.0 Release (exe + plugin
+      attached) and deployed Pages. Pages is split to deploy from `main` (the `github-pages`
+      environment rejects tag deploys); build/release runs on `v*` tags. Published installer
+      smoke-tested end-to-end in a temp repo: downloads daemon 0.4.0 + plugin 0.3.7, writes launchers/
+      policy, and `update --check` reports up-to-date against live `latest.json`. Fixed an installer
+      TLS type bug (`SecurityProtocolType`) found during the smoke test.
+- [x] **Step 5 — Strip FishersLife** per section 7. Group A deleted (`tools/studio_stud/`, root
+      launchers, `docs/studio-stud*.md`, the rule/command, 7 plan files). `.gitignore` Rust/tool lines
+      replaced with a single `.studio-stud-tool/` ignore. Group B fully stripped (full-strip option):
+      Studio Stud references removed from `repo-navigation.mdc`, `roblox-fishers-life.mdc`,
+      `world-snapshot.mdc`, `rod-model-building.mdc`, the model/fish skills + `MODEL_WORKFLOWS.md`,
+      `model-import-check.md`, `local-automation-tooling.md`, `meshy-companion-workflow.md`,
+      `check_automation.ps1`, a stale `BoatAuthoringConfig.luau` comment, and `CLAUDE.md`. Verification
+      guidance now points at the read-only Studio MCP / rbxlx fallback.
+      **Deviation:** FishersLife's real `.studio-stud/policy.json` (place IDs + owned services) was
+      KEPT, not deleted — the installer preserves an existing policy, so wiping it would have lost
+      working config.
+- [x] **Step 6 — Reinstall into FishersLife** via the published one-liner with `-WithCursorRule`:
+      vendored daemon 0.4.0 + plugin 0.3.7 into `.studio-stud-tool/`, launcher shims, and the
+      self-contained `.cursor/rules/studio-stud.mdc` + command re-added. Existing policy preserved.
+      `.\studio-stud doctor` → `ready: true` (plugin source found, storage writable, SQLite OK; the
+      two warnings are expected — server not yet running, Studio HTTP toggled at runtime).
+
+> Distribution note: the `github-pages` environment rejects tag deploys, so CI splits — `build` +
+> Release run on `v*` tags; `deploy-pages` (serving the committed `site/`) runs on `main` /
+> `workflow_dispatch`. Future releases must commit an updated `site/latest.json` to `main` so Pages
+> serves the new version. Installer TLS type bug fixed during smoke testing.
 
 > Note: `Cargo.toml` gained `ureq` (HTTPS client for the daemon self-update). The daemon self-update
 > stages `studio-stud.exe.new` and swaps it on next launch (Windows can't overwrite a running exe);
