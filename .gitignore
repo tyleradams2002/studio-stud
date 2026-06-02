@@ -6,9 +6,12 @@
 # Local runtime install (if this repo is ever used as a consumer)
 .studio-stud-tool/
 
-# Installer secrets and channel build outputs
-secrets/
+# Installer secrets — only channel-signing.pub is committed; everything else stays local
+secrets/*
+!secrets/
 !secrets/channel-signing.pub
+
+# Channel build outputs
 site/beta/
 site/dev/
 
