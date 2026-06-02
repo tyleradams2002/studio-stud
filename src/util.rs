@@ -49,10 +49,10 @@ pub(crate) struct Finding {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct DoctorCheck {
-    pub(crate) name: String,
-    pub(crate) status: String,
-    pub(crate) detail: String,
+pub struct DoctorCheck {
+    pub name: String,
+    pub status: String,
+    pub detail: String,
 }
 
 pub(crate) fn pass(name: &str, detail: String) -> DoctorCheck {

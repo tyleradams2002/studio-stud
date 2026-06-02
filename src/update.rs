@@ -234,48 +234,15 @@ fn stage(url_meta: &Value, exe: &Path) -> Result<String> {
     Ok(latest_daemon)
 }
 
-/// Run at `serve` startup: apply a previously staged update, then check + stage a new one.
-/// Best-effort; prints human messages; never errors out of serving.
-pub fn run_on_serve(url: &str, enabled: bool) {
+/// Run at `serve` startup: apply a previously staged update only.
+/// Remote check/download is owned by `studio-stud-setup update` (no race on latest.json).
+pub fn apply_staged_on_boot() {
     if let Some(v) = apply_staged() {
         println!("Studio Stud: applied staged update ({v}). Now running it.");
     }
-    if !enabled {
-        return;
-    }
-    let exe = match std::env::current_exe() {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    let latest = match fetch_latest(url) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Studio Stud: update check skipped ({e})");
-            return;
-        }
-    };
-    let latest_daemon = latest
-        .get("daemonVersion")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let installed = installed_daemon_version(&exe);
-    let already_staged = read_version_json(&exe)
-        .get("stagedDaemonVersion")
-        .and_then(Value::as_str)
-        .map(|s| s == latest_daemon)
-        .unwrap_or(false);
+}
 
-    if is_newer(&latest_daemon, &installed) && !already_staged {
-        match stage(&latest, &exe) {
-            Ok(v) => println!(
-                "Studio Stud: update v{v} downloaded (installed v{installed}). Restart `studio-stud serve` to apply."
-            ),
-            Err(e) => eprintln!("Studio Stud: update download failed ({e})"),
-        }
-    } else if already_staged {
-        println!(
-            "Studio Stud: update v{latest_daemon} already staged. Restart `studio-stud serve` to apply."
-        );
-    }
+/// Legacy entry — kept for `studio-stud update` CLI until setup binary owns it fully.
+pub fn run_on_serve(_url: &str, _enabled: bool) {
+    apply_staged_on_boot();
 }

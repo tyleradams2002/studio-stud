@@ -45,18 +45,33 @@ Write-Host "daemon=$daemonVersion plugin=$pluginVersion protocol=$protocol minPl
 if (-not $SkipBuild) {
     & (Join-Path $PSScriptRoot "build-local.ps1")
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    Push-Location $Root
+    cargo build --release -p studio-stud-setup
+    if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+    Pop-Location
 }
 if (-not (Test-Path $exePath)) { throw "Missing built exe: $exePath" }
+$setupBuilt = Join-Path $Root "target/release/studio-stud-setup.exe"
+if (-not (Test-Path $setupBuilt)) { throw "Missing setup exe: $setupBuilt" }
 
 $dist   = Join-Path $Root "dist"
 $tool   = Join-Path $dist ".studio-stud-tool"
 if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
-New-Item -ItemType Directory -Force "$tool/bin","$tool/plugin" | Out-Null
+New-Item -ItemType Directory -Force "$tool/bin","$tool/plugin","$tool/addons" | Out-Null
 
 Copy-Item $exePath   "$tool/bin/studio-stud.exe" -Force
 Copy-Item $pluginLua "$tool/plugin/StudioStud.plugin.lua" -Force
 Copy-Item $exePath   "$dist/studio-stud.exe" -Force
 Copy-Item $pluginLua "$dist/StudioStud.plugin.lua" -Force
+Copy-Item $setupBuilt "$dist/studio-stud-setup.exe" -Force
+
+$addonSrc = Join-Path $Root "addon-plugins"
+if (Test-Path $addonSrc) {
+    Get-ChildItem $addonSrc -Directory | ForEach-Object {
+        if ($_.Name -eq 'sdk' -or $_.Name.StartsWith('_')) { return }
+        Copy-Item $_.FullName (Join-Path "$tool/addons" $_.Name) -Recurse -Force
+    }
+}
 
 $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
@@ -80,7 +95,9 @@ $latest = [ordered]@{
     minDaemonProtocolVersion = $minDaemon
     binaryUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud.exe"
     pluginUrl                = "https://github.com/$Repo/releases/download/$tag/StudioStud.plugin.lua"
+    setupUrl                 = "https://github.com/$Repo/releases/download/$tag/studio-stud-setup.exe"
     installUrl               = "$PagesBase/install.ps1"
+    channelSequence          = 1
     releasedAt               = $now
 }
 New-Item -ItemType Directory -Force (Join-Path $Root "site") | Out-Null

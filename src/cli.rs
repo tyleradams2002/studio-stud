@@ -711,8 +711,8 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(host: &str, port: u16, common: &CommonArgs, no_update: bool) -> Result<()> {
-    crate::update::run_on_serve(crate::update::LATEST_URL, !no_update);
+fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Result<()> {
+    crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
             "Studio Stud daemon must bind to 127.0.0.1/localhost"
@@ -725,21 +725,45 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, no_update: bool) -> Res
         )
     })?;
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
-    let repo_root = resolve_repo_root(None).map_err(|reason| anyhow!(reason.as_str()))?;
+    let mut user_cfg = crate::setup_core::load_config_or_default();
+    if let Ok(cwd_repo) = resolve_repo_root(None) {
+        let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
+    }
+    let install_root = if user_cfg.install_root.is_empty() {
+        crate::setup_core::install::default_install_root()
+    } else {
+        PathBuf::from(&user_cfg.install_root)
+    };
+    let plugins_dir = if user_cfg.plugins_dir.is_empty() {
+        crate::setup_core::install::default_plugins_dir()
+    } else {
+        PathBuf::from(&user_cfg.plugins_dir)
+    };
+    let registry = crate::RepoResolver::from_config(user_cfg);
     let write_token = load_or_create_write_token(&storage.root)?;
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
-        repo_root: repo_root.clone(),
-        write_token,
+        write_token: write_token.clone(),
+        registry,
+        install_root: install_root.clone(),
+        plugins_dir: plugins_dir.clone(),
+        port,
+        shutdown: Arc::clone(&shutdown),
     };
+    let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
     println!(
         "Studio Stud v{} serving plugin capture requests on http://{address}",
         env!("CARGO_PKG_VERSION")
     );
     println!("Storage root: {}", storage.root.display());
-    println!("Repo root: {}", repo_root.display());
+    println!(
+        "Registry: {} repo(s); PlaceId resolves per request",
+        config.registry.config_snapshot().repos.len()
+    );
+    println!("Install root: {}", install_root.display());
     println!("Write token issued");
     const SERVE_WORKERS: usize = 4;
     let (request_tx, request_rx) = mpsc::channel();
