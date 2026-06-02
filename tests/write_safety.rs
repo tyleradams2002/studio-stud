@@ -16,19 +16,12 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn temp_repo(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "studio_stud_write_{name}_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("studio_stud_write_{name}_{}", std::process::id()));
     if dir.exists() {
         fs::remove_dir_all(&dir).ok();
     }
     fs::create_dir_all(dir.join(".studio-stud")).unwrap();
-    fs::copy(
-        fixture("policy.json"),
-        dir.join(".studio-stud/policy.json"),
-    )
-    .unwrap();
+    fs::copy(fixture("policy.json"), dir.join(".studio-stud/policy.json")).unwrap();
     fs::create_dir_all(dir.join("synced")).ok();
     fs::create_dir_all(dir.join("generated")).ok();
     dir
@@ -153,7 +146,13 @@ fn write_safety_preview_no_write() {
         &repo,
     );
     assert_eq!(preview.get("blocked").and_then(Value::as_bool), Some(false));
-    assert!(!preview.get("diff").and_then(Value::as_str).unwrap_or("").is_empty());
+    assert!(
+        !preview
+            .get("diff")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .is_empty()
+    );
     assert!(!target.exists());
 }
 
@@ -182,7 +181,12 @@ fn write_safety_blocks_traversal_and_absolute_paths() {
     let repo = temp_repo("traversal");
     let content_path = fixture("target_clean.luau");
     let content = content_path.to_str().unwrap();
-    for path in ["../escape.luau", "/absolute.luau", "C:foo.luau", "\\rooted.luau"] {
+    for path in [
+        "../escape.luau",
+        "/absolute.luau",
+        "C:foo.luau",
+        "\\rooted.luau",
+    ] {
         let (ok, value) = run_cli_repo_allow_fail(
             &["write-apply", "--path", path, "--content-file", content],
             &repo,
@@ -223,9 +227,7 @@ fn write_safety_blocks_oversize_header_parse_and_hash_mismatch() {
             "--path",
             "generated/missing-header.luau",
             "--content-file",
-            fixture("target_generated_no_header.luau")
-                .to_str()
-                .unwrap(),
+            fixture("target_generated_no_header.luau").to_str().unwrap(),
         ],
         &repo,
     );
@@ -395,10 +397,7 @@ fn policy_init_check_explain_smoke() {
     assert_eq!(init.get("ok").and_then(Value::as_bool), Some(true));
     let check = run_cli_repo(&["policy", "check"], &repo);
     assert_eq!(check.get("valid").and_then(Value::as_bool), Some(true));
-    let explain = run_cli_repo(
-        &["policy", "explain", "--path", "synced/foo.luau"],
-        &repo,
-    );
+    let explain = run_cli_repo(&["policy", "explain", "--path", "synced/foo.luau"], &repo);
     assert_eq!(explain.get("allowed").and_then(Value::as_bool), Some(false));
 }
 

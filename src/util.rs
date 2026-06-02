@@ -194,7 +194,12 @@ pub(crate) fn matches_keyword(value: &str) -> bool {
         .any(|keyword| lower.contains(&keyword.to_ascii_lowercase()))
 }
 
-pub(crate) fn build_search_text(path: &str, display_path: Option<&str>, name: &str, class_name: &str) -> String {
+pub(crate) fn build_search_text(
+    path: &str,
+    display_path: Option<&str>,
+    name: &str,
+    class_name: &str,
+) -> String {
     format!(
         "{} {} {} {}",
         path,

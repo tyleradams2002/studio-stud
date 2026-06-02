@@ -33,11 +33,8 @@ fn pick_port() -> u16 {
 }
 
 fn http_request(method: &str, port: u16, path: &str, body: Option<&str>) -> (u16, String) {
-    let mut stream =
-        TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to daemon");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to daemon");
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let body_str = body.unwrap_or("");
     let req = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_str}",

@@ -1,7 +1,4 @@
-use std::{
-    fs,
-    path::Path,
-};
+use std::{fs, path::Path};
 
 use crate::{
     policy::{self, CompiledPolicy},
@@ -17,9 +14,13 @@ pub fn execute(
     mode: WriteMode,
 ) -> WriteOutcome {
     let normalized_path = policy::normalize_rel_path(req.path);
-    if let Some(reason) =
-        policy::check_path(repo_root, compiled, &normalized_path, req.content, req.place_id)
-    {
+    if let Some(reason) = policy::check_path(
+        repo_root,
+        compiled,
+        &normalized_path,
+        req.content,
+        req.place_id,
+    ) {
         return WriteOutcome::blocked(reason, &normalized_path, None);
     }
 
@@ -42,9 +43,7 @@ pub fn execute(
         {
             return WriteOutcome::blocked(BlockedReason::HashMismatch, &normalized_path, None);
         }
-        if changed
-            && let Err(err) = atomic_write(&abs_path, normalized_bytes)
-        {
+        if changed && let Err(err) = atomic_write(&abs_path, normalized_bytes) {
             return WriteOutcome::blocked(
                 BlockedReason::InternalError,
                 &normalized_path,

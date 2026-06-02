@@ -13,10 +13,7 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn temp_storage(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "studio_stud_live_{name}_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("studio_stud_live_{name}_{}", std::process::id()));
     if dir.exists() {
         fs::remove_dir_all(&dir).ok();
     }
@@ -97,15 +94,25 @@ fn structural_convergence_without_verify() {
 
     let (state_delta, fp_delta) = dump_compare_parts(&dump_delta);
     let (state_full, fp_full) = dump_compare_parts(&dump_full);
-    assert_eq!(state_delta, state_full, "state must converge without verify");
-    assert_eq!(fp_delta, fp_full, "fingerprint must converge without verify");
+    assert_eq!(
+        state_delta, state_full,
+        "state must converge without verify"
+    );
+    assert_eq!(
+        fp_delta, fp_full,
+        "fingerprint must converge without verify"
+    );
 }
 
 #[test]
 fn revision_guard_rejects_stale_base_revision() {
     let storage = temp_storage("revision");
     run_cli(
-        &["ingest", "--raw", fixture("baseline.json").to_str().unwrap()],
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
         &storage,
     );
     let stale_path = storage.join("stale_delta.json");
@@ -124,14 +131,21 @@ fn revision_guard_rejects_stale_base_revision() {
         ],
         &storage,
     );
-    assert_eq!(result.get("error").and_then(Value::as_str), Some("revision_mismatch"));
+    assert_eq!(
+        result.get("error").and_then(Value::as_str),
+        Some("revision_mismatch")
+    );
 }
 
 #[test]
 fn verify_fast_path_when_state_matches() {
     let storage = temp_storage("verify_fast");
     run_cli(
-        &["ingest", "--raw", fixture("baseline.json").to_str().unwrap()],
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
         &storage,
     );
     let result = run_cli(
@@ -155,7 +169,11 @@ fn verify_fast_path_when_state_matches() {
 fn verify_recovers_missed_signal() {
     let storage = temp_storage("verify_miss");
     run_cli(
-        &["ingest", "--raw", fixture("baseline.json").to_str().unwrap()],
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
         &storage,
     );
     let partial = fixture("partial_delta.json");
@@ -179,7 +197,12 @@ fn verify_recovers_missed_signal() {
         ],
         &storage,
     );
-    assert!(verify.get("drift").and_then(Value::as_array).is_some_and(|d| !d.is_empty()));
+    assert!(
+        verify
+            .get("drift")
+            .and_then(Value::as_array)
+            .is_some_and(|d| !d.is_empty())
+    );
 
     let dump = run_cli(&["live-dump", "999001"], &storage);
     let storage_full = temp_storage("verify_miss_full");
@@ -202,14 +225,15 @@ fn verify_recovers_missed_signal() {
 fn fingerprint_cross_representation_baseline_verify() {
     let storage = temp_storage("fp_cross");
     run_cli(
-        &["ingest", "--raw", fixture("baseline.json").to_str().unwrap()],
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
         &storage,
     );
     let dump = run_cli(&["live-dump", "999001"], &storage);
-    let fp_baseline = dump
-        .get("fingerprint")
-        .and_then(Value::as_str)
-        .expect("fp");
+    let fp_baseline = dump.get("fingerprint").and_then(Value::as_str).expect("fp");
 
     let verify = run_cli(
         &[
@@ -221,7 +245,10 @@ fn fingerprint_cross_representation_baseline_verify() {
         ],
         &storage,
     );
-    assert_eq!(verify.get("drift").and_then(Value::as_array).map(Vec::len), Some(0));
+    assert_eq!(
+        verify.get("drift").and_then(Value::as_array).map(Vec::len),
+        Some(0)
+    );
     let dump2 = run_cli(&["live-dump", "999001"], &storage);
     assert_eq!(
         dump2.get("fingerprint").and_then(Value::as_str),
@@ -233,7 +260,11 @@ fn fingerprint_cross_representation_baseline_verify() {
 fn malformed_delta_rolls_back() {
     let storage = temp_storage("rollback");
     run_cli(
-        &["ingest", "--raw", fixture("baseline.json").to_str().unwrap()],
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
         &storage,
     );
     let before = run_cli(&["live-dump", "999001"], &storage);

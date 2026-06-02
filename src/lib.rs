@@ -1,20 +1,21 @@
-pub mod util;
-pub mod storage;
-pub mod capture;
-pub mod output;
-pub mod http;
 pub mod analyze;
-pub mod query;
-pub mod cli;
 pub mod bench;
-pub mod live;
-pub mod policy;
-pub mod write;
-pub mod stage3_cli;
-pub mod project;
+pub mod capture;
+pub mod cli;
 pub mod diff;
+pub mod http;
+pub mod live;
+pub mod output;
+pub mod policy;
+pub mod project;
+pub mod query;
+pub mod repomap;
+pub mod stage3_cli;
 pub mod stage4_cli;
+pub mod storage;
 pub mod update;
+pub mod util;
+pub mod write;
 
 pub use cli::run;
 

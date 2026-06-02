@@ -97,7 +97,10 @@ mod tests {
     fn normalize_newlines_collapses_crlf_and_cr() {
         assert_eq!(normalize_newlines("a\r\nb\rc"), "a\nb\nc");
         assert_eq!(normalize_newlines("already\nlf"), "already\nlf");
-        assert_eq!(normalize_newlines("a\r\nb\rc"), normalize_newlines("a\nb\nc"));
+        assert_eq!(
+            normalize_newlines("a\r\nb\rc"),
+            normalize_newlines("a\nb\nc")
+        );
     }
 
     #[test]
@@ -132,13 +135,18 @@ mod tests {
         let target = dir.join("sample.luau");
         atomic_write(&target, b"hello").unwrap();
         assert_eq!(fs::read(&target).unwrap(), b"hello");
-        assert!(fs::read_dir(&dir).unwrap().find(|entry| {
-            entry.as_ref().ok().is_some_and(|item| {
-                item.file_name()
-                    .to_str()
-                    .is_some_and(|name| name.ends_with(".tmp"))
-            })
-        }).is_none());
+        assert!(
+            fs::read_dir(&dir)
+                .unwrap()
+                .find(|entry| {
+                    entry.as_ref().ok().is_some_and(|item| {
+                        item.file_name()
+                            .to_str()
+                            .is_some_and(|name| name.ends_with(".tmp"))
+                    })
+                })
+                .is_none()
+        );
         fs::remove_dir_all(dir).ok();
     }
 

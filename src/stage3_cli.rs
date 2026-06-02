@@ -14,8 +14,7 @@ use crate::{
         resolve_repo_root,
     },
     write::{
-        BlockedReason, WriteMode, WriteOutcome, WriteRequest,
-        file::execute as execute_write,
+        BlockedReason, WriteMode, WriteOutcome, WriteRequest, file::execute as execute_write,
         safety::atomic_write,
     },
 };
@@ -82,8 +81,8 @@ pub(crate) struct WriteApplyArgs {
 }
 
 pub(crate) fn cmd_policy(args: PolicyArgs) -> Result<()> {
-    let repo_root = resolve_repo_root(args.repo_root.as_deref())
-        .map_err(|reason| anyhow!(reason.as_str()))?;
+    let repo_root =
+        resolve_repo_root(args.repo_root.as_deref()).map_err(|reason| anyhow!(reason.as_str()))?;
     match args.action {
         PolicyAction::Init { force } => cmd_policy_init(&repo_root, force),
         PolicyAction::Check => cmd_policy_check(&repo_root),
@@ -203,9 +202,17 @@ fn run_write_command(
     generated_by: Option<&str>,
     mode: WriteMode,
 ) -> Result<()> {
-    let content = fs::read(content_file)
-        .with_context(|| format!("read {}", content_file.display()))?;
-    let outcome = run_write(repo_root, rel_path, &content, place_id, expected_hash, generated_by, mode);
+    let content =
+        fs::read(content_file).with_context(|| format!("read {}", content_file.display()))?;
+    let outcome = run_write(
+        repo_root,
+        rel_path,
+        &content,
+        place_id,
+        expected_hash,
+        generated_by,
+        mode,
+    );
     print_write_outcome(&outcome)
 }
 

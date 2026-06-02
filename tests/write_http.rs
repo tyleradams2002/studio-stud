@@ -25,11 +25,7 @@ fn temp_repo(name: &str) -> PathBuf {
         fs::remove_dir_all(&dir).ok();
     }
     fs::create_dir_all(dir.join(".studio-stud")).unwrap();
-    fs::copy(
-        fixture("policy.json"),
-        dir.join(".studio-stud/policy.json"),
-    )
-    .unwrap();
+    fs::copy(fixture("policy.json"), dir.join(".studio-stud/policy.json")).unwrap();
     fs::create_dir_all(dir.join("synced")).ok();
     dir
 }
@@ -61,11 +57,8 @@ fn http_request(
     body: Option<&str>,
     headers: &[(&str, &str)],
 ) -> (u16, String) {
-    let mut stream =
-        TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to daemon");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(5)))
-        .ok();
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to daemon");
+    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
     let body_str = body.unwrap_or("");
     let mut req = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n",
@@ -150,13 +143,7 @@ fn write_http_token_matrix_and_status_codes() {
     let serve = start_serve(&repo, &storage);
     let port = serve.port;
 
-    let (_, token_body) = http_request(
-        "GET",
-        port,
-        "/studio-stud/write/token",
-        None,
-        &[],
-    );
+    let (_, token_body) = http_request("GET", port, "/studio-stud/write/token", None, &[]);
     let token = parse_json(&token_body)
         .get("token")
         .and_then(Value::as_str)
@@ -184,7 +171,10 @@ fn write_http_token_matrix_and_status_codes() {
         "POST",
         port,
         "/studio-stud/write/validate",
-        Some(&format!(r#"{{"path":"synced/foo.luau","content":{},"token":"{token}"}}"#, serde_json::to_string(&sample_content()).unwrap())),
+        Some(&format!(
+            r#"{{"path":"synced/foo.luau","content":{},"token":"{token}"}}"#,
+            serde_json::to_string(&sample_content()).unwrap()
+        )),
         &[],
     );
     assert_eq!(status, 200);
@@ -218,7 +208,9 @@ fn write_http_token_matrix_and_status_codes() {
     );
     assert_eq!(status, 401);
     assert_eq!(
-        parse_json(&body).get("blockedReason").and_then(Value::as_str),
+        parse_json(&body)
+            .get("blockedReason")
+            .and_then(Value::as_str),
         Some("tokenInvalid")
     );
 
@@ -231,7 +223,9 @@ fn write_http_token_matrix_and_status_codes() {
     );
     assert_eq!(status, 400);
     assert_eq!(
-        parse_json(&body).get("blockedReason").and_then(Value::as_str),
+        parse_json(&body)
+            .get("blockedReason")
+            .and_then(Value::as_str),
         Some("badRequest")
     );
 
@@ -248,7 +242,9 @@ fn write_http_token_matrix_and_status_codes() {
     );
     assert_eq!(status, 200);
     assert_eq!(
-        parse_json(&body).get("blockedReason").and_then(Value::as_str),
+        parse_json(&body)
+            .get("blockedReason")
+            .and_then(Value::as_str),
         Some("pathNotAllowed")
     );
 }
@@ -258,13 +254,10 @@ fn write_http_capture_ping_still_reachable() {
     let repo = temp_repo("capture");
     let storage = temp_storage("capture");
     let serve = start_serve(&repo, &storage);
-    let (status, body) = http_request(
-        "GET",
-        serve.port,
-        "/studio-stud/ping",
-        None,
-        &[],
-    );
+    let (status, body) = http_request("GET", serve.port, "/studio-stud/ping", None, &[]);
     assert_eq!(status, 200);
-    assert_eq!(parse_json(&body).get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        parse_json(&body).get("ok").and_then(Value::as_bool),
+        Some(true)
+    );
 }

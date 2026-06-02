@@ -1,6 +1,13 @@
 {
   "version": 1,
   "hooks": {
+    "beforeSubmitPrompt": [
+      {
+        "command": "pwsh -NoProfile -File ./.cursor/hooks/repo-map.ps1",
+        "matcher": "UserPromptSubmit",
+        "timeout": 20
+      }
+    ],
     "afterFileEdit": [
       { "command": "pwsh -NoProfile -File ./.cursor/hooks/format-after-edit.ps1" }
     ]

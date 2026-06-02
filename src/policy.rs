@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -8,7 +7,10 @@ use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::write::{BlockedReason, safety::{normalize_newlines, parse_luau}};
+use crate::write::{
+    BlockedReason,
+    safety::{normalize_newlines, parse_luau},
+};
 
 pub const AUTO_GENERATED_MARKER: &str = "-- AUTO-GENERATED";
 const DEFAULT_MAX_PATCH_BYTES: u64 = 1_048_576;
@@ -96,13 +98,11 @@ impl Policy {
     pub fn compile(self) -> Result<CompiledPolicy, String> {
         let mut allow_builder = GlobSetBuilder::new();
         for glob in &self.allowed_write_paths {
-            allow_builder
-                .add(Glob::new(glob).map_err(|err| err.to_string())?);
+            allow_builder.add(Glob::new(glob).map_err(|err| err.to_string())?);
         }
         let mut header_builder = GlobSetBuilder::new();
         for glob in &self.require_generated_header_paths {
-            header_builder
-                .add(Glob::new(glob).map_err(|err| err.to_string())?);
+            header_builder.add(Glob::new(glob).map_err(|err| err.to_string())?);
         }
         Ok(CompiledPolicy {
             allow_globs: allow_builder.build().map_err(|err| err.to_string())?,
@@ -257,9 +257,7 @@ pub fn check_path(
         return Some(BlockedReason::HeaderMissing);
     }
 
-    if requires_luau_parse(&normalized_path)
-        && parse_luau(&normalized_content).is_err()
-    {
+    if requires_luau_parse(&normalized_path) && parse_luau(&normalized_content).is_err() {
         return Some(BlockedReason::ParseError);
     }
 
@@ -368,18 +366,13 @@ pub fn requires_luau_parse(rel_path: &str) -> bool {
     rel_path.ends_with(".luau") || rel_path.ends_with(".lua")
 }
 
-pub fn resolve_write_target(
-    repo_root: &Path,
-    rel_path: &str,
-) -> Result<PathBuf, BlockedReason> {
+pub fn resolve_write_target(repo_root: &Path, rel_path: &str) -> Result<PathBuf, BlockedReason> {
     let normalized = normalize_rel_path(rel_path);
     if path_string_unsafe(&normalized) {
         return Err(BlockedReason::PathNotAllowed);
     }
     let abs = repo_root.join(normalized.replace('/', std::path::MAIN_SEPARATOR_STR));
-    let parent = abs
-        .parent()
-        .ok_or(BlockedReason::PathNotAllowed)?;
+    let parent = abs.parent().ok_or(BlockedReason::PathNotAllowed)?;
     if !parent.exists() {
         return Err(BlockedReason::PathNotAllowed);
     }
@@ -446,11 +439,14 @@ mod tests {
         ));
         fs::create_dir_all(dir.join("synced")).unwrap();
         fs::create_dir_all(dir.join(".studio-stud")).unwrap();
-        fs::write(dir.join(".studio-stud/policy.json"), r#"{
+        fs::write(
+            dir.join(".studio-stud/policy.json"),
+            r#"{
             "version": 1,
             "allowedWritePaths": ["synced/**/*.luau"],
             "maxPatchBytes": 1024
-        }"#)
+        }"#,
+        )
         .unwrap();
         let policy = load_policy(&dir).unwrap().unwrap().compile().unwrap();
         let content = b"--!strict\nreturn 1\n";

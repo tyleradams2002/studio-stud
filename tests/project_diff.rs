@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::PathBuf,
-    process::Command,
-};
+use std::{fs, path::PathBuf, process::Command};
 
 use serde_json::Value;
 
@@ -40,10 +36,7 @@ fn prepare_storage() -> PathBuf {
     }
     fs::create_dir_all(&tmp).expect("temp dir");
     let raw = fixture_actual();
-    let (_, ok) = run_cli(
-        &["ingest", "--raw", raw.to_str().unwrap()],
-        Some(&tmp),
-    );
+    let (_, ok) = run_cli(&["ingest", "--raw", raw.to_str().unwrap()], Some(&tmp));
     assert!(ok, "ingest fixture actual.json");
     tmp
 }
@@ -81,7 +74,10 @@ fn project_diff_fixture_counts_and_ownership() {
         .iter()
         .map(|k| summary[k].as_u64().unwrap())
         .sum();
-    assert_eq!(five, 10, "five DB category counts should equal instance rows");
+    assert_eq!(
+        five, 10,
+        "five DB category counts should equal instance rows"
+    );
 
     let extras: Vec<_> = v["categories"]["extraInStudio"]["items"]
         .as_array()
@@ -95,11 +91,13 @@ fn project_diff_fixture_counts_and_ownership() {
 
     let missing = &v["categories"]["missingInStudio"]["items"][0];
     assert!(missing["sourceHash"].as_str().is_some());
-    assert!(missing["studioPath"]
-        .as_str()
-        .unwrap()
-        .to_ascii_lowercase()
-        .contains("combat"));
+    assert!(
+        missing["studioPath"]
+            .as_str()
+            .unwrap()
+            .to_ascii_lowercase()
+            .contains("combat")
+    );
 }
 
 #[test]
@@ -178,8 +176,8 @@ fn project_projection_golden() {
     );
     assert!(ok);
     let normalized = normalize_projection_output(&stdout);
-    let golden_path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/golden/project_projection_fixture.txt");
+    let golden_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/golden/project_projection_fixture.txt");
     if std::env::var("UPDATE_GOLDENS").is_ok() {
         fs::write(&golden_path, &normalized).expect("write golden");
     } else if golden_path.is_file() {
@@ -192,8 +190,8 @@ fn project_projection_golden() {
 
 #[test]
 fn effective_ignore_unknown_unit() {
-    use studio_stud::project::{ProjectNode, PathNode, effective_ignore_unknown};
     use std::{collections::BTreeMap, path::PathBuf};
+    use studio_stud::project::{PathNode, ProjectNode, effective_ignore_unknown};
 
     let with_path = ProjectNode {
         class_name: None,

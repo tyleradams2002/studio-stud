@@ -13,22 +13,22 @@ use serde_json::{Value, json};
 use crate::analyze::cmd_analyze;
 use crate::bench::cmd_bench;
 use crate::capture::{decode_raw_snapshot, materialize_snapshot};
-use crate::http::{ServeConfig, daemon_json, handle_daemon_request, DaemonState};
+use crate::http::{DaemonState, ServeConfig, daemon_json, handle_daemon_request};
 use crate::live::{apply_delta, live_dump, parse_delta_request, verify_drift};
 use crate::output::live_state_compact_json;
-use crate::query::cmd_query;
 use crate::policy::resolve_repo_root;
+use crate::query::cmd_query;
 use crate::stage3_cli::{
-    PolicyArgs, WriteApplyArgs, WritePreviewArgs, WriteValidateArgs, cmd_policy,
-    cmd_write_apply, cmd_write_preview, cmd_write_validate, load_or_create_write_token,
+    PolicyArgs, WriteApplyArgs, WritePreviewArgs, WriteValidateArgs, cmd_policy, cmd_write_apply,
+    cmd_write_preview, cmd_write_validate, load_or_create_write_token,
 };
 use crate::stage4_cli::{ProjectArgs, cmd_project};
 use crate::storage::{
     Storage, find_studio_stud_dir, init_schema, read_live_state, remove_if_exists,
 };
 use crate::util::{
-    DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROJECT_KEY, DoctorCheck, PROTOCOL_VERSION,
-    display_path, fail, make_id, open_db, pass, warn,
+    DEFAULT_HOST, DEFAULT_PORT, DEFAULT_PROJECT_KEY, DoctorCheck, PROTOCOL_VERSION, display_path,
+    fail, make_id, open_db, pass, warn,
 };
 
 #[derive(Parser)]
@@ -214,7 +214,10 @@ pub(crate) enum Commands {
         args: PolicyArgs,
     },
     /// Read-only Rojo project index, projection, and diff.
-    #[command(name = "project", about = "Read-only Rojo project index, projection, and diff")]
+    #[command(
+        name = "project",
+        about = "Read-only Rojo project index, projection, and diff"
+    )]
     ProjectCmd {
         #[command(flatten)]
         args: ProjectArgs,
@@ -236,6 +239,28 @@ pub(crate) enum Commands {
     WriteApply {
         #[command(flatten)]
         args: WriteApplyArgs,
+    },
+    /// Generate the signature-only repo map (docs/repo-map.md).
+    #[command(name = "repo-map")]
+    RepoMap {
+        /// Source dir to scan (default: src).
+        #[arg(long)]
+        root: Option<PathBuf>,
+        /// Output file (defaults to docs/repo-map.md, or .jsonl with --json).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Emit JSONL instead of the text map.
+        #[arg(long)]
+        json: bool,
+        /// Print to stdout instead of writing a file.
+        #[arg(long)]
+        stdout: bool,
+        /// Skip regeneration when no source file is newer than the map.
+        #[arg(long = "if-stale")]
+        if_stale: bool,
+        /// Suppress the summary line (for hook/automation use).
+        #[arg(long)]
+        quiet: bool,
     },
 }
 
@@ -341,18 +366,34 @@ fn dispatch(cli: Cli) -> Result<()> {
         ),
         Commands::Capture { timeout, no_wait } => cmd_capture(timeout, no_wait),
         Commands::Update { check } => cmd_update(check),
-        Commands::Serve { host, port, no_update, common }
-        | Commands::Daemon { host, port, no_update, common } => {
-            cmd_serve(&host, port, &common, no_update)
+        Commands::Serve {
+            host,
+            port,
+            no_update,
+            common,
         }
+        | Commands::Daemon {
+            host,
+            port,
+            no_update,
+            common,
+        } => cmd_serve(&host, port, &common, no_update),
         Commands::Bench {
             raw,
             baseline,
             delta,
             iterations,
             json,
-        } => cmd_bench(&raw, baseline.as_deref(), delta.as_deref(), iterations, json),
-        Commands::LiveDelta { raw, place, common } => cmd_live_delta(&raw, place.as_deref(), &common),
+        } => cmd_bench(
+            &raw,
+            baseline.as_deref(),
+            delta.as_deref(),
+            iterations,
+            json,
+        ),
+        Commands::LiveDelta { raw, place, common } => {
+            cmd_live_delta(&raw, place.as_deref(), &common)
+        }
         Commands::LiveVerify { raw, place, common } => {
             cmd_live_verify(&raw, place.as_deref(), &common)
         }
@@ -362,6 +403,21 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::WriteValidate { args } => cmd_write_validate(args),
         Commands::WritePreview { args } => cmd_write_preview(args),
         Commands::WriteApply { args } => cmd_write_apply(args),
+        Commands::RepoMap {
+            root,
+            out,
+            json,
+            stdout,
+            if_stale,
+            quiet,
+        } => crate::repomap::cmd_repo_map(
+            root.as_deref(),
+            out.as_deref(),
+            json,
+            stdout,
+            if_stale,
+            quiet,
+        ),
     }
 }
 fn cmd_doctor(markdown: bool, include_paths: bool, common: &CommonArgs) -> Result<()> {
@@ -421,15 +477,13 @@ fn cmd_status(markdown: bool, include_paths: bool, common: &CommonArgs) -> Resul
                 continue;
             }
             let place_name = entry.file_name().to_string_lossy().to_string();
-            let live_json = open_db(&db_path)
-                .ok()
-                .and_then(|conn| {
-                    init_schema(&conn).ok()?;
-                    read_live_state(&conn)
-                        .ok()
-                        .flatten()
-                        .map(|state| live_state_compact_json(&state, include_paths, &place_name))
-                });
+            let live_json = open_db(&db_path).ok().and_then(|conn| {
+                init_schema(&conn).ok()?;
+                read_live_state(&conn)
+                    .ok()
+                    .flatten()
+                    .map(|state| live_state_compact_json(&state, include_paths, &place_name))
+            });
             places.push(json!({
                 "place": place_name,
                 "liveState": live_json,
@@ -458,10 +512,7 @@ fn cmd_status(markdown: bool, include_paths: bool, common: &CommonArgs) -> Resul
     if include_paths {
         payload.insert("storageRoot".into(), json!(storage.root));
     }
-    println!(
-        "{}",
-        serde_json::to_string(&Value::Object(payload))?
-    );
+    println!("{}", serde_json::to_string(&Value::Object(payload))?);
     Ok(())
 }
 
@@ -534,19 +585,20 @@ fn storage_check(common: &CommonArgs, include_paths: bool) -> DoctorCheck {
 }
 
 fn sqlite_check(common: &CommonArgs, include_paths: bool) -> DoctorCheck {
-    let result = Storage::new(common.storage_root.clone(), &common.project_key).and_then(|storage| {
-        let root = storage.root.join(&storage.project_key);
-        fs::create_dir_all(&root)?;
-        let db_path = root.join("doctor.sqlite");
-        {
-            let conn = open_db(&db_path)?;
-            init_schema(&conn)?;
-        }
-        remove_if_exists(&db_path)?;
-        remove_if_exists(&root.join("doctor.sqlite-wal"))?;
-        remove_if_exists(&root.join("doctor.sqlite-shm"))?;
-        Ok(db_path)
-    });
+    let result =
+        Storage::new(common.storage_root.clone(), &common.project_key).and_then(|storage| {
+            let root = storage.root.join(&storage.project_key);
+            fs::create_dir_all(&root)?;
+            let db_path = root.join("doctor.sqlite");
+            {
+                let conn = open_db(&db_path)?;
+                init_schema(&conn)?;
+            }
+            remove_if_exists(&db_path)?;
+            remove_if_exists(&root.join("doctor.sqlite-wal"))?;
+            remove_if_exists(&root.join("doctor.sqlite-shm"))?;
+            Ok(db_path)
+        });
     match result {
         Ok(db_path) => pass(
             "SQLite",
@@ -734,11 +786,7 @@ fn cmd_ingest(raw_path: &Path, common: &CommonArgs) -> Result<()> {
     let raw_bytes = fs::read(raw_path).with_context(|| format!("read {}", raw_path.display()))?;
     let raw_json = decode_raw_snapshot(&raw_bytes)?;
     let snapshot: Value = serde_json::from_str(&raw_json)?;
-    let result = materialize_snapshot(
-        &snapshot,
-        common.storage_root.clone(),
-        &common.project_key,
-    )?;
+    let result = materialize_snapshot(&snapshot, common.storage_root.clone(), &common.project_key)?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }
@@ -774,11 +822,7 @@ fn cmd_live_verify(raw_path: &Path, place: Option<&str>, common: &CommonArgs) ->
 }
 
 fn cmd_live_dump(place: Option<&str>, common: &CommonArgs) -> Result<()> {
-    let result = live_dump(
-        common.storage_root.clone(),
-        &common.project_key,
-        place,
-    )?;
+    let result = live_dump(common.storage_root.clone(), &common.project_key, place)?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }

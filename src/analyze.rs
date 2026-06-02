@@ -2,12 +2,12 @@ use anyhow::Result;
 use rusqlite::{Connection, params};
 use serde_json::{Value, json};
 
-use crate::cli::ReportView;
 use crate::cli::CommonArgs;
-use crate::query::query_find;
+use crate::cli::ReportView;
 use crate::query::ensure_readonly_query_schema;
-use crate::storage::{CaptureMeta, Storage, current_state, resolve_place, NO_BASELINE_MSG};
-use crate::util::{Finding, open_db_readonly, scalar_i64, STALE_DB_SCHEMA_MSG};
+use crate::query::query_find;
+use crate::storage::{CaptureMeta, NO_BASELINE_MSG, Storage, current_state, resolve_place};
+use crate::util::{Finding, STALE_DB_SCHEMA_MSG, open_db_readonly, scalar_i64};
 
 pub(crate) fn cmd_analyze(
     place: Option<&str>,
@@ -235,4 +235,3 @@ fn render_focus(
         serde_json::to_string_pretty(&focus_json(conn, capture, terms, limit)?)?
     ))
 }
-
