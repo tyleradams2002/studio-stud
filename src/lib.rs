@@ -5,6 +5,7 @@ pub mod cli;
 pub mod diff;
 pub mod http;
 pub mod live;
+pub mod obs;
 pub mod output;
 pub mod policy;
 pub mod project;
