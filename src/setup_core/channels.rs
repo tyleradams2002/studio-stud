@@ -251,6 +251,34 @@ pub fn record_channel_sequence(
         .insert(resolved.as_str().into(), json!(seq));
 }
 
+/// Best-effort install-time baseline: record the configured channel's current published
+/// `channelSequence` so the NEXT publish (seq+1) triggers an update even when the semver is
+/// unchanged (the headline dev workflow). No-op when a baseline already exists (repair/reinstall
+/// must preserve it), when resolving onto a fallback channel, or when the manifest can't be
+/// fetched/verified — offline installs simply degrade to the semver fallback in
+/// `channel_update_available_seq`.
+pub fn record_install_baseline_seq(cfg: &mut StudioStudConfig) {
+    let requested = Channel::from_str(&cfg.channel);
+    let existing = cfg
+        .last_channel_sequence
+        .get(requested.as_str())
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if existing != 0 {
+        return; // repair / reinstall: preserve the recorded baseline (and stay offline-safe)
+    }
+    let Ok((manifest, raw, resolved)) = fetch_manifest_with_fallback(requested) else {
+        return;
+    };
+    if resolved != requested {
+        return; // on fallback: let the real channel's first publish set the baseline
+    }
+    if verify_manifest_signature(&raw, &manifest).is_err() || manifest.channel_sequence == 0 {
+        return;
+    }
+    record_channel_sequence(cfg, resolved, manifest.channel_sequence);
+}
+
 pub fn last_channel_sequence_json(cfg: &StudioStudConfig) -> Map<String, Value> {
     cfg.last_channel_sequence.clone()
 }
@@ -360,6 +388,19 @@ mod tests {
         let mut cfg = StudioStudConfig::default();
         record_channel_sequence(&mut cfg, Channel::Beta, 7);
         assert_eq!(cfg.last_channel_sequence["beta"], json!(7));
+    }
+
+    #[test]
+    fn install_baseline_preserves_existing_sequence() {
+        // A machine that already has a recorded baseline (repair / reinstall) must not be reset.
+        // The guard returns before any network fetch, so this is also offline-safe in CI.
+        let mut cfg = StudioStudConfig {
+            channel: "release".into(),
+            ..StudioStudConfig::default()
+        };
+        record_channel_sequence(&mut cfg, Channel::Release, 5);
+        record_install_baseline_seq(&mut cfg);
+        assert_eq!(cfg.last_channel_sequence["release"], json!(5));
     }
 
     #[test]

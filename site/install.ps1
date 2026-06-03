@@ -52,7 +52,8 @@ function Invoke-Setup($dir) {
     $exe = Join-Path $dir 'studio-stud-setup.exe'
     if (-not (Test-Path $exe)) { throw "bundle missing studio-stud-setup.exe" }
     Write-Host "Launching installer..."
-    Start-Process -FilePath $exe -ArgumentList 'install' -Wait
+    # Pass the channel so the install is recorded against it (not the release default).
+    Start-Process -FilePath $exe -ArgumentList 'install', '--channel', $Channel -Wait
 }
 
 # Decrypt helper (PBKDF2-SHA256x200000 -> AES-256-CBC + HMAC), matches examples/encrypt-artifact.rs.
@@ -104,7 +105,7 @@ if ($manifest.bundleUrl) {
 if ($manifest.setupUrl) {
     $dest = Join-Path $work 'studio-stud-setup.exe'
     Invoke-WebRequest $manifest.setupUrl -OutFile $dest -UseBasicParsing
-    Start-Process -FilePath $dest -ArgumentList 'install' -Wait
+    Start-Process -FilePath $dest -ArgumentList 'install', '--channel', $Channel -Wait
     exit 0
 }
 throw "Manifest has no bundleUrl/bundleEncUrl/setupUrl."

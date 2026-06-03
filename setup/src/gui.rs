@@ -60,6 +60,9 @@ pub struct InstallApp {
     plugins_default_missing: bool,
     install_repos: bool,
     repos: Vec<String>,
+    /// Explicit channel threaded from the one-liner (`install --channel <ch>`); `None`
+    /// preserves the already-installed channel so a reinstall never silently flips to release.
+    channel: Option<String>,
     toasts: Vec<(ToastSeverity, String)>,
     phase: InstallPhase,
     install_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
@@ -71,6 +74,7 @@ struct InstallInputs {
     plugins_dir: String,
     install_repos: bool,
     repos: Vec<String>,
+    channel: Option<String>,
 }
 
 impl Default for InstallApp {
@@ -94,6 +98,7 @@ impl Default for InstallApp {
             plugins_default_missing: !exists,
             install_repos: false,
             repos: Vec::new(),
+            channel: None,
             toasts: Vec::new(),
             phase: InstallPhase::Editing,
             install_rx: None,
@@ -316,6 +321,7 @@ impl InstallApp {
             plugins_dir: self.plugins_dir.clone(),
             install_repos: self.install_repos,
             repos: self.repos.clone(),
+            channel: self.channel.clone(),
         };
         let (tx, rx) = std::sync::mpsc::channel();
         self.install_rx = Some(rx);
@@ -627,7 +633,13 @@ fn run_install(app: &InstallInputs) -> anyhow::Result<String> {
     let install_root = PathBuf::from(&app.install_root);
     let plugins_dir = PathBuf::from(&app.plugins_dir);
 
-    let cfg = load_config_or_default();
+    // An explicit installer channel (threaded from the one-liner) wins and is pre-applied so the
+    // bundle fetch targets it; otherwise the existing channel is preserved (`channel: None` below),
+    // so re-running the installer to add a repo never silently moves the machine onto release.
+    let mut cfg = load_config_or_default();
+    if let Some(ch) = &app.channel {
+        cfg.channel = ch.clone();
+    }
     let (daemon_src, plugin_src) = match (resolve_daemon_src(), resolve_plugin_src()) {
         (Some(d), Some(p)) => (d, p),
         _ => update_apply::fetch_channel_bundle(&cfg)?,
@@ -639,7 +651,7 @@ fn run_install(app: &InstallInputs) -> anyhow::Result<String> {
         daemon_src,
         plugin_src,
         repo_paths: app.repos.clone(),
-        channel: Some("release".into()),
+        channel: app.channel.clone(),
         daemon_version: env!("CARGO_PKG_VERSION").into(),
         plugin_version: String::new(),
         install_repos: app.install_repos,
@@ -1244,14 +1256,17 @@ fn native_options(title: &str) -> eframe::NativeOptions {
     }
 }
 
-pub fn run_install_gui() -> eframe::Result<()> {
+pub fn run_install_gui(channel: Option<String>) -> eframe::Result<()> {
     let opts = native_options("Studio Stud Setup");
     eframe::run_native(
         "Studio Stud Setup",
         opts,
-        Box::new(|cc| {
+        Box::new(move |cc| {
             apply_theme(&cc.egui_ctx);
-            Ok(Box::new(InstallApp::default()))
+            Ok(Box::new(InstallApp {
+                channel,
+                ..InstallApp::default()
+            }))
         }),
     )
 }

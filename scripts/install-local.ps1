@@ -9,15 +9,17 @@
 
   What it does:
     1. cargo build --workspace  (debug build, fast)
-    2. Optionally removes %LOCALAPPDATA%\studio-stud  so the installer treats this as a fresh machine.
-    3. Launches dist/studio-stud-setup.exe  (the real binary) with 'install', or 'install --no-gui' for headless.
+    2. Optionally removes the install root + app data so the installer treats this as a fresh machine.
+    3. Launches target\debug\studio-stud-setup.exe (the real binary) with 'install', or 'install --silent' for headless.
     4. Prints the install log so you can see what happened.
 
   Notes:
-    - CleanFirst removes %LOCALAPPDATA%\studio-stud and the PATH shim.
+    - Runs asInvoker (no elevation) — the installer only writes HKCU + %LOCALAPPDATA%, so this
+      exercises the same non-elevated path a real user gets.
+    - CleanFirst removes %LOCALAPPDATA%\Programs\StudioStud and %LOCALAPPDATA%\StudioStud and the PATH shim.
       It does NOT touch your Roblox plugins folder.
     - Run with -CleanFirst between test iterations to keep the test deterministic.
-    - The installer defaults the install root to %LOCALAPPDATA%\studio-stud — the same default
+    - The installer defaults the install root to %LOCALAPPDATA%\Programs\StudioStud — the same default
       a new user would see, so you are testing the real default path.
 #>
 param(
@@ -27,17 +29,8 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 
-# Re-launch as admin if not already elevated (installer requires it).
-$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
-    [Security.Principal.WindowsBuiltInRole]::Administrator)
-if (-not $isAdmin) {
-    Write-Host "Not running as administrator - re-launching elevated..."
-    $argList = @("-ExecutionPolicy", "Bypass", "-File", $PSCommandPath)
-    if ($CleanFirst) { $argList += "-CleanFirst" }
-    if ($Headless)   { $argList += "-Headless" }
-    Start-Process powershell -ArgumentList $argList -Verb RunAs -Wait
-    exit $LASTEXITCODE
-}
+# No elevation: the installer is asInvoker and only writes HKCU + %LOCALAPPDATA%, so running this
+# as a normal user exercises exactly the path a real user gets (don't re-launch as admin).
 
 # ---------- 1. Build ----------
 Write-Host "[1/4] Building workspace (debug)..."

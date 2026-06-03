@@ -116,6 +116,12 @@ jobs:
           name: dist-${{ github.sha }}
           path: dist/
 
+      - name: Download generated manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: manifest/
+
       - name: Encrypt artifact
         shell: pwsh
         run: |
@@ -138,7 +144,8 @@ jobs:
           } catch { $prevSeq = 0 }
           $nextSeq = $prevSeq + 1
 
-          $base     = Get-Content site/latest.json -Raw | ConvertFrom-Json
+          # Base off the CI-generated manifest (actual built version), not the committed file.
+          $base     = Get-Content manifest/latest.json -Raw | ConvertFrom-Json
           $pagesBase = 'https://tyleradams2002.github.io/studio-stud'
 
           $manifest = $base | Select-Object *
@@ -190,6 +197,12 @@ jobs:
           name: dist-${{ github.sha }}
           path: dist/
 
+      - name: Download generated manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: manifest/
+
       - name: Encrypt bundle
         shell: pwsh
         run: |
@@ -210,7 +223,8 @@ jobs:
             if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
           } catch { $prevSeq = 0 }
           $nextSeq = $prevSeq + 1
-          $base = Get-Content site/latest.json -Raw | ConvertFrom-Json
+          # Base off the CI-generated manifest (actual built version), not the committed file.
+          $base = Get-Content manifest/latest.json -Raw | ConvertFrom-Json
           $pagesBase = 'https://tyleradams2002.github.io/studio-stud'
           $manifest = $base | Select-Object *
           $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq -Force

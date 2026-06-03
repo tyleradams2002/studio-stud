@@ -156,8 +156,9 @@ pub fn install_path_shim(install_root: &Path) -> Result<()> {
         format!("{bin_str};{}", cleaned.join(";"))
     };
 
-    // setx writes to HKCU\Environment; best-effort.
-    let _ = Command::new("setx").args(["PATH", &new_path]).status();
+    // Write via .NET SetEnvironmentVariable (mirror of uninstall_path_shim): preserves the full
+    // value (setx truncates at 1024 chars) and broadcasts the change to new processes.
+    write_user_path_registry(&new_path);
 
     Ok(())
 }

@@ -12,11 +12,13 @@ use studio_stud::setup_core::channels::{
     Channel, channel_update_available_seq, check_anti_rollback, fetch_manifest_with_fallback,
     verify_manifest_signature,
 };
-use studio_stud::setup_core::config::{load_config_or_default, save_config};
+use studio_stud::setup_core::config::{load_config_or_default, register_repo, save_config};
 use studio_stud::setup_core::health::{
     health_json, repo_health_checks, repo_health_json, user_health_checks,
 };
-use studio_stud::setup_core::install::{default_install_root, migrate_legacy_repo, write_starter_policy};
+use studio_stud::setup_core::install::{
+    default_install_root, is_valid_repo_root, migrate_legacy_repo, write_starter_policy,
+};
 use studio_stud::update;
 
 use install_flow::{HeadlessInstallParams, resolve_daemon_src, resolve_plugin_src, run_install_headless};
@@ -40,6 +42,16 @@ enum Commands {
         daemon: Option<PathBuf>,
         #[arg(long)]
         plugin: Option<PathBuf>,
+        /// Channel this bundle was built for (release|beta|dev). Threaded from the
+        /// one-liner installer so a dev/beta install isn't recorded as release.
+        /// Omit to preserve the already-installed channel.
+        #[arg(long)]
+        channel: Option<String>,
+    },
+    /// Register a repo (config entry + committed .studio-stud/ scaffold) without the GUI
+    AddRepo {
+        /// Repo root to add (defaults to the current directory)
+        path: Option<PathBuf>,
     },
     /// Launch GUI uninstaller
     Uninstall,
@@ -64,16 +76,20 @@ fn main() -> Result<()> {
         silent: false,
         daemon: None,
         plugin: None,
+        channel: None,
     }) {
         Commands::Install {
             silent: true,
             daemon,
             plugin,
-        } => cmd_install_silent(daemon, plugin)?,
+            channel,
+        } => cmd_install_silent(daemon, plugin, channel)?,
         Commands::Install {
             silent: false,
+            channel,
             ..
-        } => gui::run_install_gui().map_err(|e| anyhow::anyhow!("{e}"))?,
+        } => gui::run_install_gui(channel).map_err(|e| anyhow::anyhow!("{e}"))?,
+        Commands::AddRepo { path } => cmd_add_repo(path, cli.json)?,
         Commands::Uninstall => gui::run_uninstall_gui().map_err(|e| anyhow::anyhow!("{e}"))?,
         Commands::Update { check } => cmd_update(check, cli.json)?,
         Commands::Health => cmd_health(cli.json)?,
@@ -84,8 +100,17 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn cmd_install_silent(daemon: Option<PathBuf>, plugin: Option<PathBuf>) -> Result<()> {
-    let cfg = load_config_or_default();
+fn cmd_install_silent(
+    daemon: Option<PathBuf>,
+    plugin: Option<PathBuf>,
+    channel: Option<String>,
+) -> Result<()> {
+    let mut cfg = load_config_or_default();
+    // Pre-apply an explicit channel so the bundle fetch targets it; when absent the
+    // existing channel is preserved.
+    if let Some(ch) = &channel {
+        cfg.channel = ch.clone();
+    }
     let install_root = if cfg.install_root.is_empty() {
         default_install_root()
     } else {
@@ -111,11 +136,57 @@ fn cmd_install_silent(daemon: Option<PathBuf>, plugin: Option<PathBuf>) -> Resul
         daemon_src,
         plugin_src,
         repo_paths,
-        channel: None,
+        channel,
         daemon_version,
         plugin_version: String::new(),
         install_repos: false,
     })?;
+    Ok(())
+}
+
+/// Register a repo and lay down its committed `.studio-stud/` scaffold without launching the
+/// GUI — the headless equivalent of adding a folder on the installer's Repos screen. Pins the
+/// repo's `targetChannel` to the machine's current channel and migrates any legacy per-repo shim.
+fn cmd_add_repo(path: Option<PathBuf>, as_json: bool) -> Result<()> {
+    let repo = match path {
+        Some(p) => p,
+        None => std::env::current_dir()?,
+    };
+    let repo = repo.canonicalize().unwrap_or(repo);
+    if !is_valid_repo_root(&repo) {
+        anyhow::bail!(
+            "{} is not a project root (expected a .git folder or default.project.json)",
+            repo.display()
+        );
+    }
+    let mut cfg = load_config_or_default();
+    let newly = register_repo(&mut cfg, &repo)?;
+    write_starter_policy(&repo, &cfg.channel)?;
+    let _ = migrate_legacy_repo(&repo, &mut cfg);
+    save_config(&cfg)?;
+    if as_json {
+        println!(
+            "{}",
+            json!({
+                "added": newly,
+                "repo": repo.display().to_string(),
+                "channel": cfg.channel,
+            })
+        );
+    } else if newly {
+        println!(
+            "Added {} (channel: {}). Committed .studio-stud/policy.json pins targetChannel to '{}'.",
+            repo.display(),
+            cfg.channel,
+            cfg.channel
+        );
+    } else {
+        println!(
+            "{} was already registered — refreshed its .studio-stud/ scaffold (channel: {}).",
+            repo.display(),
+            cfg.channel
+        );
+    }
     Ok(())
 }
 

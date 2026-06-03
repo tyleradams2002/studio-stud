@@ -17,8 +17,18 @@ local PROTOCOL_VERSION = 1
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
 -- MIN_DAEMON_PROTOCOL_VERSION, so each side can tell the user which one is behind.
 local MIN_DAEMON_PROTOCOL_VERSION = 1
--- Legacy release-only URL; plugin update nudge now comes from daemon ping (channel-aware).
-local UPDATE_INSTALL_HINT = "irm https://tyleradams2002.github.io/studio-stud/install.ps1 | iex"
+-- Channel-aware install one-liner for the "update available" nudge. The daemon ping reports the
+-- machine's channel; dev/beta point at their own bootstrap so following the hint never silently
+-- switches the user onto release.
+local function updateInstallHint(channel: any): string
+	local script = "install.ps1"
+	if channel == "beta" then
+		script = "install-beta.ps1"
+	elseif channel == "dev" then
+		script = "install-dev.ps1"
+	end
+	return ("irm https://tyleradams2002.github.io/studio-stud/%s | iex"):format(script)
+end
 local DEFAULT_TOOLBAR_ICON = "rbxassetid://14978048121"
 local SERVICE_NAME = "studio-stud"
 local DEFAULT_DAEMON_URL = "http://127.0.0.1:31878"
@@ -1852,7 +1862,7 @@ function CapturePanel.build(parent, ctx)
 				errorLabel.Text = ("Daemon protocol %d < plugin requires %d. Update: %s"):format(
 					daemonProtocol,
 					MIN_DAEMON_PROTOCOL_VERSION,
-					UPDATE_INSTALL_HINT
+					updateInstallHint(result.channel)
 				)
 				return {
 					ok = false,
@@ -1883,7 +1893,7 @@ function CapturePanel.build(parent, ctx)
 			local updateNote = checkRemoteUpdate(result)
 			if updateNote ~= "" then
 				ctx.setStatus("connected", ("Daemon %s — %s"):format(tostring(result.version or "unknown"), updateNote))
-				errorLabel.Text = updateNote .. "  (run: " .. UPDATE_INSTALL_HINT .. ")"
+				errorLabel.Text = updateNote .. "  (run: " .. updateInstallHint(result.channel) .. ")"
 			else
 				ctx.setStatus("connected", ("Daemon %s — listening for captures"):format(tostring(result.version or "unknown")))
 				errorLabel.Text = ""
