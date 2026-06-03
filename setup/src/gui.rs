@@ -535,6 +535,26 @@ impl InstallApp {
             InstallPhase::Done(msg) => {
                 section(ui, "All set", "Studio Stud is ready to use.");
                 success_card(ui, msg);
+                if self.install_repos && !self.repos.is_empty() {
+                    ui.add_space(M);
+                    card(ui, |ui| {
+                        ui.label(
+                            egui::RichText::new("Don't forget: commit & push")
+                                .color(theme::ACCENT)
+                                .strong(),
+                        );
+                        ui.add_space(XS);
+                        ui.label(
+                            egui::RichText::new(
+                                "Commit and push every project folder you just set up to GitHub. \
+                                 That shares the .studio-stud config (policy + ignore rules) so \
+                                 teammates get the same setup when they install.",
+                            )
+                            .color(theme::TEXT)
+                            .size(13.0),
+                        );
+                    });
+                }
                 ui.add_space(M);
                 if ghost_button(ui, "Open install folder").clicked() {
                     open_folder(Path::new(&self.install_root));
