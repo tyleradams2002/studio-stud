@@ -142,6 +142,9 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+        /// Emit timing spans for daemon operations (also logs per-request latency).
+        #[arg(long)]
+        profile: bool,
         /// Deprecated no-op (update is owned by studio-stud-setup).
         #[arg(long, hide = true)]
         no_update: bool,
@@ -371,15 +374,16 @@ fn dispatch(cli: Cli) -> Result<()> {
         Commands::Serve {
             host,
             port,
+            profile,
             no_update,
             common,
-        }
-        | Commands::Daemon {
+        } => cmd_serve(&host, port, &common, no_update, profile),
+        Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        } => cmd_serve(&host, port, &common, no_update),
+        } => cmd_serve(&host, port, &common, no_update, false),
         Commands::Bench {
             raw,
             baseline,
@@ -713,7 +717,7 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Result<()> {
+fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool, profile: bool) -> Result<()> {
     crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
@@ -727,6 +731,7 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
         )
     })?;
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
+    crate::obs::init(&storage.root, profile);
     let mut user_cfg = crate::setup_core::load_config_or_default();
     if let Ok(cwd_repo) = resolve_repo_root(None) {
         let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
@@ -788,9 +793,13 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
+    let version = env!("CARGO_PKG_VERSION");
+    crate::obs::event(
+        "serve",
+        &format!("Studio Stud v{version} on http://{address}"),
+    );
     println!(
-        "Studio Stud v{} serving plugin capture requests on http://{address}",
-        env!("CARGO_PKG_VERSION")
+        "Studio Stud v{version} serving plugin capture requests on http://{address}"
     );
     println!("Storage root: {}", storage.root.display());
     println!(
@@ -824,7 +833,7 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
                     Err(_) => break,
                 };
                 if let Err(err) = handle_daemon_request(request, Arc::clone(&state), &config) {
-                    eprintln!("request failed: {err:#}");
+                    crate::obs::event("http-error", &format!("request failed: {err:#}"));
                 }
             }
         }));

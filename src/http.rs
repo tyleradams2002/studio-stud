@@ -7,7 +7,7 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Result, anyhow};
@@ -73,11 +73,14 @@ pub(crate) fn handle_daemon_request(
     state: Arc<Mutex<DaemonState>>,
     config: &ServeConfig,
 ) -> Result<()> {
+    let started = Instant::now();
     let storage_root = config.storage_root.clone();
     let project_key = config.project_key.as_str();
     let method = request.method().clone();
+    let method_label = method.to_string();
     let url = request.url().to_string();
     let (path, query) = split_url(&url);
+    let path_label = path.clone();
     let result = (|| -> Result<Value> {
         Ok(match (method, path.as_str()) {
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
@@ -230,6 +233,14 @@ pub(crate) fn handle_daemon_request(
             (tiny_http::Method::Post, "/studio-stud/live/delta") => {
                 let payload = read_request_json(&mut request)?;
                 let delta = parse_delta_request(&payload)?;
+                crate::obs::event(
+                    "live-delta",
+                    &format!(
+                        "RECV delta upserted={} removed={}",
+                        delta.upserted.len(),
+                        delta.removed.len()
+                    ),
+                );
                 let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
                 set_active_place(&storage, &delta.place_id);
                 apply_delta(
@@ -343,10 +354,15 @@ pub(crate) fn handle_daemon_request(
     let (status, payload) = match result {
         Ok(value) => (map_response_status(&value), value),
         Err(err) => {
-            eprintln!("request failed: {err:#}");
+            crate::obs::event("http-error", &format!("{method_label} {path_label}: {err:#}"));
             (503, json!({ "ok": false, "error": format!("{err:#}") }))
         }
     };
+    let ms = started.elapsed().as_millis();
+    crate::obs::event(
+        "http",
+        &format!("{method_label} {path_label} -> {status} ({ms} ms)"),
+    );
     respond_json(request, status, &payload)
 }
 
