@@ -76,7 +76,7 @@ $manifest.PSObject.Properties.Remove('bundleUrl')
 
 # ---------- 6. Sign manifest (Rust canonicalizes — pass the unsigned manifest file) ----------
 $unsignedPath = Join-Path $outDir 'latest.unsigned.json'
-$manifest | ConvertTo-Json -Depth 10 | Set-Content $unsignedPath -Encoding utf8
+[System.IO.File]::WriteAllText($unsignedPath, ($manifest | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 Write-Host "Signing manifest..."
 $signOutput = cargo run --quiet --example sign-manifest -- `
     --privkey $privKeyHex `
@@ -85,7 +85,7 @@ if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed: $signOutput" }
 $sigB64 = $signOutput.Trim()
 
 $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64 -Force
-$manifest | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $outDir 'latest.json') -Encoding utf8
+[System.IO.File]::WriteAllText((Join-Path $outDir 'latest.json'), ($manifest | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
 Remove-Item $unsignedPath -ErrorAction SilentlyContinue
 
 Write-Host ""

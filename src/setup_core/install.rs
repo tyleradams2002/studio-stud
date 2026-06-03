@@ -101,7 +101,7 @@ pub fn install_core_plugin(plugins_dir: &Path, plugin_src: &Path) -> Result<()> 
     Ok(())
 }
 
-pub fn write_starter_policy(repo_root: &Path) -> Result<()> {
+pub fn write_starter_policy(repo_root: &Path, channel: &str) -> Result<()> {
     let policy_dir = repo_root.join(".studio-stud");
     fs::create_dir_all(&policy_dir)?;
 
@@ -112,8 +112,12 @@ pub fn write_starter_policy(repo_root: &Path) -> Result<()> {
 
     let policy_path = policy_dir.join("policy.json");
     if !policy_path.is_file() {
+        // Pin the repo to the channel of whoever installs first. Committed and
+        // shared, so teammates on other channels are blocked from writing until
+        // they match (see policy::channel_pin_violation).
         let starter = json!({
             "version": 1,
+            "targetChannel": channel,
             "allowedPlaceIds": [],
             "allowedWritePaths": [],
             "requireGeneratedHeaderPaths": [],

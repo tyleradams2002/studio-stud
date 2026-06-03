@@ -19,6 +19,12 @@ const DEFAULT_UNSUPPORTED: &str = "block";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
+    /// Channel this repo is pinned to (e.g. "release"). When set and the running
+    /// build is on a different channel, writes are blocked. Absent = no pin.
+    /// Added with `#[serde(default)]` so older daemons ignore it (see
+    /// `.cursor/rules/policy-schema-compat.mdc`).
+    #[serde(default)]
+    pub target_channel: Option<String>,
     #[serde(default)]
     pub allowed_place_ids: Vec<i64>,
     #[serde(default)]
@@ -132,6 +138,7 @@ impl CompiledPolicy {
 
 pub fn default_policy() -> Policy {
     Policy {
+        target_channel: None,
         allowed_place_ids: vec![100_000_000_000_001, 100_000_000_000_003],
         allowed_write_paths: Vec::new(),
         require_generated_header_paths: Vec::new(),
@@ -354,6 +361,28 @@ fn place_allowed(policy: &Policy, place_id: Option<i64>) -> bool {
         || place_id.is_none()
 }
 
+/// Returns a block reason + human detail when the repo pins a `targetChannel` that
+/// differs from the channel this build is running on. `None` when there is no pin,
+/// the pin is blank, or the channels match (case-insensitive). The caller supplies
+/// `running_channel` and decides any override, keeping this function pure.
+pub fn channel_pin_violation(
+    policy: &Policy,
+    running_channel: &str,
+) -> Option<(BlockedReason, String)> {
+    let target = policy.target_channel.as_deref()?.trim();
+    if target.is_empty() || target.eq_ignore_ascii_case(running_channel.trim()) {
+        return None;
+    }
+    Some((
+        BlockedReason::ChannelMismatch,
+        format!(
+            "This repo is pinned to the '{target}' channel but this build is running on \
+             '{running_channel}'. Reinstall on the '{target}' channel, or set \
+             STUDIO_STUD_ALLOW_CHANNEL_MISMATCH=1 to override for this command."
+        ),
+    ))
+}
+
 pub fn has_generated_header(content: &str) -> bool {
     content
         .lines()
@@ -424,6 +453,29 @@ mod tests {
         let mut policy = default_policy();
         policy.allowed_write_paths = vec!["[".to_string()];
         assert!(policy.compile().is_err());
+    }
+
+    #[test]
+    fn channel_pin_only_blocks_on_mismatch() {
+        let mut policy = default_policy();
+
+        // No pin → never blocks, regardless of running channel.
+        assert!(channel_pin_violation(&policy, "dev").is_none());
+
+        // Pinned and matching (case-insensitive) → allowed.
+        policy.target_channel = Some("release".to_string());
+        assert!(channel_pin_violation(&policy, "release").is_none());
+        assert!(channel_pin_violation(&policy, "RELEASE").is_none());
+
+        // Blank pin is treated as no pin.
+        policy.target_channel = Some("  ".to_string());
+        assert!(channel_pin_violation(&policy, "dev").is_none());
+
+        // Pinned to release, running dev → blocked with a ChannelMismatch reason.
+        policy.target_channel = Some("release".to_string());
+        let (reason, detail) = channel_pin_violation(&policy, "dev").expect("should block");
+        assert_eq!(reason, BlockedReason::ChannelMismatch);
+        assert!(detail.contains("release") && detail.contains("dev"));
     }
 
     #[test]

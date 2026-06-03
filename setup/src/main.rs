@@ -232,7 +232,7 @@ fn cmd_repair(as_json: bool) -> Result<()> {
     })?;
     for repo in cfg.repos.clone() {
         let p = PathBuf::from(&repo.path);
-        write_starter_policy(&p)?;
+        write_starter_policy(&p, &cfg.channel)?;
         let _ = migrate_legacy_repo(&p, &mut cfg);
     }
     save_config(&cfg)?;
@@ -256,7 +256,7 @@ fn cmd_repo_health(path: &PathBuf, as_json: bool) -> Result<()> {
 
 fn cmd_repo_repair(path: &PathBuf, as_json: bool) -> Result<()> {
     let mut cfg = load_config_or_default();
-    write_starter_policy(path)?;
+    write_starter_policy(path, &cfg.channel)?;
     migrate_legacy_repo(path, &mut cfg)?;
     save_config(&cfg)?;
     if !as_json {

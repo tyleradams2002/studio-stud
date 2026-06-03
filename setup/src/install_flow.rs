@@ -56,7 +56,7 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
         for r in &params.repo_paths {
             let p = PathBuf::from(r);
             register_repo(&mut cfg, &p)?;
-            write_starter_policy(&p)?;
+            write_starter_policy(&p, &cfg.channel)?;
             let _ = migrate_legacy_repo(&p, &mut cfg);
         }
     }
