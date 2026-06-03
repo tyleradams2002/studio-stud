@@ -41,6 +41,7 @@ fn normalize(text: &str) -> String {
         .replace(" )", ")")
         .replace(" ,", ",")
         .replace(" ;", ";")
+        .replace(",)", ")")
         .trim()
         .to_string()
 }
@@ -241,17 +242,16 @@ fn is_stale(root: &Path, out_path: &Path) -> bool {
     let Ok(out_mtime) = fs::metadata(out_path).and_then(|m| m.modified()) else {
         return true;
     };
-    if let Some(src_mtime) = newest_source_mtime(root) {
-        if src_mtime > out_mtime {
-            return true;
-        }
+    if let Some(src_mtime) = newest_source_mtime(root)
+        && src_mtime > out_mtime
+    {
+        return true;
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Ok(exe_mtime) = fs::metadata(&exe).and_then(|m| m.modified()) {
-            if exe_mtime > out_mtime {
-                return true;
-            }
-        }
+    if let Ok(exe) = std::env::current_exe()
+        && let Ok(exe_mtime) = fs::metadata(&exe).and_then(|m| m.modified())
+        && exe_mtime > out_mtime
+    {
+        return true;
     }
     false
 }

@@ -49,10 +49,10 @@ pub(crate) struct Finding {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct DoctorCheck {
-    pub(crate) name: String,
-    pub(crate) status: String,
-    pub(crate) detail: String,
+pub struct DoctorCheck {
+    pub name: String,
+    pub status: String,
+    pub detail: String,
 }
 
 pub(crate) fn pass(name: &str, detail: String) -> DoctorCheck {
@@ -176,7 +176,7 @@ pub(crate) fn value_to_string(value: Option<&Value>) -> Option<String> {
     }
 }
 
-pub(crate) fn now_utc() -> String {
+pub fn now_utc() -> String {
     Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 pub(crate) fn str_field(value: &Value, key: &str) -> String {

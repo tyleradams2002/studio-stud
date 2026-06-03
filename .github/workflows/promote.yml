@@ -1,0 +1,97 @@
+name: Promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Which promotion to open
+        required: true
+        type: choice
+        options:
+          - development → beta
+          - beta → main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr:
+    name: Open promotion PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve head / base
+        id: refs
+        run: |
+          if [ "${{ inputs.channel }}" = "development → beta" ]; then
+            echo "head=development" >> $GITHUB_OUTPUT
+            echo "base=beta"        >> $GITHUB_OUTPUT
+            echo "label=promote: dev → beta" >> $GITHUB_OUTPUT
+          else
+            echo "head=beta"   >> $GITHUB_OUTPUT
+            echo "base=main"   >> $GITHUB_OUTPUT
+            echo "label=promote: beta → main" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Check for diff
+        id: diff
+        run: |
+          COUNT=$(git rev-list --count origin/${{ steps.refs.outputs.base }}..origin/${{ steps.refs.outputs.head }})
+          echo "commits=$COUNT" >> $GITHUB_OUTPUT
+          echo "$COUNT commit(s) ahead of ${{ steps.refs.outputs.base }}"
+
+      - name: Abort if nothing to promote
+        if: steps.diff.outputs.commits == '0'
+        run: |
+          echo "::notice::${{ steps.refs.outputs.head }} is already up to date with ${{ steps.refs.outputs.base }} — nothing to promote."
+          exit 0
+
+      - name: Open PR (or update existing)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD=${{ steps.refs.outputs.head }}
+          BASE=${{ steps.refs.outputs.base }}
+          LABEL="${{ steps.refs.outputs.label }}"
+          COMMITS=${{ steps.diff.outputs.commits }}
+
+          # Build a commit log for the PR body
+          LOG=$(git log --oneline origin/$BASE..origin/$HEAD | head -30)
+
+          BODY="## What's in this promotion
+
+          Promoting **\`$HEAD\`** → **\`$BASE\`** ($COMMITS commit(s)).
+
+          <details>
+          <summary>Commit log</summary>
+
+          \`\`\`
+          $LOG
+          \`\`\`
+
+          </details>
+
+          ## Checklist
+          - [ ] CI passes on \`$HEAD\`
+          - [ ] Manually tested locally (\`.\scripts\install-local.ps1 -CleanFirst\`)
+          - [ ] CHANGELOG / version bump if needed"
+
+          # Check if a PR already exists for this head→base pair
+          EXISTING=$(gh pr list \
+            --head "$HEAD" --base "$BASE" \
+            --state open --json number --jq '.[0].number' 2>/dev/null || echo "")
+
+          if [ -n "$EXISTING" ]; then
+            echo "::notice::PR #$EXISTING already exists — updated body."
+            gh pr edit "$EXISTING" --body "$BODY"
+          else
+            gh pr create \
+              --head "$HEAD" \
+              --base "$BASE" \
+              --title "$LABEL ($COMMITS commits)" \
+              --body "$BODY"
+          fi

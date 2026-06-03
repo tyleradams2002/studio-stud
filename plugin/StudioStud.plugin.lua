@@ -10,15 +10,25 @@ local UserInputService = game:GetService("UserInputService")
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.3.7"
+local PLUGIN_VERSION = "0.4.9"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
 -- MIN_DAEMON_PROTOCOL_VERSION, so each side can tell the user which one is behind.
 local MIN_DAEMON_PROTOCOL_VERSION = 1
-local UPDATE_MANIFEST_URL = "https://tyleradams2002.github.io/studio-stud/latest.json"
-local UPDATE_INSTALL_HINT = "irm https://tyleradams2002.github.io/studio-stud/install.ps1 | iex"
+-- Channel-aware install one-liner for the "update available" nudge. The daemon ping reports the
+-- machine's channel; dev/beta point at their own bootstrap so following the hint never silently
+-- switches the user onto release.
+local function updateInstallHint(channel: any): string
+	local script = "install.ps1"
+	if channel == "beta" then
+		script = "install-beta.ps1"
+	elseif channel == "dev" then
+		script = "install-dev.ps1"
+	end
+	return ("irm https://tyleradams2002.github.io/studio-stud/%s | iex"):format(script)
+end
 local DEFAULT_TOOLBAR_ICON = "rbxassetid://14978048121"
 local SERVICE_NAME = "studio-stud"
 local DEFAULT_DAEMON_URL = "http://127.0.0.1:31878"
@@ -56,11 +66,10 @@ end
 
 local resolvedLogoAssetId = normalizePluginAssetId(PLUGIN_LOGO_ASSET_ID)
 
--- Throttled remote update check against the published release manifest. Returns a
--- short note ("Update available: ...") or "" when current. Best-effort; never throws.
+-- Update nudge comes from daemon /studio-stud/ping (channel-aware). Best-effort; never throws.
 -- State is bundled in one table to keep module-scope locals low (Luau 200-register limit).
 local updateCheck = { at = 0, note = "", done = false }
-local function checkRemoteUpdate(daemonVersion: string): string
+local function checkRemoteUpdate(pingResult: any): string
 	local now = os.time()
 	if updateCheck.done and (now - updateCheck.at) < 86400 then
 		return updateCheck.note
@@ -69,45 +78,24 @@ local function checkRemoteUpdate(daemonVersion: string): string
 	updateCheck.at = now
 	updateCheck.note = ""
 
-	local function isNewer(latest: any, current: string): boolean
-		if type(latest) ~= "string" or latest == "" then
-			return false
-		end
-		local function parts(s: string): { number }
-			local t = {}
-			for n in s:gmatch("%d+") do
-				t[#t + 1] = tonumber(n) or 0
-			end
-			return t
-		end
-		local a, b = parts(latest), parts(current)
-		for i = 1, math.max(#a, #b) do
-			local x, y = a[i] or 0, b[i] or 0
-			if x ~= y then
-				return x > y
-			end
-		end
-		return false
-	end
-
-	local ok, body = pcall(function()
-		return HttpService:GetAsync(UPDATE_MANIFEST_URL, true)
-	end)
-	if not ok or type(body) ~= "string" then
+	if type(pingResult) ~= "table" then
 		return updateCheck.note
 	end
-	local okDecode, manifest = pcall(function()
-		return HttpService:JSONDecode(body)
-	end)
-	if not okDecode or type(manifest) ~= "table" then
+	if pingResult.onFallback == true then
+		return updateCheck.note
+	end
+	if pingResult.updateAvailable ~= true then
 		return updateCheck.note
 	end
 	local notes = {}
-	if isNewer(manifest.pluginVersion, PLUGIN_VERSION) then
-		notes[#notes + 1] = ("plugin %s"):format(tostring(manifest.pluginVersion))
+	if type(pingResult.latestPluginVersion) == "string"
+		and pingResult.latestPluginVersion ~= ""
+		and pingResult.latestPluginVersion ~= PLUGIN_VERSION
+	then
+		notes[#notes + 1] = ("plugin %s"):format(pingResult.latestPluginVersion)
 	end
-	if daemonVersion ~= "" and isNewer(manifest.daemonVersion, daemonVersion) then
-		notes[#notes + 1] = ("daemon %s"):format(tostring(manifest.daemonVersion))
+	if type(pingResult.latestDaemonVersion) == "string" and pingResult.latestDaemonVersion ~= "" then
+		notes[#notes + 1] = ("daemon %s"):format(pingResult.latestDaemonVersion)
 	end
 	if #notes > 0 then
 		updateCheck.note = "Update available: " .. table.concat(notes, ", ")
@@ -1874,7 +1862,7 @@ function CapturePanel.build(parent, ctx)
 				errorLabel.Text = ("Daemon protocol %d < plugin requires %d. Update: %s"):format(
 					daemonProtocol,
 					MIN_DAEMON_PROTOCOL_VERSION,
-					UPDATE_INSTALL_HINT
+					updateInstallHint(result.channel)
 				)
 				return {
 					ok = false,
@@ -1902,10 +1890,10 @@ function CapturePanel.build(parent, ctx)
 			end
 			ctx.setConnected(true)
 			setConnectButtonState()
-			local updateNote = checkRemoteUpdate(tostring(result.version or ""))
+			local updateNote = checkRemoteUpdate(result)
 			if updateNote ~= "" then
 				ctx.setStatus("connected", ("Daemon %s — %s"):format(tostring(result.version or "unknown"), updateNote))
-				errorLabel.Text = updateNote .. "  (run: " .. UPDATE_INSTALL_HINT .. ")"
+				errorLabel.Text = updateNote .. "  (run: " .. updateInstallHint(result.channel) .. ")"
 			else
 				ctx.setStatus("connected", ("Daemon %s — listening for captures"):format(tostring(result.version or "unknown")))
 				errorLabel.Text = ""
@@ -3116,6 +3104,86 @@ function Shell.buildSettingsOverlay(parent)
 		debugButton.Text = debugEnabled and "Debug logs: ON" or "Debug logs: OFF"
 	end)
 	y += 48
+
+	Ui.makeSectionLabel(scroll, "Addon plugins", y)
+	y += 18
+	local addonsNote = Ui.makeLabel(
+		scroll,
+		"Bundled addons install into your Roblox Plugins folder for this repo. Reload Studio if a panel does not appear.",
+		y,
+		36,
+		Theme.muted
+	)
+	addonsNote.TextSize = 11
+	y += 40
+	local addonsList = Instance.new("Frame")
+	addonsList.Name = "AddonsList"
+	addonsList.BackgroundTransparency = 1
+	addonsList.Position = UDim2.fromOffset(Theme.PAD, y)
+	addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 28)
+	addonsList.Parent = scroll
+
+	local function renderAddons()
+		for _, child in ipairs(addonsList:GetChildren()) do
+			child:Destroy()
+		end
+		local placeId = 0
+		pcall(function()
+			placeId = game.PlaceId
+		end)
+		local okCtx, ctx = Transport.requestJson("GET", "/studio-stud/context?placeId=" .. tostring(placeId), nil)
+		if okCtx and type(ctx) == "table" and ctx.status == "unbound" then
+			local hint = Ui.makeLabel(addonsList, "Place not bound to a repo — open installer or bind in daemon.", 0, 40, Theme.muted)
+			hint.TextSize = 11
+			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 44)
+			return
+		end
+		local ok, result = Transport.requestJson("GET", "/studio-stud/addons?placeId=" .. tostring(placeId), nil)
+		if not ok or type(result) ~= "table" or type(result.addons) ~= "table" then
+			local err = Ui.makeLabel(addonsList, "Could not load addons (is `studio-stud serve` running?)", 0, 32, Theme.muted)
+			err.TextSize = 11
+			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
+			return
+		end
+		local rowY = 0
+		for _, addon in ipairs(result.addons) do
+			local id = addon.id
+			local enabled = addon.enabled == true
+			local row = Instance.new("Frame")
+			row.BackgroundTransparency = 1
+			row.Size = UDim2.new(1, 0, 0, 28)
+			row.Position = UDim2.fromOffset(0, rowY)
+			row.Parent = addonsList
+			local nameLabel = Instance.new("TextLabel")
+			nameLabel.BackgroundTransparency = 1
+			nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+			nameLabel.FontFace = Theme.UI_FONT
+			nameLabel.TextColor3 = Theme.body
+			nameLabel.TextSize = 13
+			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+			nameLabel.Text = tostring(id)
+			nameLabel.Parent = row
+			local toggle = Ui.makeSecondaryButton(row, enabled and "Enabled" or "Disabled")
+			toggle.Size = UDim2.new(0.32, 0, 1, 0)
+			toggle.Position = UDim2.new(0.68, 0, 0, 0)
+			toggle.MouseButton1Click:Connect(function()
+				local path = enabled and "/studio-stud/addons/disable" or "/studio-stud/addons/enable"
+				local okW, res = Transport.requestJsonAuthed("POST", path, {
+					id = id,
+					placeId = placeId,
+				})
+				if not okW then
+					warn("[StudioStud] addon toggle failed:", res)
+				end
+				renderAddons()
+			end)
+			toggle.Parent = row
+			rowY += 32
+		end
+		addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, math.max(rowY, 28))
+	end
+	renderAddons()
+	y += 120
 
 	Ui.makeSectionLabel(scroll, "Tabs", y)
 	y += 18

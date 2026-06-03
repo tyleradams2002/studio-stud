@@ -1,0 +1,67 @@
+---
+description: Policy schema must always be backward compatible — no manual version tracking, no breaking changes
+globs: src/policy.rs,**/.studio-stud/policy.json,tests/fixtures/**/policy.json
+alwaysApply: false
+---
+
+# Policy Schema: Always Backward Compatible
+
+`policy.json` is git-tracked and shared across every user of the repo. Users may be on
+different daemon versions. **The schema must always be readable by any older daemon without
+manual version tracking or manual migration steps.**
+
+There is no version constant to bump. There is no `MAX_POLICY_VERSION`. Backward compatibility
+is enforced by construction — by following these rules every time.
+
+## Adding a field (the only allowed way to extend the schema)
+
+Every new field on `Policy` in `src/policy.rs` **must** carry `#[serde(default)]`.
+
+```rust
+// ✅ CORRECT — older daemons that don't know this field get the default
+#[serde(default)]
+pub my_new_cap: Option<u64>,
+
+// ❌ WRONG — older daemons will fail to deserialize the file
+pub my_new_cap: u64,
+```
+
+Serde ignores unknown fields when deserializing, so a file written by a newer daemon is
+always loadable by an older one.
+
+## Removing or renaming a field (never allowed)
+
+**Never remove or rename a field.** An older file still contains the old key; removing it
+from the struct means the daemon silently ignores data the user set intentionally.
+
+If a field is obsolete:
+- Mark it with a `// DEPRECATED` comment
+- Keep it in the struct with `#[serde(default)]`
+- Stop reading it in logic, but keep deserializing it so old files remain valid
+
+```rust
+// ✅ CORRECT — keeps old files valid, stops using the value
+/// DEPRECATED: replaced by `newCap`. Kept for backward-compatible deserialization.
+#[serde(default)]
+pub old_cap: Option<u64>,
+```
+
+## Changing a field's type or meaning (not allowed — add a new field instead)
+
+If the semantics of an existing field need to change, add a **new field** alongside the old
+one. The migration logic in `load_policy()` / `compile()` reads the old field and derives
+the new field's value when the new one is absent.
+
+```rust
+// Old field stays, new field added with default
+#[serde(default)]
+pub lease: Option<Value>,          // original
+#[serde(default)]
+pub lease_v2: Option<LeaseConfig>, // new shape — derived from `lease` when absent
+```
+
+## All existing fields already comply
+
+Every field on `Policy` already carries `#[serde(default)]` or `#[serde(default = "fn")]`.
+Any new field must follow the same pattern — the linter/compiler will not catch a missing
+default, so this rule is the enforcement.

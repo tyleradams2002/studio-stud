@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use crate::{
     policy::{
-        default_policy, explain_path, load_compiled_policy, load_policy, policy_path,
-        resolve_repo_root,
+        Policy, channel_pin_violation, default_policy, explain_path, load_compiled_policy,
+        load_policy, policy_path, resolve_repo_root,
     },
     write::{
         BlockedReason, WriteMode, WriteOutcome, WriteRequest, file::execute as execute_write,
@@ -233,9 +233,37 @@ pub(crate) fn run_write(
         place_id,
     };
     match load_compiled_policy(repo_root) {
-        Ok(Some(compiled)) => execute_write(repo_root, &compiled, &req, mode),
+        Ok(Some(compiled)) => {
+            if let Some((reason, detail)) = channel_pin_check(compiled.policy()) {
+                return WriteOutcome::blocked(reason, rel_path, Some(detail));
+            }
+            execute_write(repo_root, &compiled, &req, mode)
+        }
         Ok(None) => WriteOutcome::blocked(BlockedReason::NoPolicy, rel_path, None),
         Err((reason, detail)) => WriteOutcome::blocked(reason, rel_path, detail),
+    }
+}
+
+/// Enforce the repo's `targetChannel` pin against the channel this machine is on.
+/// Short-circuits with no disk read when the repo has no pin, and yields to the
+/// `STUDIO_STUD_ALLOW_CHANNEL_MISMATCH` escape hatch.
+fn channel_pin_check(policy: &Policy) -> Option<(BlockedReason, String)> {
+    // No pin → nothing to check, and we avoid reading machine config on every write.
+    policy.target_channel.as_deref()?;
+    if channel_mismatch_overridden() {
+        return None;
+    }
+    let running = crate::setup_core::config::load_config_or_default().channel;
+    channel_pin_violation(policy, &running)
+}
+
+fn channel_mismatch_overridden() -> bool {
+    match std::env::var("STUDIO_STUD_ALLOW_CHANNEL_MISMATCH") {
+        Ok(v) => {
+            let v = v.trim();
+            !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false")
+        }
+        Err(_) => false,
     }
 }
 
