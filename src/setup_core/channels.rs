@@ -206,6 +206,27 @@ pub fn channel_update_available(
     !manifest_version.is_empty() && manifest_version != installed
 }
 
+/// Sequence-aware update check. Prefer the monotonic `channelSequence` (advances on every publish,
+/// even when the semver version is unchanged). Fall back to a semver compare only when no baseline
+/// sequence has been recorded yet (e.g. a just-installed machine that hasn't stored one).
+pub fn channel_update_available_seq(
+    on_fallback: bool,
+    manifest_seq: u64,
+    last_seen_seq: u64,
+    manifest_version: &str,
+    installed: &str,
+) -> bool {
+    if on_fallback {
+        return false;
+    }
+    if last_seen_seq == 0 {
+        return !manifest_version.is_empty()
+            && manifest_version != installed
+            && crate::update::is_newer(manifest_version, installed);
+    }
+    manifest_seq > last_seen_seq
+}
+
 pub fn record_channel_sequence(
     cfg: &mut StudioStudConfig,
     resolved: Channel,
@@ -286,6 +307,16 @@ mod tests {
         assert!(!channel_update_available(false, "0.4.0", "0.4.0"));
         assert!(channel_update_available(false, "0.5.0", "0.4.0"));
         assert!(channel_update_available(false, "0.4.9", "0.5.0"));
+    }
+
+    #[test]
+    fn seq_trigger_fires_on_higher_sequence_same_version() {
+        // baseline seq 3, published seq 4, same version => update
+        assert!(channel_update_available_seq(false, 4, 3, "0.4.0", "0.4.0"));
+        // no baseline yet, same version => no update (semver fallback)
+        assert!(!channel_update_available_seq(false, 4, 0, "0.4.0", "0.4.0"));
+        // fallback channel => never
+        assert!(!channel_update_available_seq(true, 9, 1, "0.9.0", "0.4.0"));
     }
 
     #[test]
