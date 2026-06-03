@@ -71,6 +71,8 @@ $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nex
 $manifest | Add-Member -NotePropertyName bundleEncUrl -NotePropertyValue "$PagesBase/$Channel/studio-stud-bundle.zip.enc" -Force
 $manifest.PSObject.Properties.Remove('setupUrl')
 $manifest.PSObject.Properties.Remove('setupEncUrl')
+# Encrypted channel: drop the plain release bundleUrl so clients can't bypass the password gate.
+$manifest.PSObject.Properties.Remove('bundleUrl')
 
 # ---------- 6. Sign manifest (Rust canonicalizes — pass the unsigned manifest file) ----------
 $unsignedPath = Join-Path $outDir 'latest.unsigned.json'

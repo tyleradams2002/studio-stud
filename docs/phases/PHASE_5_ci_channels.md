@@ -110,6 +110,7 @@ Add a `deploy-beta` job mirroring `deploy-dev`, gated on the `beta` branch:
           $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq -Force
           $manifest | Add-Member -NotePropertyName bundleEncUrl -NotePropertyValue "$pagesBase/beta/studio-stud-bundle.zip.enc" -Force
           $manifest.PSObject.Properties.Remove('setupUrl')
+          $manifest.PSObject.Properties.Remove('bundleUrl')   # encrypted channel: no plain bundle, force the password path
           $unsigned = 'site/beta/latest.unsigned.json'
           $manifest | ConvertTo-Json -Depth 10 | Set-Content $unsigned -Encoding utf8
           $sigB64 = cargo run --quiet --example sign-manifest -- `

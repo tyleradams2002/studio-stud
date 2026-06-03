@@ -127,6 +127,7 @@ jobs:
           $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq     -Force
           $manifest | Add-Member -NotePropertyName bundleEncUrl    -NotePropertyValue "$pagesBase/dev/studio-stud-bundle.zip.enc" -Force
           $manifest.PSObject.Properties.Remove('setupUrl')
+          $manifest.PSObject.Properties.Remove('bundleUrl')
 
           $unsigned = 'site/dev/latest.unsigned.json'
           $manifest | ConvertTo-Json -Depth 10 | Set-Content $unsigned -Encoding utf8
