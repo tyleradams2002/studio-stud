@@ -3,10 +3,9 @@
   <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
     <security>
       <requestedPrivileges>
-        <!-- requireAdministrator: always prompt for elevation via UAC.
-             Installation writes to user PATH (registry) and program dirs,
-             which is reliable from an elevated context. -->
-        <requestedExecutionLevel level="requireAdministrator" uiAccess="false"/>
+        <!-- asInvoker: no elevation. All writes target HKCU (user PATH) and
+             %LOCALAPPDATA% (install root, plugins, config) — user-owned, no admin needed. -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
       </requestedPrivileges>
     </security>
   </trustInfo>

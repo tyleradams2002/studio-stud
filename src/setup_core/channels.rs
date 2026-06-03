@@ -125,10 +125,10 @@ pub fn verify_manifest_signature(raw: &Value, manifest: &ChannelManifest) -> Res
     let verifying_key = VerifyingKey::from_bytes(&key_bytes)
         .map_err(|e| anyhow!("invalid public key: {e}"))?;
 
-    let sig_b64 = manifest
-        .signature
-        .as_deref()
-        .ok_or_else(|| anyhow!("manifest has no signature field"))?;
+    let Some(sig_b64) = manifest.signature.as_deref() else {
+        // Unsigned channel (release): nothing to verify.
+        return Ok(());
+    };
     let sig_bytes = B64.decode(sig_b64)
         .map_err(|e| anyhow!("bad signature base64: {e}"))?;
     let sig_arr: [u8; 64] = sig_bytes
@@ -285,5 +285,17 @@ mod tests {
         let mut cfg = StudioStudConfig::default();
         record_channel_sequence(&mut cfg, Channel::Beta, 7);
         assert_eq!(cfg.last_channel_sequence["beta"], json!(7));
+    }
+
+    #[test]
+    fn verify_skips_when_signature_absent() {
+        // Real-looking embedded key path is irrelevant: absent signature => Ok regardless.
+        let raw = json!({
+            "daemonVersion": "0.4.0",
+            "pluginVersion": "0.3.7",
+            "channelSequence": 1
+        });
+        let m: ChannelManifest = serde_json::from_value(raw.clone()).unwrap();
+        assert!(verify_manifest_signature(&raw, &m).is_ok());
     }
 }

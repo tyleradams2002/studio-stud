@@ -1,7 +1,6 @@
 fn main() {
-    // Embed an explicit asInvoker manifest so Windows doesn't auto-elevate the binary
-    // based on its name containing "setup". Without this, `cargo test` fails in non-admin
-    // terminals with "The requested operation requires elevation" (os error 740).
+    // Embed asInvoker intentionally: all setup writes are HKCU (user PATH) and
+    // %LOCALAPPDATA% (install root, plugins, config) — no elevation required.
     #[cfg(target_os = "windows")]
     {
         let mut res = winresource::WindowsResource::new();

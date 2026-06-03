@@ -51,11 +51,10 @@ if (-not (Test-Path $SetupExe)) {
 
 # ---------- 2. Optional clean ----------
 if ($CleanFirst) {
-    $installRoot = Join-Path $env:LOCALAPPDATA 'studio-stud'
+    $installRoot = Join-Path $env:LOCALAPPDATA 'Programs\StudioStud'
     Write-Host "[2/4] CleanFirst: removing $installRoot ..."
     if (Test-Path $installRoot) {
-        # Gracefully stop the daemon first if it's running
-        $lockFile = Join-Path $installRoot 'daemon.lock'
+        $lockFile = Join-Path $env:LOCALAPPDATA 'StudioStud\daemon.lock'
         if (Test-Path $lockFile) {
             try {
                 $lock = Get-Content $lockFile | ConvertFrom-Json
@@ -67,14 +66,10 @@ if ($CleanFirst) {
             } catch {}
         }
         Remove-Item $installRoot -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "    Removed $installRoot"
     }
-    # Remove PATH shim if present
-    $shimDir = Join-Path $env:LOCALAPPDATA 'studio-stud-bin'
-    if (Test-Path $shimDir) {
-        Remove-Item $shimDir -Recurse -Force -ErrorAction SilentlyContinue
-        Write-Host "    Removed PATH shim dir $shimDir"
-    }
+    # Clear the registry/config too so the installer treats this as a fresh machine.
+    $configDir = Join-Path $env:LOCALAPPDATA 'StudioStud'
+    if (Test-Path $configDir) { Remove-Item $configDir -Recurse -Force -ErrorAction SilentlyContinue }
 } else {
     Write-Host "[2/4] Skipping clean (use -CleanFirst for a fully fresh test)"
 }
@@ -84,7 +79,7 @@ Write-Host "[3/4] Launching: $SetupExe install"
 Write-Host "      (This is the same binary a user would download - testing the real install path)"
 Write-Host ""
 if ($Headless) {
-    & $SetupExe install --no-gui
+    & $SetupExe install --silent
 } else {
     & $SetupExe install
 }

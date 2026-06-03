@@ -142,8 +142,8 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
@@ -155,13 +155,14 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
     },
-    /// Check for (and stage) a newer Studio Stud release.
+    /// Deprecated: update is owned by studio-stud-setup. Kept as a no-op alias.
+    #[command(hide = true)]
     Update {
         /// Only report availability; do not download or stage.
         #[arg(long)]
