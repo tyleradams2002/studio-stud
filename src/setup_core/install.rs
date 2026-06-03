@@ -11,6 +11,18 @@ use super::config::{StudioStudConfig, daemon_lock_path};
 pub const LEGACY_TOOL_DIR: &str = ".studio-stud-tool";
 pub const REPO_MARKER: &str = ".studio-stud/.installed";
 
+const STUDIO_STUD_DIR_GITIGNORE: &str = "\
+# Studio Stud — per-repo managed folder.
+# COMMITTED (shared across all developers): policy.json, addons/, this file.
+# IGNORED (per-machine, never commit): everything else
+#   .installed, base-ledger/, stash/, merge/, write.token, *.tmp, cache/
+*
+!.gitignore
+!policy.json
+!addons/
+!addons/**
+";
+
 pub fn default_install_root() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -91,22 +103,31 @@ pub fn install_core_plugin(plugins_dir: &Path, plugin_src: &Path) -> Result<()> 
 
 pub fn write_starter_policy(repo_root: &Path) -> Result<()> {
     let policy_dir = repo_root.join(".studio-stud");
-    let policy_path = policy_dir.join("policy.json");
-    if policy_path.is_file() {
-        return Ok(());
-    }
     fs::create_dir_all(&policy_dir)?;
-    let starter = json!({
-        "version": 1,
-        "allowedPlaceIds": [],
-        "allowedWritePaths": [],
-        "requireGeneratedHeaderPaths": [],
-        "maxPatchBytes": 1048576,
-        "maxPatchItems": 500,
-        "maxDeleteCount": 50,
-    });
-    fs::write(&policy_path, serde_json::to_string_pretty(&starter)?)?;
-    fs::write(repo_root.join(REPO_MARKER), crate::util::now_utc())?;
+
+    let gitignore_path = policy_dir.join(".gitignore");
+    if !gitignore_path.is_file() {
+        fs::write(&gitignore_path, STUDIO_STUD_DIR_GITIGNORE)?;
+    }
+
+    let policy_path = policy_dir.join("policy.json");
+    if !policy_path.is_file() {
+        let starter = json!({
+            "version": 1,
+            "allowedPlaceIds": [],
+            "allowedWritePaths": [],
+            "requireGeneratedHeaderPaths": [],
+            "maxPatchBytes": 1048576,
+            "maxPatchItems": 500,
+            "maxDeleteCount": 50,
+        });
+        fs::write(&policy_path, serde_json::to_string_pretty(&starter)?)?;
+    }
+
+    let marker = repo_root.join(REPO_MARKER);
+    if !marker.is_file() {
+        fs::write(&marker, crate::util::now_utc())?;
+    }
     Ok(())
 }
 
