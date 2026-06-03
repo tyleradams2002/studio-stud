@@ -199,6 +199,98 @@ fn read_user_path_registry() -> Option<String> {
     }
 }
 
+/// Remove Studio Stud's bin directory from the user PATH — the mirror of
+/// `install_path_shim`. Deliberately conservative: it only strips entries that
+/// are provably ours — the exact configured install bin (`known_bin`), a
+/// `…/StudioStud/bin` (or `…/studio-stud/bin`) directory, or a directory holding
+/// a per-repo `studio-stud` shim. A path that merely *contains* the substring
+/// "studio-stud" (e.g. an entry living under a similarly named user profile) is
+/// left untouched, and the PATH is rewritten only when something actually matched.
+pub fn uninstall_path_shim(known_bin: Option<&Path>) -> Result<()> {
+    let Some(user_path) = read_user_path_registry() else {
+        return Ok(());
+    };
+    let known = known_bin.map(|p| p.display().to_string());
+    if let Some(new_path) = path_without_studio_stud(&user_path, known.as_deref()) {
+        write_user_path_registry(&new_path);
+    }
+    Ok(())
+}
+
+/// Pure filter behind `uninstall_path_shim`: drop Studio Stud entries from a
+/// `;`-separated PATH. Returns `Some(new_path)` only when an entry was removed,
+/// so callers never rewrite an untouched PATH.
+fn path_without_studio_stud(user_path: &str, known_bin: Option<&str>) -> Option<String> {
+    let known = known_bin.map(norm_path_key);
+    let segments: Vec<&str> = user_path.split(';').collect();
+    let non_empty = segments.iter().filter(|p| !p.is_empty()).count();
+    let kept: Vec<&str> = segments
+        .into_iter()
+        .filter(|p| !p.is_empty())
+        .filter(|p| {
+            let is_known = known
+                .as_ref()
+                .map(|k| &norm_path_key(p) == k)
+                .unwrap_or(false);
+            !(is_known || is_studio_stud_path_entry(p))
+        })
+        .collect();
+    if kept.len() == non_empty {
+        None
+    } else {
+        Some(kept.join(";"))
+    }
+}
+
+/// Normalize a path string for case-insensitive equality (lowercase, forward
+/// slashes folded to back, trailing separators trimmed). Textual only — never
+/// touches the filesystem, so it works on already-deleted paths.
+fn norm_path_key(s: &str) -> String {
+    s.trim()
+        .trim_end_matches(['\\', '/'])
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
+/// Precise structural check for a Studio Stud install / shim bin directory.
+/// Matches `…/StudioStud/bin` (or `…/studio-stud/bin`) by directory structure,
+/// or any directory that holds a per-repo `studio-stud` shim. Crucially it does
+/// NOT match on a loose substring, so unrelated entries are preserved.
+fn is_studio_stud_path_entry(entry: &str) -> bool {
+    let path = Path::new(entry.trim());
+    let leaf_is_bin = path
+        .file_name()
+        .map(|n| n.eq_ignore_ascii_case("bin"))
+        .unwrap_or(false);
+    if leaf_is_bin
+        && let Some(parent) = path.parent().and_then(Path::file_name)
+    {
+        let pl = parent.to_string_lossy().to_lowercase();
+        if pl == "studiostud" || pl == "studio-stud" {
+            return true;
+        }
+    }
+    path.join("studio-stud.cmd").is_file() || path.join("studio-stud.exe").is_file()
+}
+
+#[cfg(windows)]
+fn write_user_path_registry(new_path: &str) {
+    // Write via .NET so the full value is preserved (setx truncates at 1024 chars)
+    // and the change is broadcast to new processes. The value is passed through an
+    // env var to avoid any quoting/escaping pitfalls.
+    let _ = Command::new("powershell")
+        .env("SS_NEW_PATH", new_path)
+        .args([
+            "-NoProfile",
+            "-Command",
+            "[Environment]::SetEnvironmentVariable('PATH', $env:SS_NEW_PATH, 'User')",
+        ])
+        .status();
+}
+
+#[cfg(not(windows))]
+fn write_user_path_registry(_new_path: &str) {}
+
 pub fn stop_daemon_graceful(write_token: &str, port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/studio-stud/admin/shutdown");
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -407,5 +499,44 @@ mod tests {
         assert!(plugins_dir.join(addon_id).join("addon.json").is_file());
 
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn path_filter_strips_known_install_bin() {
+        let p = r"C:\Windows;C:\Users\tyler\AppData\Local\Programs\StudioStud\bin;C:\Tools\bin";
+        let out = path_without_studio_stud(
+            p,
+            Some(r"C:\Users\tyler\AppData\Local\Programs\StudioStud\bin"),
+        )
+        .unwrap();
+        assert_eq!(out, r"C:\Windows;C:\Tools\bin");
+    }
+
+    #[test]
+    fn path_filter_matches_default_layout_without_known_bin() {
+        // Even without the configured path, the …/StudioStud/bin structure is recognized.
+        let p = r"C:\Windows;C:\Users\me\AppData\Local\Programs\StudioStud\bin";
+        assert_eq!(path_without_studio_stud(p, None).unwrap(), r"C:\Windows");
+    }
+
+    #[test]
+    fn path_filter_preserves_lookalike_username() {
+        // A profile literally named "studiostud" must not drag unrelated entries out.
+        let p = r"C:\Users\studiostud\AppData\Local\OtherTool\bin;C:\Windows";
+        assert!(path_without_studio_stud(p, None).is_none());
+    }
+
+    #[test]
+    fn path_filter_returns_none_when_absent() {
+        let p = r"C:\Windows;C:\Tools\bin";
+        assert!(path_without_studio_stud(p, None).is_none());
+    }
+
+    #[test]
+    fn path_filter_handles_custom_install_location() {
+        // Custom install root: matched only via the known-bin path, not structure.
+        let p = r"D:\apps\StudioStudCustom\bin;C:\Windows";
+        let out = path_without_studio_stud(p, Some(r"D:\apps\StudioStudCustom\bin")).unwrap();
+        assert_eq!(out, r"C:\Windows");
     }
 }

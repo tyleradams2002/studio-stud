@@ -3,9 +3,12 @@ use std::path::{Path, PathBuf};
 use crate::theme;
 
 use eframe::egui::{self, CentralPanel, ScrollArea, TopBottomPanel, ViewportCommand};
-use studio_stud::setup_core::config::{StudioStudConfig, load_config_or_default, save_config};
+use studio_stud::setup_core::config::{
+    StudioStudConfig, config_dir, load_config_or_default, save_config, write_token_path,
+};
 use studio_stud::setup_core::install::{
-    default_install_root, default_plugins_dir, is_valid_repo_root, repo_already_registered,
+    LEGACY_TOOL_DIR, default_install_root, default_plugins_dir, is_valid_repo_root,
+    read_daemon_lock_port, repo_already_registered, stop_daemon_graceful, uninstall_path_shim,
 };
 
 use crate::install_flow::{HeadlessInstallParams, resolve_daemon_src, resolve_plugin_src, run_install_headless};
@@ -905,13 +908,15 @@ impl UninstallApp {
             checkbox_row(
                 ui,
                 &mut self.remove_user,
-                "Remove user installation (daemon, plugin copy, config)",
+                "Remove user installation (daemon, plugin, PATH, app data)",
             );
             ui.add_space(S);
             ui.label(
                 egui::RichText::new(
-                    "This deletes the install folder, removes the plugin from your Plugins \
-                     directory, and clears registry config.",
+                    "Deletes the install folder, removes the core plugin and add-ons from your \
+                     Plugins folder, removes the PATH entry, and clears all Studio Stud app data \
+                     (config and captured snapshots). Your Plugins folder and other plugins are \
+                     left untouched.",
                 )
                 .color(theme::MUTED)
                 .size(12.0),
@@ -1015,7 +1020,7 @@ impl UninstallApp {
                 ui,
                 "User installation",
                 if self.remove_user {
-                    "Remove (daemon, plugin, config)"
+                    "Remove (install, plugin, PATH, app data)"
                 } else {
                     "Keep"
                 },
@@ -1050,29 +1055,178 @@ impl UninstallApp {
 }
 
 fn run_uninstall(app: &UninstallInputs) -> anyhow::Result<String> {
-    let mut cfg = load_config_or_default();
+    // Snapshot the config up front: every app-owned path we delete is read from it
+    // before anything is removed (the config file itself goes during user removal).
+    let cfg = load_config_or_default();
+
     if app.remove_user {
-        let root = PathBuf::from(&cfg.install_root);
-        if root.exists() {
-            std::fs::remove_dir_all(&root).ok();
-        }
-        let plugin = PathBuf::from(&cfg.plugins_dir).join("StudioStud.plugin.lua");
-        std::fs::remove_file(plugin).ok();
-        let _ = studio_stud::setup_core::config::remove_daemon_lock();
+        remove_user_install(&cfg);
     }
+
+    let mut repos_cleaned = 0usize;
     for (path, selected) in &app.repo_paths {
-        if !selected {
+        if !*selected {
             continue;
         }
-        let p = PathBuf::from(path);
-        let _ = std::fs::remove_dir_all(p.join(".studio-stud"));
-        cfg.repos.retain(|r| !r.path.eq_ignore_ascii_case(path));
+        remove_repo_items(Path::new(path));
+        repos_cleaned += 1;
     }
+
+    // Persist the registry. When the user installation is removed, the whole app
+    // data directory (including config.json) is already gone — recreating it would
+    // leave a stray file behind, so we don't save. Otherwise drop the cleaned repos
+    // from the registry and write it back.
+    if !app.remove_user {
+        let mut cfg = cfg;
+        for (path, selected) in &app.repo_paths {
+            if *selected {
+                cfg.repos.retain(|r| !r.path.eq_ignore_ascii_case(path));
+            }
+        }
+        save_config(&cfg)?;
+    }
+
+    let mut parts = Vec::new();
     if app.remove_user {
-        cfg = StudioStudConfig::default();
+        parts.push(
+            "Removed the Studio Stud install, core plugin, add-ons, PATH entry, and all app \
+             data (config and captured snapshots)."
+                .to_string(),
+        );
     }
-    save_config(&cfg)?;
-    Ok("Uninstall complete.".into())
+    if repos_cleaned > 0 {
+        parts.push(format!(
+            "Removed Studio Stud files from {repos_cleaned} project folder(s)."
+        ));
+    }
+    if parts.is_empty() {
+        parts.push("Nothing was selected to remove.".to_string());
+    }
+    Ok(parts.join("\n\n"))
+}
+
+/// Remove everything the installer created at the user level. Each step is
+/// best-effort and independently guarded so one failure can't strand the rest,
+/// and only paths this app creates are ever touched — the shared Roblox Plugins
+/// folder and unrelated PATH entries are preserved.
+fn remove_user_install(cfg: &StudioStudConfig) {
+    // 1. Stop a running daemon first so its exe (inside the install root) isn't
+    //    locked when we try to delete it. Best-effort; no-op if nothing is running.
+    if let Some(port) = read_daemon_lock_port() {
+        let token = std::fs::read_to_string(write_token_path()).unwrap_or_default();
+        let _ = stop_daemon_graceful(token.trim(), port);
+    }
+
+    // 2. Strip our bin directory from the user PATH (mirror of install_path_shim).
+    let known_bin = if cfg.install_root.trim().is_empty() {
+        None
+    } else {
+        Some(PathBuf::from(&cfg.install_root).join("bin"))
+    };
+    let _ = uninstall_path_shim(known_bin.as_deref());
+
+    // 3. Plugins folder: remove only the files/folders we placed there — never the
+    //    folder itself, which belongs to Roblox and holds the user's other plugins.
+    if !cfg.plugins_dir.trim().is_empty() {
+        let plugins_dir = PathBuf::from(&cfg.plugins_dir);
+        let core = plugins_dir.join("StudioStud.plugin.lua");
+        if core.is_file() {
+            let _ = std::fs::remove_file(&core);
+        }
+        for addon_id in known_addon_ids(cfg) {
+            remove_app_addon_dir(&plugins_dir, &addon_id);
+        }
+    }
+
+    // 4. Install root — guarded so a corrupted config can't aim the deleter at an
+    //    unrelated directory.
+    if let Some(root) = our_install_root(cfg) {
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // 5. The app data directory (config.json, daemon.lock, write.token, and every
+    //    captured place snapshot). This whole directory is created and owned by
+    //    Studio Stud, at a fixed location — safe to remove wholesale.
+    let app_data = config_dir();
+    if app_data.is_dir() {
+        let _ = std::fs::remove_dir_all(&app_data);
+    }
+}
+
+/// The configured install root, but only when it exists and actually contains a
+/// Studio Stud payload. Returns `None` (delete nothing) otherwise.
+fn our_install_root(cfg: &StudioStudConfig) -> Option<PathBuf> {
+    if cfg.install_root.trim().is_empty() {
+        return None;
+    }
+    let root = PathBuf::from(&cfg.install_root);
+    if !root.is_dir() {
+        return None;
+    }
+    let looks_ours = root.join("version.json").is_file()
+        || root.join("bin").join("studio-stud.exe").is_file()
+        || root.join("bin").join("studio-stud-setup.exe").is_file();
+    looks_ours.then_some(root)
+}
+
+/// Addon ids this machine may have copied into the Plugins folder: the per-machine
+/// enabled cache across all registered repos, plus any bundled addon payloads still
+/// present under the install root.
+fn known_addon_ids(cfg: &StudioStudConfig) -> Vec<String> {
+    let mut ids: Vec<String> = Vec::new();
+    let push = |id: String, ids: &mut Vec<String>| {
+        if !id.is_empty() && !ids.iter().any(|x| x == &id) {
+            ids.push(id);
+        }
+    };
+    for repo in &cfg.repos {
+        for id in &repo.enabled_addons {
+            push(id.clone(), &mut ids);
+        }
+    }
+    if !cfg.install_root.trim().is_empty() {
+        let addons = PathBuf::from(&cfg.install_root).join("addons");
+        if let Ok(entries) = std::fs::read_dir(&addons) {
+            for entry in entries.flatten() {
+                if entry.path().join("addon.json").is_file() {
+                    push(entry.file_name().to_string_lossy().to_string(), &mut ids);
+                }
+            }
+        }
+    }
+    ids
+}
+
+/// Remove an addon folder from the Plugins dir, but only when it carries an
+/// `addon.json` marker — that proves Studio Stud laid it down, so an unrelated
+/// user plugin that merely shares the name is never deleted.
+fn remove_app_addon_dir(plugins_dir: &Path, addon_id: &str) {
+    if addon_id.is_empty() {
+        return;
+    }
+    let dir = plugins_dir.join(addon_id);
+    if dir.join("addon.json").is_file() {
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Remove every Studio Stud-created file from a repo: the managed `.studio-stud`
+/// folder plus any legacy per-repo shims. Nothing else in the repo is touched.
+fn remove_repo_items(repo: &Path) {
+    let managed = repo.join(".studio-stud");
+    if managed.is_dir() {
+        let _ = std::fs::remove_dir_all(&managed);
+    }
+    let legacy = repo.join(LEGACY_TOOL_DIR);
+    if legacy.is_dir() {
+        let _ = std::fs::remove_dir_all(&legacy);
+    }
+    for shim in ["studio-stud.ps1", "studio-stud.cmd"] {
+        let p = repo.join(shim);
+        if p.is_file() {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
 }
 
 fn native_options(title: &str) -> eframe::NativeOptions {
