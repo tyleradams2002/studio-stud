@@ -60,3 +60,5 @@ path = "examples/sign-manifest.rs"
 
 [dev-dependencies]
 serde_json = "1.0.150"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"
