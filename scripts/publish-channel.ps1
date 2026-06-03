@@ -41,16 +41,16 @@ $dist = Join-Path $Root 'dist'
 $setupExe = Join-Path $dist 'studio-stud-setup.exe'
 if (-not (Test-Path $setupExe)) { throw 'package-release.ps1 did not produce dist/studio-stud-setup.exe' }
 
-# ---------- 3. Encrypt setup exe with AEAD ----------
-Write-Host "Encrypting $Channel artifact..."
+# ---------- 3. Encrypt the bundle zip ----------
+Write-Host "Encrypting $Channel bundle..."
 $outDir = Join-Path $Root "site/$Channel"
 New-Item -ItemType Directory -Force $outDir | Out-Null
-$encPath = Join-Path $outDir 'studio-stud-setup.exe.enc'
-
-# Call the encrypt-artifact Rust example (reads stdin, writes stdout)
+$bundleZip = Join-Path $dist 'studio-stud-bundle.zip'
+if (-not (Test-Path $bundleZip)) { throw 'package-release.ps1 did not produce dist/studio-stud-bundle.zip' }
+$encPath = Join-Path $outDir 'studio-stud-bundle.zip.enc'
 $encOutput = cargo run --quiet --example encrypt-artifact -- `
     --password $password `
-    --input $setupExe `
+    --input $bundleZip `
     --output $encPath 2>&1
 if ($LASTEXITCODE -ne 0) { throw "encrypt-artifact failed: $encOutput" }
 
@@ -68,9 +68,9 @@ $nextSeq = $prevSeq + 1
 # ---------- 5. Build unsigned manifest ----------
 $manifest = $baseManifest | Select-Object *
 $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq -Force
-$manifest | Add-Member -NotePropertyName setupEncUrl -NotePropertyValue "$PagesBase/$Channel/studio-stud-setup.exe.enc" -Force
-# Remove plain setupUrl so clients don't accidentally use unencrypted path
+$manifest | Add-Member -NotePropertyName bundleEncUrl -NotePropertyValue "$PagesBase/$Channel/studio-stud-bundle.zip.enc" -Force
 $manifest.PSObject.Properties.Remove('setupUrl')
+$manifest.PSObject.Properties.Remove('setupEncUrl')
 
 # ---------- 6. Sign manifest (Rust canonicalizes — pass the unsigned manifest file) ----------
 $unsignedPath = Join-Path $outDir 'latest.unsigned.json'
