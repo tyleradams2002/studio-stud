@@ -1,5 +1,6 @@
 mod gui;
 mod install_flow;
+mod legacy_cleanup;
 mod theme;
 mod update_apply;
 
@@ -68,6 +69,11 @@ enum Commands {
     RepoHealth { path: PathBuf },
     /// Repo-scoped repair / migration
     RepoRepair { path: PathBuf },
+    /// Remove legacy system32 / per-repo install shims and bundles
+    CleanupLegacy {
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -96,6 +102,38 @@ fn main() -> Result<()> {
         Commands::Repair => cmd_repair(cli.json)?,
         Commands::RepoHealth { path } => cmd_repo_health(&path, cli.json)?,
         Commands::RepoRepair { path } => cmd_repo_repair(&path, cli.json)?,
+        Commands::CleanupLegacy { dry_run } => cmd_cleanup_legacy(dry_run, cli.json)?,
+    }
+    Ok(())
+}
+
+fn cmd_cleanup_legacy(dry_run: bool, json: bool) -> Result<()> {
+    let cfg = load_config_or_default();
+    let install_root = if cfg.install_root.is_empty() {
+        default_install_root()
+    } else {
+        PathBuf::from(&cfg.install_root)
+    };
+    let repo_paths: Vec<String> = cfg.repos.iter().map(|r| r.path.clone()).collect();
+    let artifacts = legacy_cleanup::run_legacy_cleanup(dry_run, &install_root, &repo_paths)?;
+    if json {
+        let items: Vec<_> = artifacts
+            .iter()
+            .map(|a| {
+                json!({
+                    "path": a.path.display().to_string(),
+                    "needsAdmin": a.needs_admin,
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string(&json!({
+                "ok": true,
+                "dryRun": dry_run,
+                "artifacts": items,
+            }))?
+        );
     }
     Ok(())
 }
