@@ -1,20 +1,20 @@
 name: Deploy
 
-# Runs on every push to any of the three permanent branches.
+# Runs on every push to either permanent branch.
 #   development → encrypts + publishes dev channel    (site/dev/)
 #   beta        → encrypts + publishes beta channel   (site/beta/)
 #   main        → publishes release channel           (site/)
 #                 + creates a GitHub Release on version tags
 #
 # Required GitHub Actions secrets (Settings → Secrets → Actions):
-#   CHANNEL_SIGNING_KEY    — 64-byte ed25519 private key in hex (from scripts/keygen.ps1)
-#   BETA_CHANNEL_PASSWORD  — password beta testers use at install time
-#   DEV_CHANNEL_PASSWORD   — password dev testers use at install time
+#   CHANNEL_SIGNING_KEY  — 64-byte ed25519 private key in hex (from scripts/keygen.ps1)
+#   DEV_CHANNEL_PASSWORD — password dev testers use at install time
+#   BETA_CHANNEL_PASSWORD — password beta testers use at install time
 #   (main/release needs no password — artifacts are public)
 
 on:
   push:
-    branches: [main, beta, development]
+    branches: [main, development, beta]
     tags: ['v*']
   workflow_dispatch:
 
@@ -56,6 +56,13 @@ jobs:
           path: dist/
           retention-days: 7
 
+      - name: Upload generated manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: site/latest.json
+          retention-days: 7
+
   # ── 2a. Publish release channel (main) ───────
   deploy-release:
     name: Publish → release channel
@@ -71,6 +78,15 @@ jobs:
           name: dist-${{ github.sha }}
           path: dist/
 
+      - name: Download generated manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: manifest/
+
+      - name: Use generated manifest (overwrite committed)
+        run: cp manifest/latest.json site/latest.json
+
       - name: Deploy site/ to gh-pages (release channel root)
         uses: peaceiris/actions-gh-pages@v4
         with:
@@ -80,77 +96,7 @@ jobs:
           destination_dir: .
           keep_files: true
 
-  # ── 2b. Publish beta channel ─────────────────
-  deploy-beta:
-    name: Publish → beta channel
-    needs: build
-    if: github.ref == 'refs/heads/beta'
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Download dist
-        uses: actions/download-artifact@v4
-        with:
-          name: dist-${{ github.sha }}
-          path: dist/
-
-      - name: Encrypt artifact
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force site/beta | Out-Null
-          cargo run --quiet --example encrypt-artifact -- `
-            --password "$env:BETA_CHANNEL_PASSWORD" `
-            --input  dist/studio-stud-setup.exe `
-            --output site/beta/studio-stud-setup.exe.enc
-        env:
-          BETA_CHANNEL_PASSWORD: ${{ secrets.BETA_CHANNEL_PASSWORD }}
-
-      - name: Build + sign manifest
-        shell: pwsh
-        run: |
-          $base     = Get-Content site/latest.json -Raw | ConvertFrom-Json
-          $prevPath = 'site/beta/latest.json'
-          $prevSeq  = 0
-          if (Test-Path $prevPath) {
-            $prev = Get-Content $prevPath -Raw | ConvertFrom-Json
-            if ($prev.channelSequence) { $prevSeq = [int]$prev.channelSequence }
-          }
-          $nextSeq = $prevSeq + 1
-          $pagesBase = 'https://tyleradams2002.github.io/studio-stud'
-
-          $manifest = $base | Select-Object *
-          $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq       -Force
-          $manifest | Add-Member -NotePropertyName setupEncUrl     -NotePropertyValue "$pagesBase/beta/studio-stud-setup.exe.enc" -Force
-          $manifest.PSObject.Properties.Remove('setupUrl')
-
-          $canonical = $manifest | ConvertTo-Json -Compress -Depth 10
-          $sigB64 = cargo run --quiet --example sign-manifest -- `
-            --privkey "$env:CHANNEL_SIGNING_KEY" `
-            --payload $canonical
-          if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed" }
-
-          $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64.Trim() -Force
-          $manifest | ConvertTo-Json -Depth 10 | Set-Content site/beta/latest.json -Encoding utf8
-          Write-Host "Beta manifest written (seq $nextSeq)"
-        env:
-          CHANNEL_SIGNING_KEY: ${{ secrets.CHANNEL_SIGNING_KEY }}
-
-      - name: Deploy site/beta to gh-pages/beta
-        uses: peaceiris/actions-gh-pages@v4
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: gh-pages
-          publish_dir: site/beta
-          destination_dir: beta
-          keep_files: true
-
-  # ── 2c. Publish dev channel ───────────────────
+  # ── 2b. Publish dev channel ──────────────────
   deploy-dev:
     name: Publish → dev channel
     needs: build
@@ -170,43 +116,54 @@ jobs:
           name: dist-${{ github.sha }}
           path: dist/
 
+      - name: Download generated manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: manifest/
+
       - name: Encrypt artifact
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force site/dev | Out-Null
           cargo run --quiet --example encrypt-artifact -- `
             --password "$env:DEV_CHANNEL_PASSWORD" `
-            --input  dist/studio-stud-setup.exe `
-            --output site/dev/studio-stud-setup.exe.enc
+            --input  dist/studio-stud-bundle.zip `
+            --output site/dev/studio-stud-bundle.zip.enc
         env:
           DEV_CHANNEL_PASSWORD: ${{ secrets.DEV_CHANNEL_PASSWORD }}
 
       - name: Build + sign manifest
         shell: pwsh
         run: |
-          $base     = Get-Content site/latest.json -Raw | ConvertFrom-Json
-          $prevPath = 'site/dev/latest.json'
-          $prevSeq  = 0
-          if (Test-Path $prevPath) {
-            $prev = Get-Content $prevPath -Raw | ConvertFrom-Json
-            if ($prev.channelSequence) { $prevSeq = [int]$prev.channelSequence }
-          }
+          # Read live gh-pages sequence — repo checkout never stores the previous manifest.
+          $prevSeq = 0
+          try {
+            $live = Invoke-RestMethod 'https://tyleradams2002.github.io/studio-stud/dev/latest.json' -ErrorAction Stop
+            if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
+          } catch { $prevSeq = 0 }
           $nextSeq = $prevSeq + 1
+
+          # Base off the CI-generated manifest (actual built version), not the committed file.
+          $base     = Get-Content manifest/latest.json -Raw | ConvertFrom-Json
           $pagesBase = 'https://tyleradams2002.github.io/studio-stud'
 
           $manifest = $base | Select-Object *
           $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq     -Force
-          $manifest | Add-Member -NotePropertyName setupEncUrl     -NotePropertyValue "$pagesBase/dev/studio-stud-setup.exe.enc" -Force
+          $manifest | Add-Member -NotePropertyName bundleEncUrl    -NotePropertyValue "$pagesBase/dev/studio-stud-bundle.zip.enc" -Force
           $manifest.PSObject.Properties.Remove('setupUrl')
+          $manifest.PSObject.Properties.Remove('bundleUrl')
 
-          $canonical = $manifest | ConvertTo-Json -Compress -Depth 10
+          $unsigned = 'site/dev/latest.unsigned.json'
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content $unsigned -Encoding utf8
           $sigB64 = cargo run --quiet --example sign-manifest -- `
             --privkey "$env:CHANNEL_SIGNING_KEY" `
-            --payload $canonical
+            --manifest $unsigned
           if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed" }
 
           $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64.Trim() -Force
           $manifest | ConvertTo-Json -Depth 10 | Set-Content site/dev/latest.json -Encoding utf8
+          Remove-Item site/dev/latest.unsigned.json -ErrorAction SilentlyContinue
           Write-Host "Dev manifest written (seq $nextSeq)"
         env:
           CHANNEL_SIGNING_KEY: ${{ secrets.CHANNEL_SIGNING_KEY }}
@@ -218,6 +175,80 @@ jobs:
           publish_branch: gh-pages
           publish_dir: site/dev
           destination_dir: dev
+          keep_files: true
+
+  # ── 2c. Publish beta channel ─────────────────
+  deploy-beta:
+    name: Publish → beta channel
+    needs: build
+    if: github.ref == 'refs/heads/beta'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+
+      - name: Download generated manifest
+        uses: actions/download-artifact@v4
+        with:
+          name: manifest-${{ github.sha }}
+          path: manifest/
+
+      - name: Encrypt bundle
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force site/beta | Out-Null
+          cargo run --quiet --example encrypt-artifact -- `
+            --password "$env:BETA_CHANNEL_PASSWORD" `
+            --input  dist/studio-stud-bundle.zip `
+            --output site/beta/studio-stud-bundle.zip.enc
+        env:
+          BETA_CHANNEL_PASSWORD: ${{ secrets.BETA_CHANNEL_PASSWORD }}
+
+      - name: Build + sign manifest
+        shell: pwsh
+        run: |
+          $prevSeq = 0
+          try {
+            $live = Invoke-RestMethod 'https://tyleradams2002.github.io/studio-stud/beta/latest.json' -ErrorAction Stop
+            if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
+          } catch { $prevSeq = 0 }
+          $nextSeq = $prevSeq + 1
+          # Base off the CI-generated manifest (actual built version), not the committed file.
+          $base = Get-Content manifest/latest.json -Raw | ConvertFrom-Json
+          $pagesBase = 'https://tyleradams2002.github.io/studio-stud'
+          $manifest = $base | Select-Object *
+          $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq -Force
+          $manifest | Add-Member -NotePropertyName bundleEncUrl -NotePropertyValue "$pagesBase/beta/studio-stud-bundle.zip.enc" -Force
+          $manifest.PSObject.Properties.Remove('setupUrl')
+          $manifest.PSObject.Properties.Remove('bundleUrl')
+          $unsigned = 'site/beta/latest.unsigned.json'
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content $unsigned -Encoding utf8
+          $sigB64 = cargo run --quiet --example sign-manifest -- `
+            --privkey "$env:CHANNEL_SIGNING_KEY" --manifest $unsigned
+          if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed" }
+          $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64.Trim() -Force
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content site/beta/latest.json -Encoding utf8
+          Remove-Item $unsigned -ErrorAction SilentlyContinue
+        env:
+          CHANNEL_SIGNING_KEY: ${{ secrets.CHANNEL_SIGNING_KEY }}
+
+      - name: Deploy site/beta to gh-pages/beta
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
+          publish_dir: site/beta
+          destination_dir: beta
           keep_files: true
 
   # ── 3. GitHub Release (version tags only) ─────
@@ -240,3 +271,4 @@ jobs:
             dist/studio-stud.exe
             dist/studio-stud-setup.exe
             dist/StudioStud.plugin.lua
+            dist/studio-stud-bundle.zip

@@ -33,6 +33,7 @@ use crate::util::{
 
 #[derive(Parser)]
 #[command(name = "studio-stud")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "AI-first Roblox Studio capture and analysis tool.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -141,8 +142,8 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
@@ -154,13 +155,14 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
     },
-    /// Check for (and stage) a newer Studio Stud release.
+    /// Deprecated: update is owned by studio-stud-setup. Kept as a no-op alias.
+    #[command(hide = true)]
     Update {
         /// Only report availability; do not download or stage.
         #[arg(long)]
@@ -739,9 +741,40 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
     } else {
         PathBuf::from(&user_cfg.plugins_dir)
     };
-    let registry = crate::RepoResolver::from_config(user_cfg);
+    let mut addons_changed = false;
+    for entry in &mut user_cfg.repos {
+        let repo_path = PathBuf::from(&entry.path);
+        match crate::setup_core::install::reconcile_repo_addons(
+            &install_root,
+            &plugins_dir,
+            &repo_path,
+        ) {
+            Ok(enabled) => {
+                if entry.enabled_addons != enabled {
+                    entry.enabled_addons = enabled;
+                    addons_changed = true;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Studio Stud: addon reconcile failed for {}: {e:#}",
+                    entry.path
+                );
+            }
+        }
+    }
+    if addons_changed {
+        let _ = crate::setup_core::save_config(&user_cfg);
+    }
+    let registry = crate::RepoResolver::from_config(user_cfg.clone());
     let write_token = load_or_create_write_token(&storage.root)?;
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channel_update =
+        crate::setup_core::channel_update::ChannelUpdateCache::new(user_cfg.clone(), install_root.clone());
+    let cu = std::sync::Arc::clone(&channel_update);
+    std::thread::spawn(move || {
+        let _ = cu.ping_fields();
+    });
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
@@ -751,6 +784,7 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
         plugins_dir: plugins_dir.clone(),
         port,
         shutdown: Arc::clone(&shutdown),
+        channel_update,
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));

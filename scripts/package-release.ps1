@@ -73,6 +73,18 @@ if (Test-Path $addonSrc) {
     }
 }
 
+# ---- Bundle: one zip carrying setup + daemon + plugin + addons ----
+$bundleStage = Join-Path $dist 'bundle'
+New-Item -ItemType Directory -Force $bundleStage | Out-Null
+Copy-Item "$dist/studio-stud-setup.exe"     "$bundleStage/studio-stud-setup.exe" -Force
+Copy-Item "$dist/studio-stud.exe"           "$bundleStage/studio-stud.exe" -Force
+Copy-Item "$dist/StudioStud.plugin.lua"     "$bundleStage/StudioStud.plugin.lua" -Force
+if (Test-Path "$tool/addons") { Copy-Item "$tool/addons" "$bundleStage/addons" -Recurse -Force }
+$bundleZip = Join-Path $dist 'studio-stud-bundle.zip'
+if (Test-Path $bundleZip) { Remove-Item $bundleZip -Force }
+Compress-Archive -Path "$bundleStage/*" -DestinationPath $bundleZip -Force
+Remove-Item $bundleStage -Recurse -Force
+
 $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 $versionJson = [ordered]@{
@@ -87,6 +99,15 @@ $versionJson = [ordered]@{
 $versionJson | ConvertTo-Json | Set-Content "$tool/version.json" -Encoding utf8
 
 $tag = "v$daemonVersion"
+
+# Release channelSequence: read live manifest so CI increments monotonically (not hardcoded 1).
+$prevSeq = 0
+try {
+  $live = Invoke-RestMethod "$PagesBase/latest.json" -ErrorAction Stop
+  if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
+} catch { $prevSeq = 0 }
+$nextSeq = $prevSeq + 1
+
 $latest = [ordered]@{
     daemonVersion            = $daemonVersion
     pluginVersion            = $pluginVersion
@@ -96,12 +117,13 @@ $latest = [ordered]@{
     binaryUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud.exe"
     pluginUrl                = "https://github.com/$Repo/releases/download/$tag/StudioStud.plugin.lua"
     setupUrl                 = "https://github.com/$Repo/releases/download/$tag/studio-stud-setup.exe"
+    bundleUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud-bundle.zip"
     installUrl               = "$PagesBase/install.ps1"
-    channelSequence          = 1
+    channelSequence          = $nextSeq
     releasedAt               = $now
 }
 New-Item -ItemType Directory -Force (Join-Path $Root "site") | Out-Null
-$latest | ConvertTo-Json | Set-Content (Join-Path $Root "site/latest.json") -Encoding utf8
+[System.IO.File]::WriteAllText((Join-Path $Root "site/latest.json"), ($latest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "Bundle assembled under: $tool"
 Write-Host "Pages manifest written: site/latest.json (tag $tag)"

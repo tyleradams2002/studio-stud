@@ -4,7 +4,7 @@ resolver = "2"
 
 [package]
 name = "studio-stud"
-version = "0.4.0"
+version = "0.4.9"
 edition = "2024"
 
 [lib]
@@ -60,3 +60,5 @@ path = "examples/sign-manifest.rs"
 
 [dev-dependencies]
 serde_json = "1.0.150"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"

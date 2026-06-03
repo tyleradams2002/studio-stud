@@ -1,6 +1,7 @@
 # Rust build output
 /target
 /bin
+/dist
 **/*.rs.bk
 
 # Local runtime install (if this repo is ever used as a consumer)
@@ -15,8 +16,9 @@ secrets/*
 site/beta/
 site/dev/
 
-# Local scratch
+# Local scratch and test artifacts
 .tmp/
+*.enc
 
 # Roblox place files
 *.rbxl
