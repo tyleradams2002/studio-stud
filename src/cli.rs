@@ -33,6 +33,7 @@ use crate::util::{
 
 #[derive(Parser)]
 #[command(name = "studio-stud")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "AI-first Roblox Studio capture and analysis tool.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -739,9 +740,11 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
     } else {
         PathBuf::from(&user_cfg.plugins_dir)
     };
-    let registry = crate::RepoResolver::from_config(user_cfg);
+    let registry = crate::RepoResolver::from_config(user_cfg.clone());
     let write_token = load_or_create_write_token(&storage.root)?;
     let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channel_update =
+        crate::setup_core::channel_update::ChannelUpdateCache::new(user_cfg.clone(), install_root.clone());
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
@@ -751,6 +754,7 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
         plugins_dir: plugins_dir.clone(),
         port,
         shutdown: Arc::clone(&shutdown),
+        channel_update,
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));

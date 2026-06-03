@@ -1,6 +1,7 @@
 //! Centralized install registry, channel manifests, crypto, install ops, and health checks.
 //! Shared by the daemon (registry resolution, addon routes) and `studio-stud-setup`.
 
+pub mod channel_update;
 pub mod channels;
 pub mod config;
 pub mod crypto;

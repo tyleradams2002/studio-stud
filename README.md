@@ -8,16 +8,14 @@ Windows-only. Localhost only (`127.0.0.1:31878`). Never publishes, cloud-saves, 
 
 ## Install
 
-| Channel | One-liner |
-|---------|-----------|
-| **Release** (stable) | `irm https://tyleradams2002.github.io/studio-stud/install.ps1 \| iex` |
-| **Beta** (testers) | `irm https://tyleradams2002.github.io/studio-stud/install-beta.ps1 \| iex` |
-| **Dev** (internal) | `irm https://tyleradams2002.github.io/studio-stud/install-dev.ps1 \| iex` |
+```powershell
+irm https://tyleradams2002.github.io/studio-stud/install.ps1 | iex
+```
 
 Downloads `studio-stud-setup.exe` and launches the GUI installer. The tool installs once under
 `%LOCALAPPDATA%\studio-stud`, copies the core plugin into your Roblox Plugins folder, registers
 one or more repo paths, and adds `studio-stud` / `studio-stud-setup` to your user PATH (new terminal
-required). Beta and dev channels are password-protected and prompt at install time.
+required).
 
 Then in Studio: enable HTTP requests; the core plugin loads from your Plugins folder automatically.
 Run (from any registered repo, in a **new** terminal):
@@ -62,7 +60,7 @@ tests/               unit + golden + integration fixtures
 plugin/              StudioStud.plugin.lua + assets (core plugin)
 addon-plugins/       extension plugins built on the core (sdk/, _template/, one folder per addon)
 scripts/             build-local.ps1, package-release.ps1, launcher templates
-site/                GitHub Pages: install.ps1, latest.json (+ /beta, /dev subpaths)
+site/                GitHub Pages: install.ps1, latest.json
 setup/               studio-stud-setup.exe (GUI install/uninstall + CLI health/update/repair)
 consumer-template/   files the installer drops into a consumer repo
 docs/                usage.md, platform-design.md, plans/ (dev history)
@@ -70,17 +68,9 @@ docs/                usage.md, platform-design.md, plans/ (dev history)
 
 ## Releasing
 
-Branch flow: **`development`** → PR → **`beta`** → PR → **`main`**
-
-Every push to any branch triggers `deploy.yml`:
-- `development` → builds, encrypts with dev password, publishes dev channel to Pages
-- `beta` → builds, encrypts with beta password, publishes beta channel to Pages
-- `main` → builds, publishes release channel to Pages
-
-To cut a versioned GitHub Release, push a `v*` tag after merging to `main`:
+Push to `main` to publish a new release. To attach a versioned GitHub Release with downloadable artifacts:
 
 ```powershell
-git tag v0.5.0 && git push origin v0.5.0
+git tag v0.5.0
+git push origin v0.5.0
 ```
-
-Use **Actions → Promote** to open promotion PRs (`development → beta`, `beta → main`).

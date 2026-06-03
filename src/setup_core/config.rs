@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::install::default_install_root;
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionsInfo {
@@ -77,15 +79,59 @@ pub fn write_token_path() -> PathBuf {
     config_dir().join("write.token")
 }
 
+pub fn backup_corrupt_config(path: &Path, text: &str) -> Result<()> {
+    let stamp = crate::util::now_utc().replace([':', 'T', 'Z'], "");
+    let backup = path.with_extension(format!("json.corrupt-{stamp}"));
+    fs::write(&backup, text).with_context(|| format!("backup corrupt config to {}", backup.display()))?;
+    eprintln!(
+        "Studio Stud: config at {} was corrupt — backed up to {}",
+        path.display(),
+        backup.display()
+    );
+    Ok(())
+}
+
+fn install_version_json_path(cfg: &StudioStudConfig) -> PathBuf {
+    if cfg.install_root.is_empty() {
+        default_install_root().join("version.json")
+    } else {
+        PathBuf::from(&cfg.install_root).join("version.json")
+    }
+}
+
+pub fn seed_config_from_install_version(cfg: &mut StudioStudConfig) {
+    let path = install_version_json_path(cfg);
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        return;
+    };
+    if let Some(ch) = v.get("channel").and_then(Value::as_str)
+        && !ch.is_empty()
+    {
+        cfg.channel = ch.to_string();
+    }
+    if let Some(seq) = v.get("lastChannelSequence").and_then(Value::as_object) {
+        for (k, val) in seq {
+            cfg.last_channel_sequence.insert(k.clone(), val.clone());
+        }
+    }
+}
+
 pub fn load_config() -> Result<Option<StudioStudConfig>> {
     let path = config_path();
     if !path.is_file() {
         return Ok(None);
     }
     let text = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
-    let cfg: StudioStudConfig =
-        serde_json::from_str(&text).with_context(|| format!("parse {}", path.display()))?;
-    Ok(Some(cfg))
+    match serde_json::from_str::<StudioStudConfig>(&text) {
+        Ok(cfg) => Ok(Some(cfg)),
+        Err(err) => {
+            let _ = backup_corrupt_config(&path, &text);
+            Err(err).with_context(|| format!("parse {}", path.display()))
+        }
+    }
 }
 
 pub fn save_config(cfg: &StudioStudConfig) -> Result<()> {
@@ -100,7 +146,20 @@ pub fn save_config(cfg: &StudioStudConfig) -> Result<()> {
 }
 
 pub fn load_config_or_default() -> StudioStudConfig {
-    load_config().ok().flatten().unwrap_or_default()
+    match load_config() {
+        Ok(Some(cfg)) => cfg,
+        Ok(None) => {
+            let mut cfg = StudioStudConfig::default();
+            seed_config_from_install_version(&mut cfg);
+            cfg
+        }
+        Err(err) => {
+            eprintln!("Studio Stud: using default config ({err:#})");
+            let mut cfg = StudioStudConfig::default();
+            seed_config_from_install_version(&mut cfg);
+            cfg
+        }
+    }
 }
 
 /// Register a repo path if not already present (normalized forward slashes).
@@ -159,5 +218,40 @@ mod tests {
         let text = serde_json::to_string(&cfg).unwrap();
         let back: StudioStudConfig = serde_json::from_str(&text).unwrap();
         assert_eq!(back.repos[0].place_id, Some(123));
+    }
+
+    #[test]
+    fn seed_config_from_install_version_restores_channel() {
+        let dir = std::env::temp_dir().join(format!("ss-config-seed-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        fs::write(
+            dir.join("version.json"),
+            r#"{"channel":"beta","lastChannelSequence":{"beta":3}}"#,
+        )
+        .unwrap();
+        let mut cfg = StudioStudConfig {
+            install_root: dir.display().to_string(),
+            ..Default::default()
+        };
+        seed_config_from_install_version(&mut cfg);
+        assert_eq!(cfg.channel, "beta");
+        assert_eq!(cfg.last_channel_sequence["beta"], json!(3));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn backup_corrupt_config_writes_sidecar() {
+        let dir = std::env::temp_dir().join(format!("ss-config-backup-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("config.json");
+        fs::write(&path, "{not json").unwrap();
+        backup_corrupt_config(&path, "{not json").unwrap();
+        let backups: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.file_name().to_string_lossy().contains("corrupt"))
+            .collect();
+        assert_eq!(backups.len(), 1);
+        let _ = fs::remove_dir_all(&dir);
     }
 }

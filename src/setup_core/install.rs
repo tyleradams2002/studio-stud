@@ -4,7 +4,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::config::{StudioStudConfig, daemon_lock_path};
 
@@ -37,23 +37,47 @@ pub fn repo_already_registered(cfg: &StudioStudConfig, path: &Path) -> bool {
         .any(|r| r.path.eq_ignore_ascii_case(&key))
 }
 
-pub fn lay_tool_payload(install_root: &Path, daemon_exe: &Path, plugin_lua: &Path) -> Result<()> {
+pub fn lay_tool_payload(
+    install_root: &Path,
+    daemon_exe: &Path,
+    plugin_lua: &Path,
+    version_meta: &Value,
+) -> Result<()> {
     let bin_dir = install_root.join("bin");
     let plugin_dir = install_root.join("plugin");
     fs::create_dir_all(&bin_dir)?;
     fs::create_dir_all(&plugin_dir)?;
     fs::create_dir_all(install_root.join("addons"))?;
     fs::copy(daemon_exe, bin_dir.join("studio-stud.exe"))?;
+    // Also copy the setup binary so `studio-stud-setup` is on PATH alongside the daemon.
+    if let Some(setup_src) = resolve_setup_src(daemon_exe) {
+        let _ = fs::copy(setup_src, bin_dir.join("studio-stud-setup.exe"));
+    }
     fs::copy(plugin_lua, plugin_dir.join("StudioStud.plugin.lua"))?;
-    let version = json!({
-        "daemonVersion": env!("CARGO_PKG_VERSION"),
-        "installedAt": crate::util::now_utc(),
-    });
     fs::write(
         install_root.join("version.json"),
-        serde_json::to_string_pretty(&version)?,
+        serde_json::to_string_pretty(version_meta)?,
     )?;
     Ok(())
+}
+
+/// Locate `studio-stud-setup.exe` relative to the daemon source or current exe.
+fn resolve_setup_src(daemon_exe: &Path) -> Option<PathBuf> {
+    // Same dir as daemon_exe (e.g. dist/ or bin/)
+    if let Some(dir) = daemon_exe.parent() {
+        let p = dir.join("studio-stud-setup.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    // Running from a cargo target tree: target/debug/ or target/release/
+    if let Ok(current) = std::env::current_exe() {
+        let p = current.with_file_name("studio-stud-setup.exe");
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 pub fn install_core_plugin(plugins_dir: &Path, plugin_src: &Path) -> Result<()> {
@@ -88,21 +112,66 @@ pub fn write_starter_policy(repo_root: &Path) -> Result<()> {
 
 pub fn install_path_shim(install_root: &Path) -> Result<()> {
     let bin = install_root.join("bin");
-    if let Ok(path) = std::env::var("PATH") {
-        let bin_str = bin.display().to_string();
-        if !path.split(';').any(|p| p.eq_ignore_ascii_case(&bin_str)) {
-            let new_path = if path.is_empty() {
-                bin_str
-            } else {
-                format!("{bin_str};{path}")
-            };
-            // User PATH via setx is best-effort; installer prints reminder
-            let _ = Command::new("setx")
-                .args(["PATH", &new_path])
-                .status();
-        }
-    }
+    let bin_str = bin.display().to_string();
+
+    // Read the current *user* PATH from registry so we don't inherit the
+    // process-level PATH (which already has the old entry from the current session).
+    let user_path = read_user_path_registry().unwrap_or_default();
+
+    // Strip any existing studio-stud bin entries to avoid stale duplicates,
+    // then prepend the new one so it wins regardless of order.
+    let cleaned: Vec<&str> = user_path
+        .split(';')
+        .filter(|p| !p.is_empty() && !is_studio_stud_bin(p))
+        .collect();
+
+    let new_path = if cleaned.is_empty() {
+        bin_str.clone()
+    } else {
+        format!("{bin_str};{}", cleaned.join(";"))
+    };
+
+    // setx writes to HKCU\Environment; best-effort.
+    let _ = Command::new("setx").args(["PATH", &new_path]).status();
+
     Ok(())
+}
+
+/// Returns true when a PATH `entry` directory should be removed because it
+/// contains a legacy per-repo `studio-stud.cmd` / `studio-stud.exe` shim,
+/// OR it's a known studio-stud install bin directory.
+fn is_studio_stud_bin(entry: &str) -> bool {
+    let lower = entry.to_lowercase();
+    // Named install dirs (old layout "studio-stud\bin", new "StudioStud\bin").
+    if lower.contains("studio-stud") || lower.contains("studiostud") {
+        return true;
+    }
+    // Per-repo legacy shim: directory that contains studio-stud.cmd or studio-stud.exe.
+    let p = std::path::Path::new(entry);
+    p.join("studio-stud.cmd").is_file() || p.join("studio-stud.exe").is_file()
+}
+
+/// Read the user-level PATH directly from the registry so we only touch
+/// the user's own entries, not the machine PATH.
+fn read_user_path_registry() -> Option<String> {
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+        let out = Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-Command",
+                r"(Get-ItemProperty -Path 'HKCU:\Environment' -Name PATH -ErrorAction SilentlyContinue).PATH",
+            ])
+            .output()
+            .ok()?;
+        let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if s.is_empty() { None } else { Some(s) }
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("PATH").ok()
+    }
 }
 
 pub fn stop_daemon_graceful(write_token: &str, port: u16) -> Result<()> {

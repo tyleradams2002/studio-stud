@@ -40,7 +40,7 @@ Set-Content $pubPath  $pubHex  -Encoding ascii -NoNewline
 
 Write-Host ""
 Write-Host "Key pair generated:"
-Write-Host "  Private key -> $privPath  (KEEP SECRET — never commit)"
+Write-Host "  Private key -> $privPath  (KEEP SECRET - never commit)"
 Write-Host "  Public key  -> $pubPath"
 Write-Host ""
 Write-Host "The public key is embedded at build time via include_str! in channels.rs."

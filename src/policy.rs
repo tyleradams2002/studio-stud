@@ -19,7 +19,6 @@ const DEFAULT_UNSUPPORTED: &str = "block";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
-    pub version: u32,
     #[serde(default)]
     pub allowed_place_ids: Vec<i64>,
     #[serde(default)]
@@ -77,9 +76,6 @@ pub struct PolicyExplain {
 impl Policy {
     pub fn validate(&self) -> Vec<String> {
         let mut errors = Vec::new();
-        if self.version != 1 {
-            errors.push(format!("unsupported policy version {}", self.version));
-        }
         if self.max_patch_bytes == 0 {
             errors.push("maxPatchBytes must be greater than 0".to_string());
         }
@@ -96,6 +92,10 @@ impl Policy {
     }
 
     pub fn compile(self) -> Result<CompiledPolicy, String> {
+        let errors = self.validate();
+        if !errors.is_empty() {
+            return Err(errors.join("; "));
+        }
         let mut allow_builder = GlobSetBuilder::new();
         for glob in &self.allowed_write_paths {
             allow_builder.add(Glob::new(glob).map_err(|err| err.to_string())?);
@@ -132,7 +132,6 @@ impl CompiledPolicy {
 
 pub fn default_policy() -> Policy {
     Policy {
-        version: 1,
         allowed_place_ids: vec![100_000_000_000_001, 100_000_000_000_003],
         allowed_write_paths: Vec::new(),
         require_generated_header_paths: Vec::new(),
