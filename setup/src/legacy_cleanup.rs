@@ -78,8 +78,20 @@ pub fn gather_legacy_candidates(
     let mut seen = std::collections::BTreeSet::new();
     candidates
         .into_iter()
-        .filter(|p| p.exists() && seen.insert(p.clone()))
+        .filter_map(|p| normalize_existing_path(&p))
+        .filter(|p| seen.insert(dedup_key(p)))
         .collect()
+}
+
+fn normalize_existing_path(p: &Path) -> Option<PathBuf> {
+    if !p.exists() {
+        return None;
+    }
+    p.canonicalize().ok().or_else(|| Some(p.to_path_buf()))
+}
+
+fn dedup_key(p: &Path) -> String {
+    p.to_string_lossy().to_lowercase()
 }
 
 fn path_directories() -> Vec<PathBuf> {
@@ -171,7 +183,7 @@ fn run_elevated_cleanup(paths: &[PathBuf]) -> Result<()> {
         }
     }
     std::fs::write(&script_path, lines.join("\n"))?;
-    eprintln!(
+    println!(
         "Studio Stud: UAC prompt required to remove {} system artifact(s) under SystemRoot.",
         paths.len()
     );
@@ -213,7 +225,7 @@ pub fn run_legacy_cleanup(
         println!("  {}{admin}", a.path.display());
     }
     if dry_run {
-        println!("(dry-run — nothing removed)");
+        println!("(dry-run - nothing removed)");
         return Ok(artifacts);
     }
     let (admin, user): (Vec<_>, Vec<_>) = artifacts
@@ -223,7 +235,12 @@ pub fn run_legacy_cleanup(
         remove_artifact(&a.path)?;
     }
     if !admin.is_empty() {
-        let paths: Vec<PathBuf> = admin.iter().map(|a| a.path.clone()).collect();
+        let mut seen = std::collections::BTreeSet::new();
+        let paths: Vec<PathBuf> = admin
+            .iter()
+            .map(|a| a.path.clone())
+            .filter(|p| seen.insert(dedup_key(p)))
+            .collect();
         run_elevated_cleanup(&paths)?;
     }
     println!("Studio Stud: legacy cleanup finished.");
