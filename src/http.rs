@@ -36,6 +36,7 @@ pub struct ServeConfig {
     pub plugins_dir: PathBuf,
     pub port: u16,
     pub shutdown: Arc<AtomicBool>,
+    pub channel_update: Arc<crate::setup_core::channel_update::ChannelUpdateCache>,
 }
 
 fn parse_place_id_query(query: &HashMap<String, String>) -> Option<i64> {
@@ -80,9 +81,9 @@ pub(crate) fn handle_daemon_request(
     let result = (|| -> Result<Value> {
         Ok(match (method, path.as_str()) {
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
-                manifest_json()
+                manifest_json_with_update(config)
             }
-            (tiny_http::Method::Get, "/studio-stud/manifest") => manifest_json(),
+            (tiny_http::Method::Get, "/studio-stud/manifest") => manifest_json_with_update(config),
             (tiny_http::Method::Get, "/request-sync")
             | (tiny_http::Method::Get, "/studio-stud/capture/request") => {
                 let mut guard = state
@@ -770,6 +771,16 @@ pub(crate) fn daemon_json(method: &str, path: &str, body: Option<&Value>) -> Res
         ));
     }
     Ok(value)
+}
+
+pub(crate) fn manifest_json_with_update(config: &ServeConfig) -> Value {
+    let mut body = manifest_json();
+    if let Some(obj) = body.as_object_mut() {
+        for (k, v) in config.channel_update.ping_fields().as_object().into_iter().flatten() {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+    body
 }
 
 pub(crate) fn manifest_json() -> Value {

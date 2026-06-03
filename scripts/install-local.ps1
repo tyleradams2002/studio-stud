@@ -10,7 +10,7 @@
   What it does:
     1. cargo build --workspace  (debug build, fast)
     2. Optionally removes %LOCALAPPDATA%\studio-stud  so the installer treats this as a fresh machine.
-    3. Launches dist/studio-stud-setup.exe  (the real binary) with --install, or --install --no-gui for headless.
+    3. Launches dist/studio-stud-setup.exe  (the real binary) with 'install', or 'install --no-gui' for headless.
     4. Prints the install log so you can see what happened.
 
   Notes:
@@ -27,9 +27,21 @@ param(
 $ErrorActionPreference = 'Stop'
 $Root = Split-Path -Parent $PSScriptRoot
 
+# Re-launch as admin if not already elevated (installer requires it).
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Host "Not running as administrator - re-launching elevated..."
+    $argList = @("-ExecutionPolicy", "Bypass", "-File", $PSCommandPath)
+    if ($CleanFirst) { $argList += "-CleanFirst" }
+    if ($Headless)   { $argList += "-Headless" }
+    Start-Process powershell -ArgumentList $argList -Verb RunAs -Wait
+    exit $LASTEXITCODE
+}
+
 # ---------- 1. Build ----------
 Write-Host "[1/4] Building workspace (debug)..."
-cargo build --workspace 2>&1 | Where-Object { $_ -notmatch '^\s*Compiling' } | Write-Host
+cargo build --workspace
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 $SetupExe = Join-Path $Root 'target\debug\studio-stud-setup.exe'
@@ -68,20 +80,33 @@ if ($CleanFirst) {
 }
 
 # ---------- 3. Launch installer ----------
-$args_ = if ($Headless) { @('--install', '--no-gui') } else { @('--install') }
-Write-Host "[3/4] Launching: $SetupExe $args_"
-Write-Host "      (This is the same binary a user would download — testing the real install path)"
+Write-Host "[3/4] Launching: $SetupExe install"
+Write-Host "      (This is the same binary a user would download - testing the real install path)"
 Write-Host ""
-& $SetupExe @args_
+if ($Headless) {
+    & $SetupExe install --no-gui
+} else {
+    & $SetupExe install
+}
 $exitCode = $LASTEXITCODE
 
-# ---------- 4. Report ----------
+# ---------- 4. Refresh PATH in this session, then report ----------
 Write-Host ""
+
+# Read the freshly-written user PATH from the registry and apply it to this
+# session so verification commands work without opening a new terminal.
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+$machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+$env:PATH = "$userPath;$machinePath"
+
 if ($exitCode -eq 0) {
-    Write-Host "[4/4] Installer exited cleanly (exit 0)."
-    Write-Host "      studio-stud should now be in your PATH (open a new terminal to verify)."
-    Write-Host "      Run: studio-stud --version"
-    Write-Host "      Run: studio-stud-setup health"
+    Write-Host "[4/4] Installer exited cleanly (exit 0). PATH refreshed for this session."
+    Write-Host ""
+    Write-Host "Verifying..."
+    $ssVer = & studio-stud --version 2>&1
+    Write-Host "  studio-stud --version : $ssVer"
+    $health = & studio-stud-setup health 2>&1
+    $health | ForEach-Object { Write-Host "  $_" }
 } else {
     Write-Host "[4/4] Installer exited with code $exitCode."
 }

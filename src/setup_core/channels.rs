@@ -2,7 +2,9 @@ use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value, json};
+
+use super::config::StudioStudConfig;
 
 pub const PAGES_BASE: &str = "https://tyleradams2002.github.io/studio-stud";
 
@@ -65,6 +67,31 @@ pub struct ChannelManifest {
     pub kdf_salt: Option<String>,
     #[serde(default)]
     pub kdf_nonce: Option<String>,
+}
+
+/// Walk the fallback chain until a manifest is found, so users always have a version to run.
+///   Dev  → Beta → Release
+///   Beta → Release
+///   Release (no fallback)
+///
+/// Returns `(manifest, raw_json, resolved_channel)`. `resolved_channel` differs from the
+/// requested channel when the requested channel has not been published yet.
+pub fn fetch_manifest_with_fallback(
+    channel: Channel,
+) -> Result<(ChannelManifest, Value, Channel)> {
+    let chain: &[Channel] = match channel {
+        Channel::Dev => &[Channel::Dev, Channel::Beta, Channel::Release],
+        Channel::Beta => &[Channel::Beta, Channel::Release],
+        Channel::Release => &[Channel::Release],
+    };
+    let mut last_err = anyhow!("no channel manifest reachable");
+    for &c in chain {
+        match fetch_manifest(c) {
+            Ok((m, raw)) => return Ok((m, raw, c)),
+            Err(e) => last_err = e,
+        }
+    }
+    Err(last_err)
 }
 
 pub fn fetch_manifest(channel: Channel) -> Result<(ChannelManifest, Value)> {
@@ -130,6 +157,60 @@ fn hex_decode_32(s: &str) -> Result<[u8; 32]> {
     bytes.try_into().map_err(|_| anyhow!("expected 32 bytes, got {}", s.len() / 2))
 }
 
+/// URL for the channel setup artifact (plain `setupUrl` or encrypted `setupEncUrl`).
+pub fn setup_artifact_url(resolved: Channel, manifest: &ChannelManifest) -> Result<String> {
+    if resolved.is_encrypted() {
+        manifest
+            .setup_enc_url
+            .clone()
+            .ok_or_else(|| anyhow!("manifest missing setupEncUrl for {}", resolved.as_str()))
+    } else {
+        manifest
+            .setup_url
+            .clone()
+            .ok_or_else(|| anyhow!("manifest missing setupUrl for {}", resolved.as_str()))
+    }
+}
+
+pub fn required_binary_url(manifest: &ChannelManifest) -> Result<String> {
+    manifest
+        .binary_url
+        .clone()
+        .ok_or_else(|| anyhow!("manifest missing binaryUrl"))
+}
+
+pub fn required_plugin_url(manifest: &ChannelManifest) -> Result<String> {
+    manifest
+        .plugin_url
+        .clone()
+        .ok_or_else(|| anyhow!("manifest missing pluginUrl"))
+}
+
+/// Whether an update should be applied for the user's channel manifest.
+pub fn channel_update_available(
+    on_fallback: bool,
+    manifest_version: &str,
+    installed: &str,
+) -> bool {
+    if on_fallback {
+        return false;
+    }
+    !manifest_version.is_empty() && manifest_version != installed
+}
+
+pub fn record_channel_sequence(
+    cfg: &mut StudioStudConfig,
+    resolved: Channel,
+    seq: u64,
+) {
+    cfg.last_channel_sequence
+        .insert(resolved.as_str().into(), json!(seq));
+}
+
+pub fn last_channel_sequence_json(cfg: &StudioStudConfig) -> Map<String, Value> {
+    cfg.last_channel_sequence.clone()
+}
+
 pub fn check_anti_rollback(
     channel: Channel,
     manifest: &ChannelManifest,
@@ -148,4 +229,61 @@ pub fn check_anti_rollback(
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_manifest() -> ChannelManifest {
+        ChannelManifest {
+            daemon_version: "0.5.0".into(),
+            plugin_version: "0.4.0".into(),
+            protocol_version: Some(1),
+            binary_url: Some("https://example.com/studio-stud.exe".into()),
+            plugin_url: Some("https://example.com/StudioStud.plugin.lua".into()),
+            setup_url: Some("https://example.com/studio-stud-setup.exe".into()),
+            setup_enc_url: Some("https://example.com/beta/studio-stud-setup.exe.enc".into()),
+            channel_sequence: 2,
+            signature: None,
+            kdf_salt: None,
+            kdf_nonce: None,
+        }
+    }
+
+    #[test]
+    fn setup_artifact_url_release_uses_setup_url() {
+        let m = sample_manifest();
+        let url = setup_artifact_url(Channel::Release, &m).unwrap();
+        assert_eq!(url, "https://example.com/studio-stud-setup.exe");
+    }
+
+    #[test]
+    fn setup_artifact_url_beta_uses_enc_url() {
+        let m = sample_manifest();
+        let url = setup_artifact_url(Channel::Beta, &m).unwrap();
+        assert_eq!(url, "https://example.com/beta/studio-stud-setup.exe.enc");
+    }
+
+    #[test]
+    fn setup_artifact_url_missing_field_errors() {
+        let mut m = sample_manifest();
+        m.setup_url = None;
+        assert!(setup_artifact_url(Channel::Release, &m).is_err());
+    }
+
+    #[test]
+    fn channel_update_available_respects_fallback_and_version() {
+        assert!(!channel_update_available(true, "0.5.0", "0.4.0"));
+        assert!(!channel_update_available(false, "0.4.0", "0.4.0"));
+        assert!(channel_update_available(false, "0.5.0", "0.4.0"));
+        assert!(channel_update_available(false, "0.4.9", "0.5.0"));
+    }
+
+    #[test]
+    fn record_channel_sequence_writes_floor() {
+        let mut cfg = StudioStudConfig::default();
+        record_channel_sequence(&mut cfg, Channel::Beta, 7);
+        assert_eq!(cfg.last_channel_sequence["beta"], json!(7));
+    }
 }

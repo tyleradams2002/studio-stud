@@ -15,8 +15,9 @@ secrets/*
 site/beta/
 site/dev/
 
-# Local scratch
+# Local scratch and test artifacts
 .tmp/
+*.enc
 
 # Roblox place files
 *.rbxl

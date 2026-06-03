@@ -20,7 +20,7 @@ $Root = Split-Path -Parent $PSScriptRoot
 # ---------- 1. Load secrets ----------
 $secretsPath = Join-Path $Root 'secrets/channel-passwords.json'
 if (-not (Test-Path $secretsPath)) {
-    throw "Missing $secretsPath — fill in beta/dev passwords first."
+    throw "Missing $secretsPath - fill in beta/dev passwords first."
 }
 $secrets = Get-Content $secretsPath -Raw | ConvertFrom-Json
 $password = $secrets.$Channel
@@ -28,11 +28,11 @@ if (-not $password) { throw "No password for channel '$Channel' in secrets file.
 
 $signingKeyPath = Join-Path $Root 'secrets/channel-signing.key'
 if (-not (Test-Path $signingKeyPath)) {
-    throw "Missing $signingKeyPath — run .\scripts\keygen.ps1 first."
+    throw "Missing $signingKeyPath - run .\scripts\keygen.ps1 first."
 }
 $privKeyHex = (Get-Content $signingKeyPath -Raw).Trim()
 if ($privKeyHex -like 'PLACEHOLDER*') {
-    throw "signing key is still a placeholder — run .\scripts\keygen.ps1 first."
+    throw "signing key is still a placeholder - run .\scripts\keygen.ps1 first."
 }
 
 # ---------- 2. Build ----------
@@ -54,15 +54,15 @@ $encOutput = cargo run --quiet --example encrypt-artifact -- `
     --output $encPath 2>&1
 if ($LASTEXITCODE -ne 0) { throw "encrypt-artifact failed: $encOutput" }
 
-# ---------- 4. Determine next channelSequence ----------
+# ---------- 4. Determine next channelSequence (live gh-pages floor) ----------
 $baseManifestPath = Join-Path $Root 'site/latest.json'
 $baseManifest = Get-Content $baseManifestPath -Raw | ConvertFrom-Json
-$channelManifestPath = Join-Path $outDir 'latest.json'
+$liveUrl = "$PagesBase/$Channel/latest.json"
 $prevSeq = 0
-if (Test-Path $channelManifestPath) {
-    $prev = Get-Content $channelManifestPath -Raw | ConvertFrom-Json
-    if ($prev.channelSequence) { $prevSeq = [int]$prev.channelSequence }
-}
+try {
+  $live = Invoke-RestMethod $liveUrl -ErrorAction Stop
+  if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
+} catch { $prevSeq = 0 }
 $nextSeq = $prevSeq + 1
 
 # ---------- 5. Build unsigned manifest ----------

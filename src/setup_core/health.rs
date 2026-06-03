@@ -4,7 +4,7 @@ use serde_json::{Value, json};
 
 use crate::util::{DoctorCheck, fail, pass, warn};
 
-use super::channels::{Channel, fetch_manifest, verify_manifest_signature};
+use super::channels::{Channel, fetch_manifest_with_fallback, verify_manifest_signature};
 use super::config::{StudioStudConfig, load_config_or_default};
 use super::install::{LEGACY_TOOL_DIR, REPO_MARKER, default_plugins_dir};
 
@@ -122,16 +122,21 @@ pub fn version_compat_matrix(cfg: &StudioStudConfig) -> Value {
 }
 
 pub fn check_channel_versions(cfg: &StudioStudConfig) -> anyhow::Result<Vec<DoctorCheck>> {
-    let channel = Channel::from_str(&cfg.channel);
-    let (manifest, raw) = fetch_manifest(channel)?;
+    let requested = Channel::from_str(&cfg.channel);
+    let (manifest, raw, resolved) = fetch_manifest_with_fallback(requested)?;
     verify_manifest_signature(&raw, &manifest)?;
-    let mut checks = vec![pass(
-        "channelManifest",
-        format!("daemon {} on channel {}", manifest.daemon_version, channel.as_str()),
-    )];
-    if !cfg.versions.daemon.is_empty()
-        && cfg.versions.daemon != manifest.daemon_version
-    {
+    let label = if resolved != requested {
+        format!(
+            "daemon {} on channel {} (fallback from {})",
+            manifest.daemon_version,
+            resolved.as_str(),
+            requested.as_str()
+        )
+    } else {
+        format!("daemon {} on channel {}", manifest.daemon_version, resolved.as_str())
+    };
+    let mut checks = vec![pass("channelManifest", label)];
+    if !cfg.versions.daemon.is_empty() && cfg.versions.daemon != manifest.daemon_version {
         checks.push(warn(
             "daemonVersion",
             format!(

@@ -87,6 +87,15 @@ $versionJson = [ordered]@{
 $versionJson | ConvertTo-Json | Set-Content "$tool/version.json" -Encoding utf8
 
 $tag = "v$daemonVersion"
+
+# Release channelSequence: read live manifest so CI increments monotonically (not hardcoded 1).
+$prevSeq = 0
+try {
+  $live = Invoke-RestMethod "$PagesBase/latest.json" -ErrorAction Stop
+  if ($live.channelSequence) { $prevSeq = [int]$live.channelSequence }
+} catch { $prevSeq = 0 }
+$nextSeq = $prevSeq + 1
+
 $latest = [ordered]@{
     daemonVersion            = $daemonVersion
     pluginVersion            = $pluginVersion
@@ -97,7 +106,7 @@ $latest = [ordered]@{
     pluginUrl                = "https://github.com/$Repo/releases/download/$tag/StudioStud.plugin.lua"
     setupUrl                 = "https://github.com/$Repo/releases/download/$tag/studio-stud-setup.exe"
     installUrl               = "$PagesBase/install.ps1"
-    channelSequence          = 1
+    channelSequence          = $nextSeq
     releasedAt               = $now
 }
 New-Item -ItemType Directory -Force (Join-Path $Root "site") | Out-Null

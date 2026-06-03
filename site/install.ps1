@@ -6,6 +6,9 @@
   Dev      (password req):  irm https://tyleradams2002.github.io/studio-stud/install-dev.ps1  | iex
 
   Local dev test:  .\scripts\install-local.ps1
+
+  MANUAL TEST (fallback): install on dev/beta before that channel's first publish — should fall
+  back to beta/release manifest and succeed (plain setup when release manifest resolves).
 #>
 param(
     [ValidateSet('release', 'beta', 'dev')]
@@ -18,35 +21,44 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-# ── Fetch manifest ────────────────────────────────────────────────────────────
-$manifestUrl = switch ($Channel) {
-    'beta' { "$PagesBase/beta/latest.json" }
-    'dev'  { "$PagesBase/dev/latest.json"  }
-    default { "$PagesBase/latest.json"     }
+# ── Fetch manifest (dev→beta→release fallback) ───────────────────────────────
+$urls = switch ($Channel) {
+    'dev'  { @("$PagesBase/dev/latest.json", "$PagesBase/beta/latest.json", "$PagesBase/latest.json") }
+    'beta' { @("$PagesBase/beta/latest.json", "$PagesBase/latest.json") }
+    default { @("$PagesBase/latest.json") }
 }
 Write-Host "Studio Stud installer  (channel: $Channel)"
-try {
-    $manifest = Invoke-RestMethod $manifestUrl -ErrorAction Stop
-} catch {
-    throw "Could not reach $manifestUrl. Has a release been published yet? ($_)"
+$manifest = $null
+$resolvedUrl = $null
+foreach ($u in $urls) {
+    try {
+        $manifest = Invoke-RestMethod $u -ErrorAction Stop
+        $resolvedUrl = $u
+        break
+    } catch {}
+}
+if (-not $manifest) {
+    throw "No manifest reachable for channel '$Channel' (tried: $($urls -join ', '))."
+}
+if ($resolvedUrl -ne $urls[0]) {
+    Write-Host "note: channel '$Channel' not yet published — using manifest at $resolvedUrl"
 }
 
 $dest = Join-Path $env:TEMP 'studio-stud-setup.exe'
 
-# ── Release channel: plain download, no password ──────────────────────────────
-if ($Channel -eq 'release') {
+# ── Plain release artifact (setupUrl present) ────────────────────────────────
+if ($manifest.setupUrl) {
     $url = $manifest.setupUrl
-    if (-not $url) { throw 'latest.json missing setupUrl — no release published yet.' }
     Write-Host "Downloading installer..."
     Invoke-WebRequest $url -OutFile $dest -UseBasicParsing
     Write-Host "Launching installer..."
-    Start-Process -FilePath $dest -ArgumentList '--install' -Wait
+    Start-Process -FilePath $dest -ArgumentList 'install' -Wait
     exit 0
 }
 
 # ── Beta / dev channel: encrypted artifact, inline PBKDF2+AES-CBC decrypt ────
 $encUrl = $manifest.setupEncUrl
-if (-not $encUrl) { throw "Beta/dev manifest missing setupEncUrl." }
+if (-not $encUrl) { throw "Manifest missing setupUrl and setupEncUrl." }
 
 # Prompt for password (masked)
 $secure = Read-Host "Enter $Channel channel password" -AsSecureString
@@ -62,7 +74,7 @@ Invoke-WebRequest $encUrl -OutFile $encPath -UseBasicParsing
 Write-Host "Decrypting..."
 $blob = [System.IO.File]::ReadAllBytes($encPath)
 
-if ($blob.Length -lt 64) { throw "Encrypted blob is too short — file may be corrupt." }
+if ($blob.Length -lt 64) { throw "Encrypted blob is too short - file may be corrupt." }
 
 $salt       = $blob[0..15]
 $iv         = $blob[16..31]
@@ -112,4 +124,4 @@ $dec.Dispose()
 Remove-Item $encPath -Force -ErrorAction SilentlyContinue
 
 Write-Host "Launching installer..."
-Start-Process -FilePath $dest -ArgumentList '--install' -Wait
+Start-Process -FilePath $dest -ArgumentList 'install' -Wait

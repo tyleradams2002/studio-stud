@@ -1,10 +1,10 @@
 //! Version checking + self-update.
 //!
-//! On `serve` startup the daemon (a) applies any update staged on a previous run, then (b) checks
-//! the published `latest.json` and, if a newer release exists, downloads it next to the running exe
-//! as `studio-stud.exe.new` (Windows cannot overwrite a running exe) plus refreshes the plugin file.
-//! The staged exe is swapped in on the next launch. All network work is best-effort: offline or
-//! malformed responses warn and never block serving.
+//! On `serve` startup the daemon applies any update staged on a previous run by swapping in
+//! `studio-stud.exe.new` (Windows cannot overwrite a running exe, but it can rename one). It does
+//! not fetch or download anything itself — checking `latest.json` and staging new artifacts is
+//! owned by `studio-stud-setup update`, which avoids races on the manifest. The fetch/compare
+//! helpers here remain public so the setup binary can reuse them.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -57,21 +57,7 @@ pub fn is_newer(latest: &str, current: &str) -> bool {
     false
 }
 
-pub fn fetch_latest(url: &str) -> Result<Value> {
-    let mut resp = agent()
-        .get(url)
-        .call()
-        .map_err(|e| anyhow!("could not reach {url}: {e}"))?;
-    let text = resp
-        .body_mut()
-        .read_to_string()
-        .map_err(|e| anyhow!("could not read {url}: {e}"))?;
-    let value: Value =
-        serde_json::from_str(&text).map_err(|e| anyhow!("malformed latest.json: {e}"))?;
-    Ok(value)
-}
-
-fn download_to(url: &str, dest: &Path) -> Result<u64> {
+pub fn download_to(url: &str, dest: &Path) -> Result<u64> {
     let mut resp = agent()
         .get(url)
         .call()
@@ -89,6 +75,20 @@ fn download_to(url: &str, dest: &Path) -> Result<u64> {
     fs::write(&tmp, &bytes)?;
     fs::rename(&tmp, dest)?;
     Ok(bytes.len() as u64)
+}
+
+pub fn fetch_latest(url: &str) -> Result<Value> {
+    let mut resp = agent()
+        .get(url)
+        .call()
+        .map_err(|e| anyhow!("could not reach {url}: {e}"))?;
+    let text = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| anyhow!("could not read {url}: {e}"))?;
+    let value: Value =
+        serde_json::from_str(&text).map_err(|e| anyhow!("malformed latest.json: {e}"))?;
+    Ok(value)
 }
 
 /// `studio-stud.exe` -> `studio-stud.exe.new`
@@ -109,10 +109,6 @@ fn version_json_path(exe: &Path) -> Option<PathBuf> {
     tool_dir(exe).map(|d| d.join("version.json"))
 }
 
-fn plugin_path(exe: &Path) -> Option<PathBuf> {
-    tool_dir(exe).map(|d| d.join("plugin").join("StudioStud.plugin.lua"))
-}
-
 fn read_version_json(exe: &Path) -> Value {
     version_json_path(exe)
         .and_then(|p| fs::read_to_string(p).ok())
@@ -129,6 +125,15 @@ fn write_version_json(exe: &Path, value: &Value) {
 }
 
 /// Installed-on-disk daemon version: prefer version.json, fall back to the running build.
+/// Public so the setup binary can compare against a channel manifest without re-fetching
+/// the release manifest.
+pub fn installed_version() -> String {
+    let exe = std::env::current_exe().ok();
+    exe.as_deref()
+        .map(installed_daemon_version)
+        .unwrap_or_else(|| current_daemon_version().to_string())
+}
+
 fn installed_daemon_version(exe: &Path) -> String {
     read_version_json(exe)
         .get("daemonVersion")
@@ -199,39 +204,6 @@ pub fn check(url: &str) -> Result<UpdateReport> {
         latest_daemon,
         latest_plugin,
     })
-}
-
-/// Download the new exe (staged) and refresh the plugin file. Returns the staged version.
-fn stage(url_meta: &Value, exe: &Path) -> Result<String> {
-    let latest_daemon = url_meta
-        .get("daemonVersion")
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string();
-    let binary_url = url_meta
-        .get("binaryUrl")
-        .and_then(Value::as_str)
-        .ok_or_else(|| anyhow!("latest.json missing binaryUrl"))?;
-    let staged = staged_exe_path(exe);
-    download_to(binary_url, &staged)?;
-
-    if let (Some(plugin_url), Some(plugin_dest)) = (
-        url_meta.get("pluginUrl").and_then(Value::as_str),
-        plugin_path(exe),
-    ) {
-        let _ = download_to(plugin_url, &plugin_dest);
-    }
-
-    let mut obj = read_version_json(exe)
-        .as_object()
-        .cloned()
-        .unwrap_or_default();
-    obj.insert("stagedDaemonVersion".into(), json!(latest_daemon));
-    if let Some(p) = url_meta.get("pluginVersion").and_then(Value::as_str) {
-        obj.insert("pluginVersion".into(), json!(p));
-    }
-    write_version_json(exe, &Value::Object(obj));
-    Ok(latest_daemon)
 }
 
 /// Run at `serve` startup: apply a previously staged update only.
