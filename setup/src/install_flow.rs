@@ -11,6 +11,8 @@ use studio_stud::setup_core::install::{
     migrate_legacy_repo, write_starter_policy,
 };
 
+use crate::legacy_cleanup;
+
 pub struct HeadlessInstallParams {
     pub install_root: PathBuf,
     pub plugins_dir: PathBuf,
@@ -25,6 +27,9 @@ pub struct HeadlessInstallParams {
 }
 
 pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
+    let repo_paths: Vec<String> = params.repo_paths.clone();
+    legacy_cleanup::run_legacy_cleanup(false, &params.install_root, &repo_paths)?;
+
     let version_meta = install_version_json(
         &params.daemon_version,
         &params.plugin_version,
