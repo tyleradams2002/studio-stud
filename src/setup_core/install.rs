@@ -30,6 +30,11 @@ pub fn default_install_root() -> PathBuf {
         .join("StudioStud")
 }
 
+/// Canonical daemon binary under the global install root (`…/StudioStud/bin/studio-stud.exe`).
+pub fn canonical_daemon_exe(install_root: &Path) -> PathBuf {
+    install_root.join("bin").join("studio-stud.exe")
+}
+
 pub fn default_plugins_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
@@ -135,6 +140,7 @@ pub fn write_starter_policy(repo_root: &Path, channel: &str) -> Result<()> {
     Ok(())
 }
 
+/// User-writable PATH entry: the install `bin/` dir (not per-repo `.studio-stud-tool`).
 pub fn install_path_shim(install_root: &Path) -> Result<()> {
     let bin = install_root.join("bin");
     let bin_str = bin.display().to_string();
