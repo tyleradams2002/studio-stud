@@ -1,13 +1,24 @@
 # Rust build output
 /target
 /bin
+/dist
 **/*.rs.bk
 
 # Local runtime install (if this repo is ever used as a consumer)
 .studio-stud-tool/
 
-# Local scratch
+# Installer secrets — only channel-signing.pub is committed; everything else stays local
+secrets/*
+!secrets/
+!secrets/channel-signing.pub
+
+# Channel build outputs
+site/beta/
+site/dev/
+
+# Local scratch and test artifacts
 .tmp/
+*.enc
 
 # Roblox place files
 *.rbxl

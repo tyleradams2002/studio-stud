@@ -1,6 +1,10 @@
+[workspace]
+members = [".", "setup"]
+resolver = "2"
+
 [package]
 name = "studio-stud"
-version = "0.4.0"
+version = "0.4.9"
 edition = "2024"
 
 [lib]
@@ -31,6 +35,30 @@ rbx_reflection_database = "2.0.2"
 ureq = { version = "3.3.0", features = ["json"] }
 syn = { version = "2.0", features = ["full"] }
 proc-macro2 = { version = "1.0", features = ["span-locations"] }
+aes = "0.8"
+argon2 = "0.5.3"
+base64 = "0.22.1"
+cbc = { version = "0.1", features = ["alloc"] }
+chacha20poly1305 = "0.10.1"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+hmac = "0.13"
+pbkdf2 = "0.13"
+rand = "0.8"
+windows = { version = "0.58", features = ["Win32_Security_Cryptography"] }
+
+[[example]]
+name = "keygen"
+path = "examples/keygen.rs"
+
+[[example]]
+name = "encrypt-artifact"
+path = "examples/encrypt-artifact.rs"
+
+[[example]]
+name = "sign-manifest"
+path = "examples/sign-manifest.rs"
 
 [dev-dependencies]
 serde_json = "1.0.150"
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+rand = "0.8"

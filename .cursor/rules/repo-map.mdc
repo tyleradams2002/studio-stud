@@ -27,11 +27,12 @@ Select-String -Path docs/repo-map.md -Pattern "live_fingerprint"
 ## Keep it fresh
 
 `.cursor/hooks.json` auto-regenerates the map on every prompt submit (only when
-a `.rs` file is newer than the map), so it should already be current. To
-regenerate manually:
+a `.rs` file is newer than the map, and only if `bin/studio-stud.exe` is built),
+so it should already be current. To regenerate manually:
 
 ```powershell
-python tools/repomap.py            # or: python tools/repomap.py --if-stale
+.\bin\studio-stud.exe repo-map     # or: cargo run --release -- repo-map
 ```
 
-Generator: `tools/repomap.py`. Command shortcut: `/repo-map`.
+Generator: the `repo-map` engine subcommand (`src/repomap.rs`, parses with
+`syn`). Command shortcut: `/repo-map`.

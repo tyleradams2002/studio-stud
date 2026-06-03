@@ -33,6 +33,7 @@ use crate::util::{
 
 #[derive(Parser)]
 #[command(name = "studio-stud")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
 #[command(about = "AI-first Roblox Studio capture and analysis tool.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -141,8 +142,8 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
@@ -154,13 +155,14 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Skip the launch-time release check / self-update.
-        #[arg(long)]
+        /// Deprecated no-op (update is owned by studio-stud-setup).
+        #[arg(long, hide = true)]
         no_update: bool,
         #[command(flatten)]
         common: CommonArgs,
     },
-    /// Check for (and stage) a newer Studio Stud release.
+    /// Deprecated: update is owned by studio-stud-setup. Kept as a no-op alias.
+    #[command(hide = true)]
     Update {
         /// Only report availability; do not download or stage.
         #[arg(long)]
@@ -711,8 +713,8 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(host: &str, port: u16, common: &CommonArgs, no_update: bool) -> Result<()> {
-    crate::update::run_on_serve(crate::update::LATEST_URL, !no_update);
+fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Result<()> {
+    crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
             "Studio Stud daemon must bind to 127.0.0.1/localhost"
@@ -725,21 +727,77 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, no_update: bool) -> Res
         )
     })?;
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
-    let repo_root = resolve_repo_root(None).map_err(|reason| anyhow!(reason.as_str()))?;
+    let mut user_cfg = crate::setup_core::load_config_or_default();
+    if let Ok(cwd_repo) = resolve_repo_root(None) {
+        let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
+    }
+    let install_root = if user_cfg.install_root.is_empty() {
+        crate::setup_core::install::default_install_root()
+    } else {
+        PathBuf::from(&user_cfg.install_root)
+    };
+    let plugins_dir = if user_cfg.plugins_dir.is_empty() {
+        crate::setup_core::install::default_plugins_dir()
+    } else {
+        PathBuf::from(&user_cfg.plugins_dir)
+    };
+    let mut addons_changed = false;
+    for entry in &mut user_cfg.repos {
+        let repo_path = PathBuf::from(&entry.path);
+        match crate::setup_core::install::reconcile_repo_addons(
+            &install_root,
+            &plugins_dir,
+            &repo_path,
+        ) {
+            Ok(enabled) => {
+                if entry.enabled_addons != enabled {
+                    entry.enabled_addons = enabled;
+                    addons_changed = true;
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "Studio Stud: addon reconcile failed for {}: {e:#}",
+                    entry.path
+                );
+            }
+        }
+    }
+    if addons_changed {
+        let _ = crate::setup_core::save_config(&user_cfg);
+    }
+    let registry = crate::RepoResolver::from_config(user_cfg.clone());
     let write_token = load_or_create_write_token(&storage.root)?;
+    let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let channel_update =
+        crate::setup_core::channel_update::ChannelUpdateCache::new(user_cfg.clone(), install_root.clone());
+    let cu = std::sync::Arc::clone(&channel_update);
+    std::thread::spawn(move || {
+        let _ = cu.ping_fields();
+    });
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
-        repo_root: repo_root.clone(),
-        write_token,
+        write_token: write_token.clone(),
+        registry,
+        install_root: install_root.clone(),
+        plugins_dir: plugins_dir.clone(),
+        port,
+        shutdown: Arc::clone(&shutdown),
+        channel_update,
     };
+    let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
     println!(
         "Studio Stud v{} serving plugin capture requests on http://{address}",
         env!("CARGO_PKG_VERSION")
     );
     println!("Storage root: {}", storage.root.display());
-    println!("Repo root: {}", repo_root.display());
+    println!(
+        "Registry: {} repo(s); PlaceId resolves per request",
+        config.registry.config_snapshot().repos.len()
+    );
+    println!("Install root: {}", install_root.display());
     println!("Write token issued");
     const SERVE_WORKERS: usize = 4;
     let (request_tx, request_rx) = mpsc::channel();

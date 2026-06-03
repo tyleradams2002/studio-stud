@@ -95,8 +95,31 @@ impl Drop for ServeGuard {
     }
 }
 
+fn write_test_config_path(repo: &Path) -> PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "studio_stud_write_http_cfg_{}_{}.json",
+        repo.file_name().and_then(|s| s.to_str()).unwrap_or("repo"),
+        std::process::id()
+    ));
+    let canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
+    let cfg = serde_json::json!({
+        "installRoot": "",
+        "pluginsDir": "",
+        "channel": "release",
+        "repos": [{
+            "path": canon.display().to_string(),
+            "placeId": 139581542512435_i64,
+            "enabledAddons": [],
+            "registeredAt": "2026-01-01T00:00:00Z"
+        }]
+    });
+    fs::write(&path, serde_json::to_string(&cfg).unwrap()).unwrap();
+    path
+}
+
 fn start_serve(repo: &Path, storage: &Path) -> ServeGuard {
     let port = pick_port();
+    let cfg_path = write_test_config_path(repo);
     let mut child = Command::new(env!("CARGO_BIN_EXE_studio-stud"))
         .args([
             "serve",
@@ -107,6 +130,7 @@ fn start_serve(repo: &Path, storage: &Path) -> ServeGuard {
             "--storage-root",
         ])
         .arg(storage)
+        .env("STUDIO_STUD_CONFIG", &cfg_path)
         .current_dir(repo)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -152,7 +176,7 @@ fn write_http_token_matrix_and_status_codes() {
     assert!(!token.is_empty());
 
     let validate_body = format!(
-        r#"{{"path":"synced/foo.luau","content":{}}}"#,
+        r#"{{"path":"synced/foo.luau","placeId":139581542512435,"content":{}}}"#,
         serde_json::to_string(&sample_content()).unwrap()
     );
 
@@ -172,7 +196,7 @@ fn write_http_token_matrix_and_status_codes() {
         port,
         "/studio-stud/write/validate",
         Some(&format!(
-            r#"{{"path":"synced/foo.luau","content":{},"token":"{token}"}}"#,
+            r#"{{"path":"synced/foo.luau","placeId":139581542512435,"content":{},"token":"{token}"}}"#,
             serde_json::to_string(&sample_content()).unwrap()
         )),
         &[],
@@ -188,7 +212,7 @@ fn write_http_token_matrix_and_status_codes() {
         port,
         "/studio-stud/write/validate",
         Some(&format!(
-            r#"{{"path":"synced/foo.luau","content":{},"token":"{token}"}}"#,
+            r#"{{"path":"synced/foo.luau","placeId":139581542512435,"content":{},"token":"{token}"}}"#,
             serde_json::to_string(&sample_content()).unwrap()
         )),
         &[("X-StudioStud-Token", &token)],

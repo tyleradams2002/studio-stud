@@ -10,13 +10,11 @@ Compiles the engine and assembles the runtime bundle. The plugin is a hand-writt
 ## Steps
 1. **Toolchain check.** `cargo` must be on PATH (or `$env:CARGO` / `~/.cargo/bin/cargo.exe`). If it's missing, stop and report — don't silently skip.
 2. **Build the engine.** Run `scripts/build-local.ps1`. It runs `cargo build --release` (with `CARGO_TARGET_DIR=target`) and copies the exe to `bin/studio-stud.exe`. If `studio-stud serve` is running it can't overwrite `bin/` — stop it and rerun. Then run `cargo clippy --all-targets -- -D warnings` and treat warnings as failures.
-3. **Package.** Run `scripts/package-release.ps1` (pass `-SkipBuild` if step 2 already built). It assembles:
-   - `dist/.studio-stud-tool/bin/studio-stud.exe`
-   - `dist/.studio-stud-tool/plugin/StudioStud.plugin.lua`
-   - `dist/.studio-stud-tool/version.json`
-   - `dist/studio-stud.exe` and `dist/StudioStud.plugin.lua` (release assets)
-   - `site/latest.json` (Pages version manifest)
-4. **Verify.** Confirm `dist/` contains the exe and the plugin `.lua`; print their paths and sizes. The script reads the version numbers (daemon / plugin / protocol) and prints them — confirm they look right.
+3. **Package.** Run `scripts/package-release.ps1` (pass `-SkipBuild` if step 2 already built). It builds `studio-stud-setup` and assembles:
+   - `dist/studio-stud.exe`, `dist/StudioStud.plugin.lua`, `dist/studio-stud-setup.exe`
+   - `dist/.studio-stud-tool/` (legacy bundle layout + `addons/` payloads from `addon-plugins/`)
+   - `site/latest.json` (release channel manifest with `setupUrl`, `channelSequence`)
+4. **Verify.** Confirm `dist/` contains all three exes and the plugin `.lua`; run `cargo test --workspace`.
 
 ## Notes
 - This is the deterministic "does it all still build" path — prefer running this over reasoning about whether a change compiles.

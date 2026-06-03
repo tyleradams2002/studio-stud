@@ -92,6 +92,25 @@ plugin (and, if/when distributed, the daemon binary), NOT to publishing the dev 
 Wherever this doc says "CI," read it as local, deterministic, zero-token gating appropriate to a
 dev-space repo — not crate-registry hygiene.
 
+### Distribution and lifecycle (installer platform)
+
+Distribution is **GitHub-only** (no Creator Store). A separate `studio-stud-setup` binary provides
+GUI install/uninstall and CLI `health` / `repair` / `update` / `repo-health` / `repo-repair`.
+
+- **Centralized install** — daemon + bundled addon payloads live under one user `installRoot`; the
+  core plugin is installed once into the Roblox Plugins folder; each registered repo only receives
+  `.studio-stud/` managed files (policy, markers, per-repo addon config).
+- **Active repo** — the long-running daemon resolves `PlaceId -> registered repo` per HTTP request
+  (not `cwd` at `serve` startup). Capture/live/write semantics are unchanged once `repo_root` is
+  resolved. Unmapped places return `unbound` until bound via installer or `POST /studio-stud/context/bind`.
+- **Addons** — separate Studio folder plugins (not core tabs); bundled hidden under `installRoot/addons/`;
+  enabled from the core plugin settings UI via daemon file ops (write-token gated).
+- **Channels** — `release` / `beta` / `development` on one Pages site (`/`, `/beta`, `/dev`); beta/dev
+  artifacts encrypted locally; passwords only in gitignored `secrets/` on the maintainer machine.
+
+This does not change Stage 4–7 diff/sync goals; it replaces per-repo `.studio-stud-tool/` bundles and
+manual plugin file loading.
+
 ---
 
 ## 3. Current State (verified)

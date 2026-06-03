@@ -1,0 +1,30 @@
+name: CI
+
+# Runs only on pull requests — gates merges into beta and main.
+# Branch pushes are handled by deploy.yml.
+on:
+  pull_request:
+    branches: [beta, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: Build & Test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build workspace
+        shell: pwsh
+        run: ./scripts/package-release.ps1
+
+      - name: Run tests
+        run: cargo test --workspace
