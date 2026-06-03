@@ -123,7 +123,7 @@ $latest = [ordered]@{
     releasedAt               = $now
 }
 New-Item -ItemType Directory -Force (Join-Path $Root "site") | Out-Null
-$latest | ConvertTo-Json | Set-Content (Join-Path $Root "site/latest.json") -Encoding utf8
+[System.IO.File]::WriteAllText((Join-Path $Root "site/latest.json"), ($latest | ConvertTo-Json), (New-Object System.Text.UTF8Encoding($false)))
 
 Write-Host "Bundle assembled under: $tool"
 Write-Host "Pages manifest written: site/latest.json (tag $tag)"
