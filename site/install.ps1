@@ -74,14 +74,9 @@ function Get-Decrypted($encPath, $outPath, $password) {
     [System.IO.File]::WriteAllBytes($outPath, $dec.TransformFinalBlock($ct,0,$ct.Length)); $dec.Dispose()
 }
 
-if ($manifest.bundleUrl) {
-    $zip = Join-Path $work 'bundle.zip'
-    Write-Host "Downloading bundle..."
-    Invoke-WebRequest $manifest.bundleUrl -OutFile $zip -UseBasicParsing
-    Expand-Archive -Path $zip -DestinationPath $work -Force
-    Invoke-Setup $work
-    exit 0
-}
+# Encrypted channels (beta/dev) first: a fallback-to-release manifest has only bundleUrl,
+# so this never shadows the plain path — but an encrypted manifest must win over any plain
+# bundleUrl it may also carry.
 if ($manifest.bundleEncUrl) {
     $secure = Read-Host "Enter $Channel channel password" -AsSecureString
     $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure)
@@ -93,6 +88,14 @@ if ($manifest.bundleEncUrl) {
     Invoke-WebRequest $manifest.bundleEncUrl -OutFile $enc -UseBasicParsing
     Write-Host "Decrypting..."
     Get-Decrypted $enc $zip $password
+    Expand-Archive -Path $zip -DestinationPath $work -Force
+    Invoke-Setup $work
+    exit 0
+}
+if ($manifest.bundleUrl) {
+    $zip = Join-Path $work 'bundle.zip'
+    Write-Host "Downloading bundle..."
+    Invoke-WebRequest $manifest.bundleUrl -OutFile $zip -UseBasicParsing
     Expand-Archive -Path $zip -DestinationPath $work -Force
     Invoke-Setup $work
     exit 0
