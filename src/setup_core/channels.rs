@@ -62,6 +62,10 @@ pub struct ChannelManifest {
     pub setup_url: Option<String>,
     pub setup_enc_url: Option<String>,
     #[serde(default)]
+    pub bundle_url: Option<String>,
+    #[serde(default)]
+    pub bundle_enc_url: Option<String>,
+    #[serde(default)]
     pub channel_sequence: u64,
     pub signature: Option<String>,
     #[serde(default)]
@@ -163,6 +167,21 @@ fn hex_decode_32(s: &str) -> Result<[u8; 32]> {
         .collect::<Result<Vec<u8>, _>>()
         .map_err(|e| anyhow!("hex decode: {e}"))?;
     bytes.try_into().map_err(|_| anyhow!("expected 32 bytes, got {}", s.len() / 2))
+}
+
+/// URL for the channel BUNDLE zip (plain on release, encrypted on beta/dev).
+pub fn bundle_artifact_url(resolved: Channel, manifest: &ChannelManifest) -> Result<String> {
+    if resolved.is_encrypted() {
+        manifest
+            .bundle_enc_url
+            .clone()
+            .ok_or_else(|| anyhow!("manifest missing bundleEncUrl for {}", resolved.as_str()))
+    } else {
+        manifest
+            .bundle_url
+            .clone()
+            .ok_or_else(|| anyhow!("manifest missing bundleUrl for {}", resolved.as_str()))
+    }
 }
 
 /// URL for the channel setup artifact (plain `setupUrl` or encrypted `setupEncUrl`).
@@ -273,6 +292,8 @@ mod tests {
             plugin_url: Some("https://example.com/StudioStud.plugin.lua".into()),
             setup_url: Some("https://example.com/studio-stud-setup.exe".into()),
             setup_enc_url: Some("https://example.com/beta/studio-stud-setup.exe.enc".into()),
+            bundle_url: Some("https://example.com/studio-stud-bundle.zip".into()),
+            bundle_enc_url: Some("https://example.com/beta/studio-stud-bundle.zip.enc".into()),
             channel_sequence: 2,
             signature: None,
             kdf_salt: None,
@@ -299,6 +320,27 @@ mod tests {
         let mut m = sample_manifest();
         m.setup_url = None;
         assert!(setup_artifact_url(Channel::Release, &m).is_err());
+    }
+
+    #[test]
+    fn bundle_artifact_url_release_uses_bundle_url() {
+        let m = sample_manifest();
+        let url = bundle_artifact_url(Channel::Release, &m).unwrap();
+        assert_eq!(url, "https://example.com/studio-stud-bundle.zip");
+    }
+
+    #[test]
+    fn bundle_artifact_url_beta_uses_enc_url() {
+        let m = sample_manifest();
+        let url = bundle_artifact_url(Channel::Beta, &m).unwrap();
+        assert_eq!(url, "https://example.com/beta/studio-stud-bundle.zip.enc");
+    }
+
+    #[test]
+    fn bundle_artifact_url_missing_field_errors() {
+        let mut m = sample_manifest();
+        m.bundle_url = None;
+        assert!(bundle_artifact_url(Channel::Release, &m).is_err());
     }
 
     #[test]

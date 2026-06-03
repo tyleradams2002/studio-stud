@@ -104,8 +104,8 @@ jobs:
           New-Item -ItemType Directory -Force site/dev | Out-Null
           cargo run --quiet --example encrypt-artifact -- `
             --password "$env:DEV_CHANNEL_PASSWORD" `
-            --input  dist/studio-stud-setup.exe `
-            --output site/dev/studio-stud-setup.exe.enc
+            --input  dist/studio-stud-bundle.zip `
+            --output site/dev/studio-stud-bundle.zip.enc
         env:
           DEV_CHANNEL_PASSWORD: ${{ secrets.DEV_CHANNEL_PASSWORD }}
 
@@ -125,7 +125,7 @@ jobs:
 
           $manifest = $base | Select-Object *
           $manifest | Add-Member -NotePropertyName channelSequence -NotePropertyValue $nextSeq     -Force
-          $manifest | Add-Member -NotePropertyName setupEncUrl     -NotePropertyValue "$pagesBase/dev/studio-stud-setup.exe.enc" -Force
+          $manifest | Add-Member -NotePropertyName bundleEncUrl    -NotePropertyValue "$pagesBase/dev/studio-stud-bundle.zip.enc" -Force
           $manifest.PSObject.Properties.Remove('setupUrl')
 
           $unsigned = 'site/dev/latest.unsigned.json'

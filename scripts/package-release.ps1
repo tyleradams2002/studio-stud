@@ -73,6 +73,18 @@ if (Test-Path $addonSrc) {
     }
 }
 
+# ---- Bundle: one zip carrying setup + daemon + plugin + addons ----
+$bundleStage = Join-Path $dist 'bundle'
+New-Item -ItemType Directory -Force $bundleStage | Out-Null
+Copy-Item "$dist/studio-stud-setup.exe"     "$bundleStage/studio-stud-setup.exe" -Force
+Copy-Item "$dist/studio-stud.exe"           "$bundleStage/studio-stud.exe" -Force
+Copy-Item "$dist/StudioStud.plugin.lua"     "$bundleStage/StudioStud.plugin.lua" -Force
+if (Test-Path "$tool/addons") { Copy-Item "$tool/addons" "$bundleStage/addons" -Recurse -Force }
+$bundleZip = Join-Path $dist 'studio-stud-bundle.zip'
+if (Test-Path $bundleZip) { Remove-Item $bundleZip -Force }
+Compress-Archive -Path "$bundleStage/*" -DestinationPath $bundleZip -Force
+Remove-Item $bundleStage -Recurse -Force
+
 $now = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 $versionJson = [ordered]@{
@@ -105,6 +117,7 @@ $latest = [ordered]@{
     binaryUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud.exe"
     pluginUrl                = "https://github.com/$Repo/releases/download/$tag/StudioStud.plugin.lua"
     setupUrl                 = "https://github.com/$Repo/releases/download/$tag/studio-stud-setup.exe"
+    bundleUrl                = "https://github.com/$Repo/releases/download/$tag/studio-stud-bundle.zip"
     installUrl               = "$PagesBase/install.ps1"
     channelSequence          = $nextSeq
     releasedAt               = $now

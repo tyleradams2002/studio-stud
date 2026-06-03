@@ -96,12 +96,13 @@ fn cmd_install_silent(daemon: Option<PathBuf>, plugin: Option<PathBuf>) -> Resul
     } else {
         PathBuf::from(&cfg.plugins_dir)
     };
-    let daemon_src = daemon
-        .or_else(resolve_daemon_src)
-        .ok_or_else(|| anyhow::anyhow!("could not locate studio-stud.exe for silent install"))?;
-    let plugin_src = plugin
-        .or_else(resolve_plugin_src)
-        .ok_or_else(|| anyhow::anyhow!("could not locate StudioStud.plugin.lua for silent install"))?;
+    let (daemon_src, plugin_src) = match (
+        daemon.or_else(resolve_daemon_src),
+        plugin.or_else(resolve_plugin_src),
+    ) {
+        (Some(d), Some(p)) => (d, p),
+        _ => update_apply::fetch_channel_bundle(&cfg)?,
+    };
     let repo_paths: Vec<String> = cfg.repos.iter().map(|r| r.path.clone()).collect();
     let daemon_version = update::installed_version();
     run_install_headless(&HeadlessInstallParams {

@@ -9,6 +9,7 @@ use studio_stud::setup_core::install::{
 };
 
 use crate::install_flow::{HeadlessInstallParams, resolve_daemon_src, resolve_plugin_src, run_install_headless};
+use crate::update_apply;
 
 use theme::{
     ToastSeverity, apply_theme, card, checkbox_row, content_alpha, divider, error_card,
@@ -603,17 +604,11 @@ fn run_install(app: &InstallInputs) -> anyhow::Result<String> {
     let install_root = PathBuf::from(&app.install_root);
     let plugins_dir = PathBuf::from(&app.plugins_dir);
 
-    let daemon_src = resolve_daemon_src().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Could not find studio-stud.exe. Build the project first (cargo build --workspace \
-             or .\\scripts\\package-release.ps1), then run setup again."
-        )
-    })?;
-    let plugin_src = resolve_plugin_src().ok_or_else(|| {
-        anyhow::anyhow!(
-            "Could not find StudioStud.plugin.lua next to the setup tool or in plugin/."
-        )
-    })?;
+    let cfg = load_config_or_default();
+    let (daemon_src, plugin_src) = match (resolve_daemon_src(), resolve_plugin_src()) {
+        (Some(d), Some(p)) => (d, p),
+        _ => update_apply::fetch_channel_bundle(&cfg)?,
+    };
 
     run_install_headless(&HeadlessInstallParams {
         install_root: install_root.clone(),
