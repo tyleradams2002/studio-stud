@@ -60,6 +60,10 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
             let _ = migrate_legacy_repo(&p, &mut cfg);
         }
     }
+    // Record the channel's current published sequence as the update baseline so the next publish
+    // triggers an update even when the semver is unchanged (F1). Best-effort: a pre-existing
+    // baseline is preserved (repair/reinstall) and offline installs degrade to the semver fallback.
+    studio_stud::setup_core::channels::record_install_baseline_seq(&mut cfg);
     sync_version_json_channel(&params.install_root, &cfg)?;
     save_config(&cfg)?;
     Ok(())
