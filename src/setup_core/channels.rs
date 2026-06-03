@@ -61,6 +61,7 @@ pub struct ChannelManifest {
     pub plugin_url: Option<String>,
     pub setup_url: Option<String>,
     pub setup_enc_url: Option<String>,
+    #[serde(default)]
     pub channel_sequence: u64,
     pub signature: Option<String>,
     #[serde(default)]
@@ -136,16 +137,23 @@ pub fn verify_manifest_signature(raw: &Value, manifest: &ChannelManifest) -> Res
         .map_err(|_| anyhow!("signature must be 64 bytes"))?;
     let signature = Signature::from_bytes(&sig_arr);
 
-    // Sign over the canonical manifest JSON without the `signature` field.
-    let mut obj = raw.as_object()
+    let canonical = canonical_manifest_bytes(raw)?;
+    verifying_key
+        .verify(&canonical, &signature)
+        .map_err(|_| anyhow!("manifest signature verification failed"))
+}
+
+/// Canonical bytes a manifest is signed/verified over: the manifest JSON object with the
+/// `signature` field removed, serialized deterministically (sorted keys via serde_json's default
+/// BTreeMap-backed Map). BOTH the signer (examples/sign-manifest.rs) and the verifier call this,
+/// so the byte string is identical regardless of how the published file was key-ordered.
+pub fn canonical_manifest_bytes(raw: &Value) -> Result<Vec<u8>> {
+    let mut obj = raw
+        .as_object()
         .cloned()
         .ok_or_else(|| anyhow!("manifest is not a JSON object"))?;
     obj.remove("signature");
-    let canonical = serde_json::to_string(&Value::Object(obj))?;
-
-    verifying_key
-        .verify(canonical.as_bytes(), &signature)
-        .map_err(|_| anyhow!("manifest signature verification failed"))
+    Ok(serde_json::to_string(&Value::Object(obj))?.into_bytes())
 }
 
 fn hex_decode_32(s: &str) -> Result<[u8; 32]> {
@@ -285,6 +293,13 @@ mod tests {
         let mut cfg = StudioStudConfig::default();
         record_channel_sequence(&mut cfg, Channel::Beta, 7);
         assert_eq!(cfg.last_channel_sequence["beta"], json!(7));
+    }
+
+    #[test]
+    fn manifest_without_channel_sequence_defaults_zero() {
+        let raw = json!({ "daemonVersion": "0.4.0", "pluginVersion": "0.3.7" });
+        let m: ChannelManifest = serde_json::from_value(raw).unwrap();
+        assert_eq!(m.channel_sequence, 0);
     }
 
     #[test]

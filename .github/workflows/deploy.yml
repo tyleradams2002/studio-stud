@@ -128,14 +128,16 @@ jobs:
           $manifest | Add-Member -NotePropertyName setupEncUrl     -NotePropertyValue "$pagesBase/dev/studio-stud-setup.exe.enc" -Force
           $manifest.PSObject.Properties.Remove('setupUrl')
 
-          $canonical = $manifest | ConvertTo-Json -Compress -Depth 10
+          $unsigned = 'site/dev/latest.unsigned.json'
+          $manifest | ConvertTo-Json -Depth 10 | Set-Content $unsigned -Encoding utf8
           $sigB64 = cargo run --quiet --example sign-manifest -- `
             --privkey "$env:CHANNEL_SIGNING_KEY" `
-            --payload $canonical
+            --manifest $unsigned
           if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed" }
 
           $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64.Trim() -Force
           $manifest | ConvertTo-Json -Depth 10 | Set-Content site/dev/latest.json -Encoding utf8
+          Remove-Item site/dev/latest.unsigned.json -ErrorAction SilentlyContinue
           Write-Host "Dev manifest written (seq $nextSeq)"
         env:
           CHANNEL_SIGNING_KEY: ${{ secrets.CHANNEL_SIGNING_KEY }}

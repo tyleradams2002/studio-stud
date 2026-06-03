@@ -72,19 +72,19 @@ $manifest | Add-Member -NotePropertyName setupEncUrl -NotePropertyValue "$PagesB
 # Remove plain setupUrl so clients don't accidentally use unencrypted path
 $manifest.PSObject.Properties.Remove('setupUrl')
 
-# Canonical JSON (sorted keys) for signing
-$canonicalJson = $manifest | ConvertTo-Json -Compress -Depth 10
-
-# ---------- 6. Sign manifest ----------
+# ---------- 6. Sign manifest (Rust canonicalizes — pass the unsigned manifest file) ----------
+$unsignedPath = Join-Path $outDir 'latest.unsigned.json'
+$manifest | ConvertTo-Json -Depth 10 | Set-Content $unsignedPath -Encoding utf8
 Write-Host "Signing manifest..."
 $signOutput = cargo run --quiet --example sign-manifest -- `
     --privkey $privKeyHex `
-    --payload $canonicalJson 2>&1
+    --manifest $unsignedPath 2>&1
 if ($LASTEXITCODE -ne 0) { throw "sign-manifest failed: $signOutput" }
 $sigB64 = $signOutput.Trim()
 
 $manifest | Add-Member -NotePropertyName signature -NotePropertyValue $sigB64 -Force
 $manifest | ConvertTo-Json -Depth 10 | Set-Content (Join-Path $outDir 'latest.json') -Encoding utf8
+Remove-Item $unsignedPath -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Published $Channel channel to $outDir"
