@@ -9,7 +9,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 use studio_stud::setup_core::channels::{
-    Channel, channel_update_available, check_anti_rollback, fetch_manifest_with_fallback,
+    Channel, channel_update_available_seq, check_anti_rollback, fetch_manifest_with_fallback,
     verify_manifest_signature,
 };
 use studio_stud::setup_core::config::{load_config_or_default, save_config};
@@ -128,8 +128,18 @@ fn cmd_update(check: bool, as_json: bool) -> Result<()> {
 
     let installed = update::installed_version();
     let on_fallback = resolved != requested;
-    let update_available =
-        channel_update_available(on_fallback, &manifest.daemon_version, &installed);
+    let last_seen_seq = cfg
+        .last_channel_sequence
+        .get(resolved.as_str())
+        .and_then(serde_json::Value::as_u64)
+        .unwrap_or(0);
+    let update_available = channel_update_available_seq(
+        on_fallback,
+        manifest.channel_sequence,
+        last_seen_seq,
+        &manifest.daemon_version,
+        &installed,
+    );
     let switching_down =
         !on_fallback && update_available && update::is_newer(&installed, &manifest.daemon_version);
 

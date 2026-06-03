@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use super::channels::{
-    Channel, channel_update_available, check_anti_rollback, fetch_manifest_with_fallback,
+    Channel, channel_update_available_seq, check_anti_rollback, fetch_manifest_with_fallback,
     verify_manifest_signature,
 };
 use super::config::StudioStudConfig;
@@ -61,8 +61,19 @@ impl ChannelUpdateCache {
             return json!({ "updateAvailable": false });
         }
         let on_fallback = resolved != requested;
-        let update_available =
-            channel_update_available(on_fallback, &manifest.daemon_version, &installed);
+        let last_seen_seq = self
+            .cfg
+            .last_channel_sequence
+            .get(resolved.as_str())
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let update_available = channel_update_available_seq(
+            on_fallback,
+            manifest.channel_sequence,
+            last_seen_seq,
+            &manifest.daemon_version,
+            &installed,
+        );
         json!({
             "latestDaemonVersion": manifest.daemon_version,
             "latestPluginVersion": manifest.plugin_version,
