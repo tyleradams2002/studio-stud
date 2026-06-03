@@ -121,9 +121,12 @@ pub(crate) fn apply_delta(
     };
 
     if request.base_revision != live.revision {
-        eprintln!(
-            "[studio-stud] delta rejected: revision_mismatch place={} base={} live={}",
-            request.place_id, request.base_revision, live.revision
+        crate::obs::event(
+            "live-delta",
+            &format!(
+                "REJECT revision_mismatch place={} base={} live={}",
+                request.place_id, request.base_revision, live.revision
+            ),
         );
 
         return Ok(json!({
@@ -146,14 +149,20 @@ pub(crate) fn apply_delta(
     apply_delta_tx(&tx, &capture_id, request, &mut acc)?;
 
     if !request.removed.is_empty() || !request.upserted.is_empty() {
-        eprintln!(
-            "[studio-stud] delta applied: place={} rev {}→{} removed={} upserted={}",
-            request.place_id,
-            live.revision,
-            live.revision + 1,
-            request.removed.len(),
-            request.upserted.len()
+        crate::obs::event(
+            "live-delta",
+            &format!(
+                "APPLY place={} rev {}->{} removed={} upserted={}",
+                request.place_id,
+                live.revision,
+                live.revision + 1,
+                request.removed.len(),
+                request.upserted.len()
+            ),
         );
+        for id in &request.removed {
+            crate::obs::event("live-delta", &format!("removed id={id}"));
+        }
     }
 
     let instance_count: i64 = tx.query_row(
