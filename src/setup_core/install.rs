@@ -288,6 +288,39 @@ pub fn disable_addon(plugins_dir: &Path, repo_root: &Path, addon_id: &str) -> Re
     Ok(())
 }
 
+/// For each addon marked enabled in the repo's committed `.studio-stud/addons/*.json`, ensure this
+/// machine's plugins dir has the addon folder laid down. Per-machine `config.json.enabled_addons`
+/// becomes a cache, not the source of truth.
+pub fn reconcile_repo_addons(
+    install_root: &Path,
+    plugins_dir: &Path,
+    repo_root: &Path,
+) -> Result<Vec<String>> {
+    let dir = repo_root.join(".studio-stud").join("addons");
+    let mut enabled = Vec::new();
+    if !dir.is_dir() {
+        return Ok(enabled);
+    }
+    for entry in fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let cfg: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path)?).unwrap_or_default();
+        if cfg.get("enabled").and_then(|v| v.as_bool()) == Some(true)
+            && let Some(id) = cfg.get("addonId").and_then(|v| v.as_str())
+            && install_root.join("addons").join(id).join("addon.json").is_file()
+        {
+            // idempotent: enable_addon removes+recopies
+            enable_addon(install_root, plugins_dir, repo_root, id)?;
+            enabled.push(id.to_string());
+        }
+    }
+    Ok(enabled)
+}
+
 fn copy_dir_all(src: &Path, dst: &Path) -> Result<()> {
     fs::create_dir_all(dst)?;
     for entry in fs::read_dir(src)? {
@@ -326,4 +359,49 @@ pub fn copy_addon_payloads_from_repo(dev_repo: &Path, install_root: &Path) -> Re
         copy_dir_all(&entry.path(), &to)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn reconcile_repo_addons_lays_down_enabled_committed_addons() {
+        let base = std::env::temp_dir().join(format!(
+            "studio-stud-reconcile-{}",
+            std::process::id()
+        ));
+        let install_root = base.join("install");
+        let plugins_dir = base.join("plugins");
+        let repo_root = base.join("repo");
+        let addon_id = "boat-modification";
+
+        fs::create_dir_all(install_root.join("addons").join(addon_id)).unwrap();
+        fs::write(
+            install_root
+                .join("addons")
+                .join(addon_id)
+                .join("addon.json"),
+            r#"{"id":"boat-modification"}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(repo_root.join(".studio-stud").join("addons")).unwrap();
+        fs::write(
+            repo_root
+                .join(".studio-stud")
+                .join("addons")
+                .join(format!("{addon_id}.json")),
+            json!({ "enabled": true, "addonId": addon_id }).to_string(),
+        )
+        .unwrap();
+        fs::create_dir_all(&plugins_dir).unwrap();
+
+        let enabled =
+            reconcile_repo_addons(&install_root, &plugins_dir, &repo_root).unwrap();
+        assert_eq!(enabled, vec![addon_id.to_string()]);
+        assert!(plugins_dir.join(addon_id).join("addon.json").is_file());
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

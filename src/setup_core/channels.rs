@@ -68,10 +68,6 @@ pub struct ChannelManifest {
     #[serde(default)]
     pub channel_sequence: u64,
     pub signature: Option<String>,
-    #[serde(default)]
-    pub kdf_salt: Option<String>,
-    #[serde(default)]
-    pub kdf_nonce: Option<String>,
 }
 
 /// Walk the fallback chain until a manifest is found, so users always have a version to run.
@@ -102,7 +98,7 @@ pub fn fetch_manifest_with_fallback(
 pub fn fetch_manifest(channel: Channel) -> Result<(ChannelManifest, Value)> {
     let url = channel.manifest_url();
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(Duration::from_secs(12)))
+        .timeout_global(Some(Duration::from_secs(6)))
         .build()
         .into();
     let mut resp = agent.get(&url).call().map_err(|e| anyhow!("{url}: {e}"))?;
@@ -296,8 +292,6 @@ mod tests {
             bundle_enc_url: Some("https://example.com/beta/studio-stud-bundle.zip.enc".into()),
             channel_sequence: 2,
             signature: None,
-            kdf_salt: None,
-            kdf_nonce: None,
         }
     }
 

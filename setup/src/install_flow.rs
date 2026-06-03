@@ -49,6 +49,7 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
     if let Some(ch) = &params.channel {
         cfg.channel = ch.clone();
     }
+    cfg.versions.setup = env!("CARGO_PKG_VERSION").to_string();
     cfg.versions.daemon = params.daemon_version.clone();
     cfg.versions.plugin = params.plugin_version.clone();
     if params.install_repos {
