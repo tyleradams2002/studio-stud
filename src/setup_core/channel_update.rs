@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -13,10 +14,20 @@ use crate::update;
 
 const CACHE_TTL: Duration = Duration::from_secs(86400);
 
-#[derive(Default)]
 struct CacheInner {
     fetched_at: Option<Instant>,
     fields: Value,
+    refreshing: AtomicBool,
+}
+
+impl Default for CacheInner {
+    fn default() -> Self {
+        Self {
+            fetched_at: None,
+            fields: Value::Null,
+            refreshing: AtomicBool::new(false),
+        }
+    }
 }
 
 pub struct ChannelUpdateCache {
@@ -34,16 +45,37 @@ impl ChannelUpdateCache {
         })
     }
 
-    pub fn ping_fields(&self) -> Value {
+    pub fn ping_fields(self: &Arc<Self>) -> Value {
         let mut inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let stale = inner
             .fetched_at
             .is_none_or(|t| t.elapsed() >= CACHE_TTL);
         if stale {
+            if inner.fetched_at.is_none() {
+                drop(inner);
+                self.maybe_start_background_refresh();
+                return json!({ "updateAvailable": false });
+            }
             inner.fields = self.refresh_fields();
             inner.fetched_at = Some(Instant::now());
         }
         inner.fields.clone()
+    }
+
+    fn maybe_start_background_refresh(self: &Arc<Self>) {
+        let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if inner.refreshing.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        drop(inner);
+        let this = Arc::clone(self);
+        std::thread::spawn(move || {
+            let fields = this.refresh_fields();
+            let mut inner = this.inner.lock().unwrap_or_else(|e| e.into_inner());
+            inner.fields = fields;
+            inner.fetched_at = Some(Instant::now());
+            inner.refreshing.store(false, Ordering::Release);
+        });
     }
 
     fn refresh_fields(&self) -> Value {
@@ -99,6 +131,7 @@ fn installed_version_at(install_root: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn installed_version_at_reads_install_root_version_json() {
@@ -114,5 +147,14 @@ mod tests {
         .unwrap();
         assert_eq!(installed_version_at(&dir), "9.9.9");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ping_fields_empty_cache_returns_immediately() {
+        let cache = ChannelUpdateCache::new(StudioStudConfig::default(), PathBuf::from("."));
+        let start = Instant::now();
+        let fields = cache.ping_fields();
+        assert!(start.elapsed() < Duration::from_millis(100));
+        assert_eq!(fields["updateAvailable"], false);
     }
 }
