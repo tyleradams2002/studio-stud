@@ -460,7 +460,7 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 
 ---
 
-# Phase 4 — Capture/DB performance (Cluster D / F-H, F-J) — **COMPLETE** (4.2 size check optional)
+# Phase 4 — Capture/DB performance (Cluster D / F-H, F-J) — **COMPLETE**
 
 **Root causes (confirmed):**
 - F-H is plugin-side: capture/complete uses the default 30 s timeout ([plugin:1013,1815](../../../plugin/StudioStud.plugin.lua#L1815)) but Roblox `HttpService` caps long requests lower (~10 s observed), and the daemon **blocks** the response thread while writing the whole DB ([http.rs:605-659](../../../src/http.rs#L605)).
@@ -488,7 +488,7 @@ Decision point for the executor (measure first): the cheapest win is compaction;
 
 - [x] **Step 1: Add compaction PRAGMA** — in `open_db`, add `PRAGMA auto_vacuum = INCREMENTAL;` (must be set before tables exist on a fresh DB) and, after a full re-ingest/`delete_all_tables`, run `PRAGMA incremental_vacuum;` (or a one-shot `VACUUM` in the materialize path). Note: `auto_vacuum` only takes effect on a freshly-created DB or after a `VACUUM`, so include a one-time `VACUUM` migration on open if the existing DB has `auto_vacuum=0`.
 
-- [ ] **Step 2: Measure** — capture the place, record `syncs.db` size before/after. Confirm a meaningful reduction from 287 MB. *(Pending maintainer: one capture on build `d88e206`+.)*
+- [x] **Step 2: Measure** — `syncs.db` **~129 MB** on place `109595751023912` (2026-06-04) vs **~287 MB** validation baseline.
 
 - [x] **Step 3: Evaluate de-dup** — stopped writing `instance_properties` rows; readers use `property_json` (legacy rows still read if present).
 
@@ -517,11 +517,17 @@ git commit -m "perf(db): incremental auto_vacuum + remove duplicate property sto
 | Capture without false timeout | **Met** — async complete + plugin poll (`9cc9317`); maintainer captures succeed |
 | Timings in `daemon.log` | **Met** — sub-stage spans + `materialize_snapshot` **2240 ms** (2026-06-04) |
 | Re-baseline faster | **Met** — ~33 s → **~2.2 s** (`4ae3e3e`) |
-| `syncs.db` materially smaller | **Likely met** — dedup + vacuum in `d88e206`; **confirm file size** vs ~287 MB baseline (Task 4.2 Step 2) |
+| `syncs.db` materially smaller | **Met** — **~129 MB** after capture on `d88e206`+ (was **~287 MB** in validation report; ~55% smaller) |
 
 ---
 
-## Phases 1–4 sign-off (ready for Phase 5)
+## Phases 1–6 sign-off
+
+| Phase | Code on `development` | Verification | Gate |
+|---|---|---|---|
+| **6** CLI papercuts | `0c0d58c` … `b4750fe` | `cargo test` (60 tests) + integration `cli_version` / `policy_place_ids` | **Complete** |
+
+## Phases 1–5 sign-off (historical)
 
 | Phase | Code on `development` | Verification | Gate |
 |---|---|---|---|
@@ -529,14 +535,13 @@ git commit -m "perf(db): incremental auto_vacuum + remove duplicate property sto
 | **2** Install integrity | `0269ed7` … `d8e1b6a` | Maintainer `cleanup-legacy`; canonical PATH | **Complete** |
 | **3** Deletes (F-I) | *(no fix commits)* | Diagnosis closed; 3.2–3.4 cancelled; live removes observed in logs | **Complete (no code change)** |
 | **4.1** Async capture | `9cc9317` | No false timeout; finalize ~2.5 s | **Complete** |
-| **4.2** DB shrink | `d88e206` | Dedup + compaction shipped; **Step 2 size check optional** | **Complete*** |
+| **4.2** DB shrink | `d88e206` | **129 MB** `syncs.db` vs **287 MB** baseline | **Complete** |
 | **4.3** Re-baseline perf | `4ae3e3e` | Log proof: ingest **1516 ms**, total **2240 ms** | **Complete** |
+| **5** Config + channel | `aadb0fe` … `34cad62` | Maintainer `health --json` + `update --check --json` on dev install | **Complete** |
 
-\*One optional maintainer check before calling Phase 4 fully closed: after a capture on current build, compare `%LOCALAPPDATA%\StudioStud\FishersLife\places\<placeId>\syncs.db` to the old **~287 MB** report figure.
+**Repo health (2026-06-04):** `cargo test` — all suites green (55 lib + integration).
 
-**Repo health (2026-06-04):** `cargo test` — all suites green (53 lib + integration).
-
-**Not blocking Phase 5:** Phase 3 original exit criteria (3/3 deletes live in runbook without `verify`) were **waived** — F-I ghost delete not reproduced on instrumented builds; reopen only if validation regressions appear.
+**Not blocking Phase 6:** Phase 3 original exit criteria (3/3 deletes live in runbook without `verify`) were **waived** — F-I ghost delete not reproduced on instrumented builds; reopen only if validation regressions appear.
 
 ---
 
@@ -550,33 +555,35 @@ git commit -m "perf(db): incremental auto_vacuum + remove duplicate property sto
 
 **Files:** Modify `src/setup_core/config.rs`, `src/setup_core/install.rs`
 
-- [ ] **Step 1: Write a failing test** — in `config.rs` `#[cfg(test)]`, construct a config, call a new `populate_install_fields(&mut cfg, install_root, plugins_dir, channel, versions)`, assert all four fields are non-empty afterward.
-- [ ] **Step 2: Run red** — `cargo test config::tests::populate_install_fields_fills_all`. Expected: FAIL.
-- [ ] **Step 3: Implement** `populate_install_fields` and call it from the install flow with the real install root, plugins dir, resolved channel, and the building binaries' versions (`env!("CARGO_PKG_VERSION")` for daemon/setup; the plugin version from the bundle). Fill `VersionsInfo` (currently dead).
-- [ ] **Step 4: Run green** — same command. Expected: PASS.
-- [ ] **Step 5: Commit** `fix(config): populate installRoot/pluginsDir/channel/versions on install (F-3)`.
+- [x] **Step 1: Write a failing test** — in `config.rs` `#[cfg(test)]`, construct a config, call a new `populate_install_fields(&mut cfg, install_root, plugins_dir, channel, versions)`, assert all four fields are non-empty afterward.
+- [x] **Step 2: Run red** — `cargo test config::tests::populate_install_fields_fills_all`. Expected: FAIL.
+- [x] **Step 3: Implement** `populate_install_fields` and call it from the install flow with the real install root, plugins dir, resolved channel, and the building binaries' versions (`env!("CARGO_PKG_VERSION")` for daemon/setup; the plugin version from the bundle). Fill `VersionsInfo` (currently dead).
+- [x] **Step 4: Run green** — same command. Expected: PASS.
+- [x] **Step 5: Commit** `fix(config): populate installRoot/pluginsDir/channel/versions on install (F-3)`.
 
 ### Task 5.2: Self-heal config on serve start
 
 **Files:** Modify `src/cli.rs` (`cmd_serve`, after config load ≈[cli.rs:730](../../../src/cli.rs#L730)), `src/setup_core/config.rs`
 
-- [ ] **Step 1:** After `load_config_or_default()`, if `installRoot` is empty, infer it from the running daemon's own location (`std::env::current_exe()` → parent of `bin/`), then re-run `seed_config_from_install_version` so `channel` and `versions` fill even when the install record was blank. `save_config` if anything changed. Emit `obs::event("config", "self-healed installRoot/channel on serve")`.
-- [ ] **Step 2: Build + test** — `cargo build` && `cargo test`. Expected clean/green.
-- [ ] **Step 3: Manual verify** — on the cleaned machine, after one `serve`, `studio-stud-setup health --json` returns `ok:true` with non-empty `installRoot`/`channel` and `repoCount` including the real place's repo once bound.
-- [ ] **Step 4: Commit** `fix(config): self-heal installRoot/channel/versions on serve start (F-3/Call-out 2)`.
+- [x] **Step 1:** After `load_config_or_default()`, if `installRoot` is empty, infer it from the running daemon's own location (`std::env::current_exe()` → parent of `bin/`), then re-run `seed_config_from_install_version` so `channel` and `versions` fill even when the install record was blank. `save_config` if anything changed. Emit `obs::event("config", "self-healed installRoot/channel on serve")`.
+- [x] **Step 2: Build + test** — `cargo build` && `cargo test`. Expected clean/green.
+- [x] **Step 3: Manual verify** — `health --json` → `ok:true`, `installRoot`/`channel:"dev"`/`repoCount:3` (2026-06-04 maintainer).
+- [x] **Step 4: Commit** `fix(config): self-heal installRoot/channel/versions on serve start (F-3/Call-out 2)`.
 
 ### Task 5.3: `update --check` honors channel + `--channel` override (F-G)
 
 **Files:** Modify `setup/src/main.rs` (`cmd_update`), `src/setup_core/config.rs`
 
-- [ ] **Step 1: Write a failing test** for channel resolution precedence: explicit `--channel` > `config.json.channel` (if non-empty) > `version.json.channel` > `"release"`. Put the precedence in a pure `resolve_update_channel(explicit, &cfg, version_json_channel)` function and test all four branches.
-- [ ] **Step 2: Run red** — `cargo test -p studio-stud-setup resolve_update_channel`. Expected FAIL.
-- [ ] **Step 3: Implement** the pure resolver + add `#[arg(long)] channel: Option<String>` (and a `--dev` convenience) to the `update` subcommand; have `cmd_update` use the resolver and fall back to `version.json` when `config.json.channel` is empty.
-- [ ] **Step 4: Run green** — same command. Expected PASS.
-- [ ] **Step 5: Manual verify** — `studio-stud-setup update --check --json` on the dev install now reports `channel:"dev"` (matching `/ping`), and `--channel dev` forces it explicitly.
-- [ ] **Step 6: Commit** `fix(update): honor version.json channel + add --channel override (F-G)`.
+- [x] **Step 1: Write a failing test** for channel resolution precedence: explicit `--channel` > `config.json.channel` (if non-empty) > `version.json.channel` > `"release"`. Put the precedence in a pure `resolve_update_channel(explicit, &cfg, version_json_channel)` function and test all four branches.
+- [x] **Step 2: Run red** — `cargo test resolve_update_channel`. Expected FAIL.
+- [x] **Step 3: Implement** the pure resolver + add `#[arg(long)] channel: Option<String>` (and a `--dev` convenience) to the `update` subcommand; have `cmd_update` use the resolver and fall back to `version.json` when `config.json.channel` is empty.
+- [x] **Step 4: Run green** — same command. Expected PASS.
+- [x] **Step 5: Manual verify** — `update --check --json` → `channel`/`requestedChannel:"dev"`, `onFallback:false` (2026-06-04 maintainer).
+- [x] **Step 6: Commit** `fix(update): honor version.json channel + add --channel override (F-G)`.
 
-**Phase 5 exit criteria:** `health --json` → `ok:true` with populated fields; `update --check` resolves `dev` on the dev install; `config.json` and `version.json` agree.
+**Phase 5 exit criteria:** **Met** (2026-06-04) — `health --json` ok with populated `installRoot`/`channel`/`repoCount`; `update --check` resolves `dev`. Commits: `aadb0fe`, `accd20f`, `34cad62`.
+
+**Note:** `updateAvailable:true` with `installed==latest==0.4.9` is expected when the dev manifest `channelSequence` is ahead of `lastChannelSequence` in config (F1 republish trigger) — not a semver mismatch.
 
 ---
 
@@ -588,7 +595,7 @@ All confirmed, all small, all unit-testable.
 
 **Files:** Modify `src/cli.rs` (`Cli` struct [cli.rs:34-41](../../../src/cli.rs#L34) and the dispatch `match`)
 
-- [ ] **Step 1: Write a failing integration test** — `tests/cli_version.rs`:
+- [x] **Step 1: Write a failing integration test** — `tests/cli_version.rs`:
 
 ```rust
 #[test]
@@ -603,35 +610,35 @@ fn version_flag_prints_version() {
 }
 ```
 
-- [ ] **Step 2: Run red** — Run: `cargo test --test cli_version`. Expected: FAIL (`--version` rejected as unexpected argument).
+- [x] **Step 2: Run red** — Run: `cargo test --test cli_version`. Expected: FAIL (`--version` rejected as unexpected argument).
 
-- [ ] **Step 3: Implement** — change `command: Commands` to `command: Option<Commands>` so clap's auto `--version`/`--help` short-circuit without requiring a subcommand; in the dispatch `match`, add a `None =>` arm that prints help (`Cli::command().print_help()` or the long help) and returns. Keep `#[command(version = env!("CARGO_PKG_VERSION"))]`.
+- [x] **Step 3: Implement** — change `command: Commands` to `command: Option<Commands>` so clap's auto `--version`/`--help` short-circuit without requiring a subcommand; in the dispatch `match`, add a `None =>` arm that prints help (`Cli::command().print_help()` or the long help) and returns. Keep `#[command(version = env!("CARGO_PKG_VERSION"))]`.
 
-- [ ] **Step 4: Run green** — Run: `cargo test --test cli_version`. Expected: PASS. Also confirm bare `studio-stud` prints help (not a panic).
+- [x] **Step 4: Run green** — Run: `cargo test --test cli_version`. Expected: PASS. Also confirm bare `studio-stud` prints help (not a panic).
 
-- [ ] **Step 5: Commit** `feat(cli): support 'studio-stud --version' (F-A)`.
+- [x] **Step 5: Commit** `feat(cli): support 'studio-stud --version' (F-A)`.
 
 ### Task 6.2: `--repo-root .` works (F-B)
 
 **Files:** Modify `src/policy.rs` (`resolve_repo_root` ≈[policy.rs:187](../../../src/policy.rs#L187))
 
-- [ ] **Step 1: Read `resolve_repo_root` fully** (both the `Some(explicit)` and the default branch) so the fix covers relative explicit *and* default (both fail per F-B).
+- [x] **Step 1: Read `resolve_repo_root` fully** (both the `Some(explicit)` and the default branch) so the fix covers relative explicit *and* default (both fail per F-B).
 
-- [ ] **Step 2: Write a failing test** — in `policy.rs` `#[cfg(test)]`: create a temp dir with `.studio-stud/policy.json`, `std::env::set_current_dir` into it, call `resolve_repo_root(Some(Path::new(".")))`, assert the returned path is absolute and that `returned.join(".studio-stud/policy.json")` exists. (Guard with a mutex if other tests touch CWD.)
+- [x] **Step 2: Write a failing test** — in `policy.rs` `#[cfg(test)]`: create a temp dir with `.studio-stud/policy.json`, `std::env::set_current_dir` into it, call `resolve_repo_root(Some(Path::new(".")))`, assert the returned path is absolute and that `returned.join(".studio-stud/policy.json")` exists. (Guard with a mutex if other tests touch CWD.)
 
-- [ ] **Step 3: Run red** — Run: `cargo test --lib policy::tests::repo_root_relative_resolves`. Expected: FAIL (returned path is `.`, join fails / not absolute).
+- [x] **Step 3: Run red** — Run: `cargo test --lib policy::tests::repo_root_relative_resolves`. Expected: FAIL (returned path is `.`, join fails / not absolute).
 
-- [ ] **Step 4: Implement** — make `resolve_repo_root` return an absolute path in every branch: if the chosen root is relative, join it onto `std::env::current_dir()` and canonicalize (`std::fs::canonicalize`), mapping IO errors to the existing `BlockedReason`. Apply to both the explicit and default branches.
+- [x] **Step 4: Implement** — make `resolve_repo_root` return an absolute path in every branch: if the chosen root is relative, join it onto `std::env::current_dir()` and canonicalize (`std::fs::canonicalize`), mapping IO errors to the existing `BlockedReason`. Apply to both the explicit and default branches.
 
-- [ ] **Step 5: Run green** — same command. Expected: PASS. Also manually confirm `studio-stud project check --repo-root .` and `policy check --repo-root .` now return `ok:true` from the repo root.
+- [x] **Step 5: Run green** — same command. Expected: PASS. Also manually confirm `studio-stud project check --repo-root .` and `policy check --repo-root .` now return `ok:true` from the repo root.
 
-- [ ] **Step 6: Commit** `fix(cli): canonicalize --repo-root against CWD so '.' works (F-B)`.
+- [x] **Step 6: Commit** `fix(cli): canonicalize --repo-root against CWD so '.' works (F-B)`.
 
 ### Task 6.3: `allowedPlaceIds` accepts strings (F-K)
 
 **Files:** Modify `src/policy.rs` (`Policy.allowed_place_ids` [policy.rs:29](../../../src/policy.rs#L29)); Create `tests/policy_place_ids.rs`
 
-- [ ] **Step 1: Write a failing test** — `tests/policy_place_ids.rs` deserializes a policy JSON with `"allowedPlaceIds": ["109595751023912"]` and asserts it parses and contains `109595751023912i64`:
+- [x] **Step 1: Write a failing test** — `tests/policy_place_ids.rs` deserializes a policy JSON with `"allowedPlaceIds": ["109595751023912"]` and asserts it parses and contains `109595751023912i64`:
 
 ```rust
 use studio_stud::policy::Policy; // adjust to the actual public path
@@ -647,9 +654,9 @@ fn allowed_place_ids_accepts_string_and_int() {
 
 (If `Policy` has no public `from_json_str`, deserialize via `serde_json::from_str::<Policy>` and make the test path match the real visibility; expose a small `pub fn from_json_str` if needed.)
 
-- [ ] **Step 2: Run red** — Run: `cargo test --test policy_place_ids`. Expected: FAIL (`invalid type: string … expected i64`).
+- [x] **Step 2: Run red** — Run: `cargo test --test policy_place_ids`. Expected: FAIL (`invalid type: string … expected i64`).
 
-- [ ] **Step 3: Implement the string-or-int deserializer** — add to `policy.rs`:
+- [x] **Step 3: Implement the string-or-int deserializer** — add to `policy.rs`:
 
 ```rust
 fn de_place_ids<'de, D>(d: D) -> Result<Vec<i64>, D::Error>
@@ -674,19 +681,19 @@ where
 
 Then annotate the field: `#[serde(default, deserialize_with = "de_place_ids")] pub allowed_place_ids: Vec<i64>,`. Note the field-named error message (addresses the "never names allowedPlaceIds" complaint).
 
-- [ ] **Step 4: Run green** — Run: `cargo test --test policy_place_ids`. Expected: PASS. Run `cargo test` to confirm no policy regressions.
+- [x] **Step 4: Run green** — Run: `cargo test --test policy_place_ids`. Expected: PASS. Run `cargo test` to confirm no policy regressions.
 
-- [ ] **Step 5: Commit** `fix(policy): accept string or int allowedPlaceIds with named error (F-K)`.
+- [x] **Step 5: Commit** `fix(policy): accept string or int allowedPlaceIds with named error (F-K)`.
 
 ### Task 6.4: Minor fixes
 
 **Files:** Modify `src/query.rs` (count-only output) and confirm the fail-open security default
 
-- [ ] **Step 1: `--count-only` output** — find where `--count-only` builds its JSON and stop emitting `limit`/`truncated` when only counting (they are misleading). Add/adjust a test asserting `count-only` JSON has no `truncated` field.
-- [ ] **Step 2: Document the fail-open default** — empty `allowedPlaceIds` = allow-all is a **product decision**, not a code bug. Do not silently change it. Add a one-line doc comment near the policy place-check and surface the decision to the maintainer: confirm whether an empty allowlist on a write-safety gate should fail-open (current) or fail-closed. Record the answer; only change behavior if the maintainer asks.
-- [ ] **Step 3: Commit** `fix(query): count-only omits misleading limit/truncated; doc fail-open allowlist`.
+- [x] **Step 1: `--count-only` output** — find where `--count-only` builds its JSON and stop emitting `limit`/`truncated` when only counting (they are misleading). Add/adjust a test asserting `count-only` JSON has no `truncated` field.
+- [x] **Step 2: Document the fail-open default** — empty `allowedPlaceIds` = allow-all is a **product decision**, not a code bug. Do not silently change it. Add a one-line doc comment near the policy place-check and surface the decision to the maintainer: confirm whether an empty allowlist on a write-safety gate should fail-open (current) or fail-closed. Record the answer; only change behavior if the maintainer asks.
+- [x] **Step 3: Commit** `fix(query): count-only omits misleading limit/truncated; doc fail-open allowlist`.
 
-**Phase 6 exit criteria:** `studio-stud --version` works; `--repo-root .` works for `project check`/`policy check`; string `allowedPlaceIds` parse; count-only output is honest.
+**Phase 6 exit criteria:** **Met** — `studio-stud --version` works; `--repo-root .` canonicalizes; string `allowedPlaceIds` parse; count-only JSON is `{returned,total,items}` only.
 
 ---
 
