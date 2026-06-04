@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use crate::analyze::cmd_analyze;
@@ -37,7 +37,7 @@ use crate::util::{
 #[command(about = "AI-first Roblox Studio capture and analysis tool.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
@@ -298,19 +298,24 @@ pub fn run() -> Result<()> {
 
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Status {
+        None => {
+            let mut cmd = Cli::command();
+            cmd.print_long_help()?;
+            Ok(())
+        }
+        Some(Commands::Status {
             markdown,
             paths,
             common,
-        } => cmd_status(markdown, paths, &common),
-        Commands::Doctor {
+        }) => cmd_status(markdown, paths, &common),
+        Some(Commands::Doctor {
             json: _,
             markdown,
             paths,
             common,
-        } => cmd_doctor(markdown, paths, &common),
-        Commands::Ingest { raw, common } => cmd_ingest(&raw, &common),
-        Commands::Analyze {
+        }) => cmd_doctor(markdown, paths, &common),
+        Some(Commands::Ingest { raw, common }) => cmd_ingest(&raw, &common),
+        Some(Commands::Analyze {
             place,
             reports,
             focus,
@@ -318,7 +323,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             json,
             markdown,
             common,
-        } => cmd_analyze(
+        }) => cmd_analyze(
             place.as_deref(),
             reports,
             focus,
@@ -327,7 +332,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             markdown,
             &common,
         ),
-        Commands::Query {
+        Some(Commands::Query {
             place,
             class_name,
             find,
@@ -348,7 +353,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             json: _,
             markdown,
             common,
-        } => cmd_query(
+        }) => cmd_query(
             place.as_deref(),
             class_name,
             find,
@@ -369,54 +374,54 @@ fn dispatch(cli: Cli) -> Result<()> {
             markdown,
             &common,
         ),
-        Commands::Capture { timeout, no_wait } => cmd_capture(timeout, no_wait),
-        Commands::Update { check } => cmd_update(check),
-        Commands::Serve {
+        Some(Commands::Capture { timeout, no_wait }) => cmd_capture(timeout, no_wait),
+        Some(Commands::Update { check }) => cmd_update(check),
+        Some(Commands::Serve {
             host,
             port,
             profile,
             no_update,
             common,
-        } => cmd_serve(&host, port, &common, no_update, profile),
-        Commands::Daemon {
+        }) => cmd_serve(&host, port, &common, no_update, profile),
+        Some(Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        } => cmd_serve(&host, port, &common, no_update, false),
-        Commands::Bench {
+        }) => cmd_serve(&host, port, &common, no_update, false),
+        Some(Commands::Bench {
             raw,
             baseline,
             delta,
             iterations,
             json,
-        } => cmd_bench(
+        }) => cmd_bench(
             &raw,
             baseline.as_deref(),
             delta.as_deref(),
             iterations,
             json,
         ),
-        Commands::LiveDelta { raw, place, common } => {
+        Some(Commands::LiveDelta { raw, place, common }) => {
             cmd_live_delta(&raw, place.as_deref(), &common)
         }
-        Commands::LiveVerify { raw, place, common } => {
+        Some(Commands::LiveVerify { raw, place, common }) => {
             cmd_live_verify(&raw, place.as_deref(), &common)
         }
-        Commands::LiveDump { place, common } => cmd_live_dump(place.as_deref(), &common),
-        Commands::Policy { args } => cmd_policy(args),
-        Commands::ProjectCmd { args } => cmd_project(args),
-        Commands::WriteValidate { args } => cmd_write_validate(args),
-        Commands::WritePreview { args } => cmd_write_preview(args),
-        Commands::WriteApply { args } => cmd_write_apply(args),
-        Commands::RepoMap {
+        Some(Commands::LiveDump { place, common }) => cmd_live_dump(place.as_deref(), &common),
+        Some(Commands::Policy { args }) => cmd_policy(args),
+        Some(Commands::ProjectCmd { args }) => cmd_project(args),
+        Some(Commands::WriteValidate { args }) => cmd_write_validate(args),
+        Some(Commands::WritePreview { args }) => cmd_write_preview(args),
+        Some(Commands::WriteApply { args }) => cmd_write_apply(args),
+        Some(Commands::RepoMap {
             root,
             out,
             json,
             stdout,
             if_stale,
             quiet,
-        } => crate::repomap::cmd_repo_map(
+        }) => crate::repomap::cmd_repo_map(
             root.as_deref(),
             out.as_deref(),
             json,
