@@ -137,7 +137,8 @@ pub(crate) fn ensure_incremental_auto_vacuum(conn: &Connection) -> Result<()> {
 
 /// Reclaim space after a full re-ingest (capture materialize or similar bulk rewrite).
 pub(crate) fn compact_db_after_bulk_write(conn: &Connection) -> Result<()> {
-    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;")?;
+    // PASSIVE checkpoint: much faster than TRUNCATE after a full table rewrite.
+    conn.execute_batch("PRAGMA wal_checkpoint(PASSIVE); PRAGMA incremental_vacuum;")?;
     Ok(())
 }
 
