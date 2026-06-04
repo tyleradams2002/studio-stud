@@ -13,7 +13,10 @@ use studio_stud::setup_core::channels::{
     Channel, channel_update_available_seq, check_anti_rollback, fetch_manifest_with_fallback,
     verify_manifest_signature,
 };
-use studio_stud::setup_core::config::{load_config_or_default, register_repo, save_config};
+use studio_stud::setup_core::config::{
+    load_config_or_default, read_install_version_channel, register_repo, resolve_update_channel,
+    save_config,
+};
 use studio_stud::setup_core::health::{
     health_json, repo_health_checks, repo_health_json, user_health_checks,
 };
@@ -60,6 +63,12 @@ enum Commands {
     Update {
         #[arg(long)]
         check: bool,
+        /// Override channel for this check/apply (dev|beta|release)
+        #[arg(long)]
+        channel: Option<String>,
+        /// Shorthand for `--channel dev`
+        #[arg(long)]
+        dev: bool,
     },
     /// Verify installation; runs repair on failure
     Health,
@@ -97,7 +106,11 @@ fn main() -> Result<()> {
         } => gui::run_install_gui(channel).map_err(|e| anyhow::anyhow!("{e}"))?,
         Commands::AddRepo { path } => cmd_add_repo(path, cli.json)?,
         Commands::Uninstall => gui::run_uninstall_gui().map_err(|e| anyhow::anyhow!("{e}"))?,
-        Commands::Update { check } => cmd_update(check, cli.json)?,
+        Commands::Update {
+            check,
+            channel,
+            dev,
+        } => cmd_update(check, channel, dev, cli.json)?,
         Commands::Health => cmd_health(cli.json)?,
         Commands::Repair => cmd_repair(cli.json)?,
         Commands::RepoHealth { path } => cmd_repo_health(&path, cli.json)?,
@@ -228,9 +241,21 @@ fn cmd_add_repo(path: Option<PathBuf>, as_json: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_update(check: bool, as_json: bool) -> Result<()> {
+fn cmd_update(
+    check: bool,
+    channel_override: Option<String>,
+    dev: bool,
+    as_json: bool,
+) -> Result<()> {
     let cfg = load_config_or_default();
-    let requested = Channel::from_str(&cfg.channel);
+    let explicit = channel_override.or_else(|| dev.then(|| "dev".to_string()));
+    let version_json_channel = read_install_version_channel(&cfg);
+    let resolved_channel = resolve_update_channel(
+        explicit.as_deref(),
+        &cfg,
+        version_json_channel.as_deref(),
+    );
+    let requested = Channel::from_str(&resolved_channel);
 
     let (manifest, raw, resolved) = fetch_manifest_with_fallback(requested)?;
     verify_manifest_signature(&raw, &manifest)?;
