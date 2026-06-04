@@ -21,7 +21,8 @@ use crate::storage::{
 
 use crate::util::{
     CRITICAL_NAMES, DEFAULT_PROJECT_KEY, build_search_text, hex_bytes, looks_like_invisible_helper,
-    matches_keyword, normalize_query_path, now_utc, open_db, opt_str_field, path_root, safe_key,
+    compact_db_after_bulk_write, matches_keyword, normalize_query_path, now_utc, open_db,
+    opt_str_field, path_root, safe_key,
     str_field, value_to_string,
 };
 
@@ -83,6 +84,8 @@ pub(crate) fn materialize_snapshot(
     };
 
     write_live_state(&conn, &live_state)?;
+
+    compact_db_after_bulk_write(&conn)?;
 
     fs::write(&place.baseline_path, &raw_bytes)?;
 
@@ -428,18 +431,6 @@ pub(crate) fn upsert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Val
         ],
     )?;
 
-    if let Some(props) = properties.as_object() {
-        for (prop_name, value) in props {
-            tx.execute(
-
-                "INSERT INTO instance_properties (capture_id, instance_id, property_name, value_json) VALUES (?, ?, ?, ?)",
-
-                params![capture_id, id, prop_name, serde_json::to_string(value)?],
-
-            )?;
-        }
-    }
-
     if let Some(attrs) = attributes.as_object() {
         for (attr_name, value) in attrs {
             tx.execute(
@@ -563,7 +554,7 @@ pub(crate) fn canonical_instance_value(
 ) -> Result<Value> {
     let row = conn.query_row(
 
-        "SELECT parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate_sibling_name
+        "SELECT parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate_sibling_name, property_json
 
          FROM instances WHERE capture_id = ? AND instance_id = ?",
 
@@ -589,26 +580,37 @@ pub(crate) fn canonical_instance_value(
 
                 row.get::<_, Option<i64>>(7)?,
 
+                row.get::<_, String>(8)?,
+
             ))
 
         },
 
     )?;
 
-    let mut props: BTreeMap<String, Value> = BTreeMap::new();
+    let (
+        parent_id,
+        path,
+        name,
+        class_name,
+        depth,
+        child_count,
+        sibling_index,
+        duplicate_sibling_name,
+        property_json,
+    ) = row;
 
-    let mut prop_stmt = conn.prepare(
-
-        "SELECT property_name, value_json FROM instance_properties WHERE capture_id = ? AND instance_id = ? ORDER BY property_name",
-
-    )?;
-
-    for prop_row in prop_stmt.query_map(params![capture_id, instance_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        let (name, value_json) = prop_row?;
-
-        props.insert(name, serde_json::from_str(&value_json)?);
+    let mut props: BTreeMap<String, Value> = serde_json::from_str(&property_json).unwrap_or_default();
+    if props.is_empty() {
+        let mut prop_stmt = conn.prepare(
+            "SELECT property_name, value_json FROM instance_properties WHERE capture_id = ? AND instance_id = ? ORDER BY property_name",
+        )?;
+        for prop_row in prop_stmt.query_map(params![capture_id, instance_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (name, value_json) = prop_row?;
+            props.insert(name, serde_json::from_str(&value_json)?);
+        }
     }
 
     let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
@@ -639,8 +641,6 @@ pub(crate) fn canonical_instance_value(
         tags.push(json!(tag_row?));
     }
 
-    let (parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate) = row;
-
     Ok(json!({
 
         "attributes": attrs,
@@ -651,7 +651,7 @@ pub(crate) fn canonical_instance_value(
 
         "depth": depth,
 
-        "duplicateSiblingName": duplicate.map(|v| v != 0),
+        "duplicateSiblingName": duplicate_sibling_name.map(|v| v != 0),
 
         "id": instance_id,
 
