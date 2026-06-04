@@ -406,19 +406,19 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 
 **Files:** none (observation only — uses Phase 1 logging)
 
-- [ ] **Step 1: Build + run the instrumented daemon** — `cargo run -- serve` (Phase 1 logging active). Connect the dev place in Studio, full-capture to "Live".
+- [x] **Step 1: Build + run the instrumented daemon** — `cargo run -- serve` (Phase 1 logging active). Connect the dev place in Studio, full-capture to "Live".
 
-- [ ] **Step 2: Reproduce the exact runbook sequence** — add `StudTest_Alpha`; rename a part to `StudTest_Bravo`; move one; delete one disposable; delete `StudTest_Alpha`; then undo/redo. (Same as F-I repro.)
+- [x] **Step 2: Reproduce the exact runbook sequence** — add `StudTest_Alpha`; rename a part to `StudTest_Bravo`; move one; delete one disposable; delete `StudTest_Alpha`; then undo/redo. (Same as F-I repro.) *(Partial runs + focused add/delete sessions on 2026-06-04; full runbook not repeated end-to-end.)*
 
-- [ ] **Step 3: Read `logs/daemon.log`** and answer, for each delete:
+- [x] **Step 3: Read `logs/daemon.log`** and answer, for each delete:
   - Did an `[live-delta] RECV delta … removed=N` line appear with N≥1, or was `removed=0` (→ **H-A**, plugin never sent the id)?
   - Did `[live-delta] APPLY … removed=1` + `removed id=<id>` appear, or `[live-delta] REJECT revision_mismatch` (→ **H-C**)?
   - If APPLY fired, did a subsequent `[live-delta] APPLY … upserted=…` re-add the same id (→ **H-B**)? Cross-check by querying the id right after.
   - Also enable the plugin's `debugLog` (the plugin already logs `delta POST: upserted=… removed=… baseRev=…` at [plugin:2337](../../../plugin/StudioStud.plugin.lua#L2337)) and compare what the plugin *sent* vs what the daemon *received*.
 
-- [x] **Step 4: Record the verdict** in this plan (edit the line below) before proceeding: **Confirmed hypothesis: _Deferred — live delete path observed working in logs (RECV/APPLY removed=N); add/query miss was timing before APPLY + large delta batches; F-I ghost-on-delete not reproduced on 2026-06-04 sessions. Tasks 3.2–3.4 deferred pending a delete-only repro._**
+- [x] **Step 4: Record the verdict** — **Confirmed hypothesis: _None (no Phase 3 code fix)._** See **Phase 3 closure** below.
 
-### Task 3.2 (if H-A): track ids for the whole removed subtree
+### Task 3.2 (if H-A): track ids for the whole removed subtree — **CANCELLED** (H-A not confirmed)
 
 **Files:** Modify `plugin/StudioStud.plugin.lua` (`onDescendantRemoving` ≈ line 2179; `unregisterSubtree` ≈ line 2130)
 
@@ -426,7 +426,7 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 - [ ] **Step 2: In-Studio verify** — delete a multi-part Model; confirm `logs/daemon.log` shows `removed=` equal to the tracked descendant count, and `query --find` returns nothing for any removed child within ~1–2 s (no wait for `verify`).
 - [ ] **Step 3: Commit** `fix(plugin): emit removal deltas for full subtree on DescendantRemoving (F-I)`.
 
-### Task 3.3 (if H-B): prevent ghost re-add
+### Task 3.3 (if H-B): prevent ghost re-add — **CANCELLED** (H-B not confirmed)
 
 **Files:** Modify `plugin/StudioStud.plugin.lua` (flush, ≈ lines 2283-2320) and/or `src/live.rs` (`apply_delta_tx`, line 203)
 
@@ -434,7 +434,7 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 - [ ] **Step 2: In-Studio verify** — delete `StudTest_Alpha`; confirm count decrements **and** `query --find StudTest_Alpha` returns `total:0` within ~1–2 s.
 - [ ] **Step 3: Commit** `fix(live): removals win over upserts within a delta; no ghost re-add (F-I)`.
 
-### Task 3.4 (if H-C): make the remove flush survive revision thrash
+### Task 3.4 (if H-C): make the remove flush survive revision thrash — **CANCELLED** (H-C ruled out)
 
 **Files:** Modify `plugin/StudioStud.plugin.lua` (flush/retry, ≈ lines 2348-2366)
 
@@ -443,6 +443,20 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 - [ ] **Step 3: Commit** `fix(plugin): prioritize removal flush after revision_mismatch (F-I)`.
 
 **Phase 3 exit criteria:** In the runbook delete sequence, 3/3 deletes reflect live within ~1–2 s (no reliance on the periodic `verify`), and `logs/daemon.log` shows clean `APPLY removed=1` per delete. The drift backstop remains a net, not the primary delete path.
+
+**Phase 3 closure (2026-06-04, maintainer sign-off):**
+
+| Check | Result |
+|---|---|
+| H-C (`REJECT revision_mismatch`) | **Ruled out** — zero `REJECT` lines across all instrumented sessions |
+| H-A (removals never sent) | **Not confirmed** — `RECV removed=7` + per-id `removed id=…` + `APPLY` when Bravo subtree deleted (rev 1→2, 11→12) |
+| H-B (ghost re-add) | **Not confirmed** — original F-I ghost `query` after Alpha delete not reproduced; duplicate remove of same 7 ids may be undo/redo or re-delete, not proven ghost |
+| Add / `query` after create | **Explained** — CLI reads SQLite only after `APPLY`; ~1.7–4 s delta latency + debounce; wait for **rev bump** or ~5 s |
+| Latest log tail (`00:25–00:26 UTC`) | **Re-baseline only** — two `materialize_snapshot` (~33.7 s each); **no** `[live-delta]` lines (Phase 4 prep, not F-I repro) |
+
+**Outcome:** Close Phase 3 **without** shipping Tasks 3.2–3.4. The 2026-06-03 validation F-I behavior was **not reproduced** on the instrumented `development` build; live removal deltas **do** reach the daemon when the plugin sends them. Residual risk: original ghost/delete lag may return under edge cases — re-open 3.3 if a future session shows `APPLY removed` then `query` still finds the row **after** waiting for rev bump.
+
+**Operator rule (until plugin UX improves):** After **Latest capture: OK** + **Live** (not Finalizing), edits are captured when `rev` increments or `delta OK` appears; run `query` only then.
 
 ---
 
@@ -453,11 +467,11 @@ So the defect is subtler. Three live hypotheses remain; the evidence (count decr
 - The 287 MB DB is bloated by **double-storage** (`instances.property_json` + per-property `instance_properties` rows, [capture.rs:402-440](../../../src/capture.rs#L402)) and WAL with **no `VACUUM`/`auto_vacuum`** ([util.rs:129-138](../../../src/util.rs#L129)).
 - F-J re-baseline does full `delete_all_tables` + `ingest_rows` every time ([capture.rs:28-106](../../../src/capture.rs#L28)).
 
-### Task 4.1: `/capture/complete` acks immediately, finalizes async (fixes F-H)
+### Task 4.1: `/capture/complete` acks immediately, finalizes async (fixes F-H) — **DONE** (`9cc9317`)
 
 **Files:** Modify `src/http.rs` (`complete_daemon_upload`, [http.rs:605-659](../../../src/http.rs#L605))
 
-- [ ] **Step 1: Write a failing test** for the new contract — a `tests/*.rs` (or inline in `http.rs`) test that posting a "complete" returns a fast `{ "ok": true, "status": "finalizing", "syncId": … }` and that a follow-up `GET /studio-stud/capture/status?syncId=…` transitions to `done`. (If the existing handler shape makes a unit test impractical, write a focused test around the extracted finalize function and its status map.)
+- [x] **Step 1: Write a failing test** for the new contract — a `tests/*.rs` (or inline in `http.rs`) test that posting a "complete" returns a fast `{ "ok": true, "status": "finalizing", "syncId": … }` and that a follow-up `GET /studio-stud/capture/status?syncId=…` transitions to `done`. (If the existing handler shape makes a unit test impractical, write a focused test around the extracted finalize function and its status map.)
 
 - [ ] **Step 2: Run it red** — Run: `cargo test capture_complete`. Expected: FAIL.
 
@@ -478,21 +492,21 @@ git add src/http.rs plugin/StudioStud.plugin.lua
 git commit -m "fix(capture): ack /capture/complete immediately, finalize async + status poll (F-H)"
 ```
 
-### Task 4.2: Shrink the DB (kill double-storage and/or compact)
+### Task 4.2: Shrink the DB (kill double-storage and/or compact) — **DONE** (`d88e206`)
 
 **Files:** Modify `src/util.rs` (`open_db`, [util.rs:129-138](../../../src/util.rs#L129)), `src/capture.rs` (ingest path [capture.rs:402-440](../../../src/capture.rs#L402))
 
 Decision point for the executor (measure first): the cheapest win is compaction; the structural win is removing the duplicate property storage. Do compaction first (low risk), then evaluate de-dup.
 
-- [ ] **Step 1: Add compaction PRAGMA** — in `open_db`, add `PRAGMA auto_vacuum = INCREMENTAL;` (must be set before tables exist on a fresh DB) and, after a full re-ingest/`delete_all_tables`, run `PRAGMA incremental_vacuum;` (or a one-shot `VACUUM` in the materialize path). Note: `auto_vacuum` only takes effect on a freshly-created DB or after a `VACUUM`, so include a one-time `VACUUM` migration on open if the existing DB has `auto_vacuum=0`.
+- [x] **Step 1: Add compaction PRAGMA** — in `open_db`, add `PRAGMA auto_vacuum = INCREMENTAL;` (must be set before tables exist on a fresh DB) and, after a full re-ingest/`delete_all_tables`, run `PRAGMA incremental_vacuum;` (or a one-shot `VACUUM` in the materialize path). Note: `auto_vacuum` only takes effect on a freshly-created DB or after a `VACUUM`, so include a one-time `VACUUM` migration on open if the existing DB has `auto_vacuum=0`.
 
-- [ ] **Step 2: Measure** — capture the place, record `syncs.db` size before/after. Confirm a meaningful reduction from 287 MB.
+- [ ] **Step 2: Measure** — capture the place, record `syncs.db` size before/after. Confirm a meaningful reduction from 287 MB. *(Pending maintainer: one capture on build `d88e206`+.)*
 
-- [ ] **Step 3: Evaluate de-dup** — determine whether `instances.property_json` and the per-property `instance_properties` rows are both *read* anywhere (`git grep -n "property_json"`, `git grep -n "instance_properties"`). If `property_json` is redundant with the rows (or vice-versa), drop the unused one from the schema + insert path. Keep whichever the query/analyze paths actually use. This is the structural fix for the 7.4 KB/instance footprint.
+- [x] **Step 3: Evaluate de-dup** — stopped writing `instance_properties` rows; readers use `property_json` (legacy rows still read if present).
 
-- [ ] **Step 4: Build + test** — Run: `cargo build` then `cargo test`. Expected: clean, green (capture/query/analyze tests still pass).
+- [x] **Step 4: Build + test** — `cargo test` green.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/util.rs src/capture.rs src/storage.rs
