@@ -16,6 +16,30 @@ pub const AUTO_GENERATED_MARKER: &str = "-- AUTO-GENERATED";
 const DEFAULT_MAX_PATCH_BYTES: u64 = 1_048_576;
 const DEFAULT_UNSUPPORTED: &str = "block";
 
+fn de_place_ids<'de, D>(d: D) -> Result<Vec<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize;
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StrOrInt {
+        S(String),
+        I(i64),
+    }
+    let raw: Vec<StrOrInt> = Vec::deserialize(d)?;
+    raw.into_iter()
+        .map(|v| match v {
+            StrOrInt::I(n) => Ok(n),
+            StrOrInt::S(s) => s.trim().parse::<i64>().map_err(|_| {
+                serde::de::Error::custom(format!(
+                    "allowedPlaceIds: '{s}' is not a valid place id"
+                ))
+            }),
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Policy {
@@ -25,7 +49,8 @@ pub struct Policy {
     /// `.cursor/rules/policy-schema-compat.mdc`).
     #[serde(default)]
     pub target_channel: Option<String>,
-    #[serde(default)]
+    /// Place IDs allowed for write-safety checks. Empty = allow all places (fail-open default).
+    #[serde(default, deserialize_with = "de_place_ids")]
     pub allowed_place_ids: Vec<i64>,
     #[serde(default)]
     pub allowed_write_paths: Vec<String>,
@@ -184,18 +209,28 @@ pub fn load_compiled_policy(
     }
 }
 
+fn absolutize_repo_root(root: PathBuf) -> Result<PathBuf, BlockedReason> {
+    let base = if root.is_absolute() {
+        root
+    } else {
+        let cwd = env::current_dir().map_err(|_| BlockedReason::InternalError)?;
+        cwd.join(root)
+    };
+    fs::canonicalize(&base).map_err(|_| BlockedReason::InternalError)
+}
+
 pub fn resolve_repo_root(explicit: Option<&Path>) -> Result<PathBuf, BlockedReason> {
     if let Some(root) = explicit {
-        return Ok(root.to_path_buf());
+        return absolutize_repo_root(root.to_path_buf());
     }
     let cwd = env::current_dir().map_err(|_| BlockedReason::InternalError)?;
     if let Some(root) = find_ancestor(&cwd, |path| policy_path(path).is_file()) {
-        return Ok(root);
+        return absolutize_repo_root(root);
     }
     if let Some(root) = find_ancestor(&cwd, |path| {
         path.join("default.project.json").is_file() || path.join(".git").exists()
     }) {
-        return Ok(root);
+        return absolutize_repo_root(root);
     }
     Err(BlockedReason::InternalError)
 }
@@ -355,6 +390,7 @@ pub fn explain_path(
     }
 }
 
+/// Empty `allowed_place_ids` allows any place (fail-open); a non-empty list enforces membership.
 fn place_allowed(policy: &Policy, place_id: Option<i64>) -> bool {
     policy.allowed_place_ids.is_empty()
         || place_id.is_some_and(|id| policy.allowed_place_ids.contains(&id))
@@ -441,6 +477,9 @@ fn path_string_unsafe(rel: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+
+    static CWD_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn default_policy_validates() {
@@ -476,6 +515,28 @@ mod tests {
         let (reason, detail) = channel_pin_violation(&policy, "dev").expect("should block");
         assert_eq!(reason, BlockedReason::ChannelMismatch);
         assert!(detail.contains("release") && detail.contains("dev"));
+    }
+
+    #[test]
+    fn repo_root_relative_resolves() {
+        let _guard = CWD_LOCK.lock().unwrap();
+        let prev = env::current_dir().unwrap();
+        let dir = env::temp_dir().join(format!(
+            "studio_stud_repo_root_{}_{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(dir.join(".studio-stud")).unwrap();
+        fs::write(dir.join(".studio-stud/policy.json"), r#"{"version":1}"#).unwrap();
+        env::set_current_dir(&dir).unwrap();
+        let root = resolve_repo_root(Some(Path::new("."))).expect("resolve .");
+        assert!(root.is_absolute());
+        assert!(policy_path(&root).is_file());
+        env::set_current_dir(&prev).unwrap();
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
