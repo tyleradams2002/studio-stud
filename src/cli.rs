@@ -44,6 +44,9 @@ pub(crate) struct Cli {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     Status {
+        /// Accepted for CLI parity; status emits JSON unless `--markdown` is set.
+        #[arg(long, hide = true)]
+        json: bool,
         #[arg(long)]
         markdown: bool,
         #[arg(long)]
@@ -304,6 +307,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             Ok(())
         }
         Some(Commands::Status {
+            json: _,
             markdown,
             paths,
             common,
