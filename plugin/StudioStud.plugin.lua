@@ -10,7 +10,7 @@ local UserInputService = game:GetService("UserInputService")
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.9"
+local PLUGIN_VERSION = "0.4.10"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
