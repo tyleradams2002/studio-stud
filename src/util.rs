@@ -126,6 +126,21 @@ pub(crate) fn required_query(query: &HashMap<String, String>, key: &str) -> Resu
 /// Open a SQLite database file with WAL and a 60-second busy timeout.
 /// CLI queries and the daemon can touch the same place DB concurrently;
 /// busy_timeout waits for long verify/capture writes instead of SQLITE_BUSY.
+/// Enable incremental auto-vacuum on existing DBs (one-time `VACUUM` when mode was off).
+pub(crate) fn ensure_incremental_auto_vacuum(conn: &Connection) -> Result<()> {
+    let mode: i64 = conn.query_row("PRAGMA auto_vacuum", [], |row| row.get(0))?;
+    if mode != 2 {
+        conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+    }
+    Ok(())
+}
+
+/// Reclaim space after a full re-ingest (capture materialize or similar bulk rewrite).
+pub(crate) fn compact_db_after_bulk_write(conn: &Connection) -> Result<()> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA incremental_vacuum;")?;
+    Ok(())
+}
+
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(60))?;
@@ -134,6 +149,7 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
          PRAGMA synchronous = NORMAL;
          PRAGMA foreign_keys = ON;",
     )?;
+    ensure_incremental_auto_vacuum(&conn)?;
     Ok(conn)
 }
 
@@ -354,5 +370,26 @@ mod tests {
     fn matches_keyword_finds_spawn() {
         assert!(matches_keyword("BoatSpawnPoints"));
         assert!(!matches_keyword("RandomFolder"));
+    }
+
+    #[test]
+    fn ensure_incremental_auto_vacuum_sets_mode() {
+        let path = std::env::temp_dir().join(format!(
+            "ss_vacuum_test_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE t(x INTEGER);").unwrap();
+        let mode: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, 0);
+        ensure_incremental_auto_vacuum(&conn).unwrap();
+        let mode: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(mode, 2);
+        let _ = std::fs::remove_file(path);
     }
 }
