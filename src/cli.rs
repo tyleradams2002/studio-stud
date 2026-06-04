@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow};
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use serde_json::{Value, json};
 
 use crate::analyze::cmd_analyze;
@@ -37,13 +37,16 @@ use crate::util::{
 #[command(about = "AI-first Roblox Studio capture and analysis tool.")]
 pub(crate) struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Commands {
     Status {
+        /// Accepted for CLI parity; status emits JSON unless `--markdown` is set.
+        #[arg(long, hide = true)]
+        json: bool,
         #[arg(long)]
         markdown: bool,
         #[arg(long)]
@@ -142,6 +145,9 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+        /// Emit timing spans for daemon operations (also logs per-request latency).
+        #[arg(long)]
+        profile: bool,
         /// Deprecated no-op (update is owned by studio-stud-setup).
         #[arg(long, hide = true)]
         no_update: bool,
@@ -295,124 +301,131 @@ pub fn run() -> Result<()> {
 
 fn dispatch(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Status {
-            markdown,
-            paths,
-            common,
-        } => cmd_status(markdown, paths, &common),
-        Commands::Doctor {
-            json: _,
-            markdown,
-            paths,
-            common,
-        } => cmd_doctor(markdown, paths, &common),
-        Commands::Ingest { raw, common } => cmd_ingest(&raw, &common),
-        Commands::Analyze {
-            place,
-            reports,
-            focus,
-            limit,
-            json,
-            markdown,
-            common,
-        } => cmd_analyze(
-            place.as_deref(),
-            reports,
-            focus,
-            limit,
-            json,
-            markdown,
-            &common,
-        ),
-        Commands::Query {
-            place,
-            class_name,
-            find,
-            name,
-            path,
-            under,
-            bulk,
-            audit,
-            detail,
-            props,
-            all,
-            tree,
-            depth,
-            limit_siblings,
-            count_only,
-            full_paths,
-            limit,
-            json: _,
-            markdown,
-            common,
-        } => cmd_query(
-            place.as_deref(),
-            class_name,
-            find,
-            name,
-            path,
-            under,
-            bulk,
-            audit,
-            detail,
-            props,
-            all,
-            tree,
-            depth,
-            limit_siblings,
-            count_only,
-            full_paths,
-            limit,
-            markdown,
-            &common,
-        ),
-        Commands::Capture { timeout, no_wait } => cmd_capture(timeout, no_wait),
-        Commands::Update { check } => cmd_update(check),
-        Commands::Serve {
-            host,
-            port,
-            no_update,
-            common,
+        None => {
+            let mut cmd = Cli::command();
+            cmd.print_long_help()?;
+            Ok(())
         }
-        | Commands::Daemon {
+        Some(Commands::Status {
+            json: _,
+            markdown,
+            paths,
+            common,
+        }) => cmd_status(markdown, paths, &common),
+        Some(Commands::Doctor {
+            json: _,
+            markdown,
+            paths,
+            common,
+        }) => cmd_doctor(markdown, paths, &common),
+        Some(Commands::Ingest { raw, common }) => cmd_ingest(&raw, &common),
+        Some(Commands::Analyze {
+            place,
+            reports,
+            focus,
+            limit,
+            json,
+            markdown,
+            common,
+        }) => cmd_analyze(
+            place.as_deref(),
+            reports,
+            focus,
+            limit,
+            json,
+            markdown,
+            &common,
+        ),
+        Some(Commands::Query {
+            place,
+            class_name,
+            find,
+            name,
+            path,
+            under,
+            bulk,
+            audit,
+            detail,
+            props,
+            all,
+            tree,
+            depth,
+            limit_siblings,
+            count_only,
+            full_paths,
+            limit,
+            json: _,
+            markdown,
+            common,
+        }) => cmd_query(
+            place.as_deref(),
+            class_name,
+            find,
+            name,
+            path,
+            under,
+            bulk,
+            audit,
+            detail,
+            props,
+            all,
+            tree,
+            depth,
+            limit_siblings,
+            count_only,
+            full_paths,
+            limit,
+            markdown,
+            &common,
+        ),
+        Some(Commands::Capture { timeout, no_wait }) => cmd_capture(timeout, no_wait),
+        Some(Commands::Update { check }) => cmd_update(check),
+        Some(Commands::Serve {
+            host,
+            port,
+            profile,
+            no_update,
+            common,
+        }) => cmd_serve(&host, port, &common, no_update, profile),
+        Some(Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        } => cmd_serve(&host, port, &common, no_update),
-        Commands::Bench {
+        }) => cmd_serve(&host, port, &common, no_update, false),
+        Some(Commands::Bench {
             raw,
             baseline,
             delta,
             iterations,
             json,
-        } => cmd_bench(
+        }) => cmd_bench(
             &raw,
             baseline.as_deref(),
             delta.as_deref(),
             iterations,
             json,
         ),
-        Commands::LiveDelta { raw, place, common } => {
+        Some(Commands::LiveDelta { raw, place, common }) => {
             cmd_live_delta(&raw, place.as_deref(), &common)
         }
-        Commands::LiveVerify { raw, place, common } => {
+        Some(Commands::LiveVerify { raw, place, common }) => {
             cmd_live_verify(&raw, place.as_deref(), &common)
         }
-        Commands::LiveDump { place, common } => cmd_live_dump(place.as_deref(), &common),
-        Commands::Policy { args } => cmd_policy(args),
-        Commands::ProjectCmd { args } => cmd_project(args),
-        Commands::WriteValidate { args } => cmd_write_validate(args),
-        Commands::WritePreview { args } => cmd_write_preview(args),
-        Commands::WriteApply { args } => cmd_write_apply(args),
-        Commands::RepoMap {
+        Some(Commands::LiveDump { place, common }) => cmd_live_dump(place.as_deref(), &common),
+        Some(Commands::Policy { args }) => cmd_policy(args),
+        Some(Commands::ProjectCmd { args }) => cmd_project(args),
+        Some(Commands::WriteValidate { args }) => cmd_write_validate(args),
+        Some(Commands::WritePreview { args }) => cmd_write_preview(args),
+        Some(Commands::WriteApply { args }) => cmd_write_apply(args),
+        Some(Commands::RepoMap {
             root,
             out,
             json,
             stdout,
             if_stale,
             quiet,
-        } => crate::repomap::cmd_repo_map(
+        }) => crate::repomap::cmd_repo_map(
             root.as_deref(),
             out.as_deref(),
             json,
@@ -713,7 +726,7 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Result<()> {
+fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool, profile: bool) -> Result<()> {
     crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
@@ -727,7 +740,12 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
         )
     })?;
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
+    crate::obs::init(&storage.root, profile);
     let mut user_cfg = crate::setup_core::load_config_or_default();
+    if crate::setup_core::config::self_heal_config_on_serve(&mut user_cfg) {
+        let _ = crate::setup_core::save_config(&user_cfg);
+        crate::obs::event("config", "self-healed installRoot/channel on serve");
+    }
     if let Ok(cwd_repo) = resolve_repo_root(None) {
         let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
     }
@@ -788,9 +806,13 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
+    let version = env!("CARGO_PKG_VERSION");
+    crate::obs::event(
+        "serve",
+        &format!("Studio Stud v{version} on http://{address}"),
+    );
     println!(
-        "Studio Stud v{} serving plugin capture requests on http://{address}",
-        env!("CARGO_PKG_VERSION")
+        "Studio Stud v{version} serving plugin capture requests on http://{address}"
     );
     println!("Storage root: {}", storage.root.display());
     println!(
@@ -824,7 +846,7 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool) -> Re
                     Err(_) => break,
                 };
                 if let Err(err) = handle_daemon_request(request, Arc::clone(&state), &config) {
-                    eprintln!("request failed: {err:#}");
+                    crate::obs::event("http-error", &format!("request failed: {err:#}"));
                 }
             }
         }));

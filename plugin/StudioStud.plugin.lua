@@ -10,7 +10,7 @@ local UserInputService = game:GetService("UserInputService")
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.9"
+local PLUGIN_VERSION = "0.4.10"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -1748,6 +1748,28 @@ function CapturePanel.build(parent, ctx)
 		}
 	end
 
+	local function waitForCaptureFinalize(captureSyncId, timeoutSeconds)
+		local deadline = os.clock() + (timeoutSeconds or 120)
+		while os.clock() < deadline do
+			local okStatus, statusResult = ctx.transport.requestJson(
+				"GET",
+				"/studio-stud/capture/status?syncId=" .. HttpService:UrlEncode(captureSyncId),
+				nil
+			)
+			if okStatus and statusResult then
+				local status = statusResult.status
+				if status == "done" or status == "completed" then
+					return true, statusResult
+				end
+				if status == "error" or statusResult.ok == false then
+					return false, statusResult
+				end
+			end
+			task.wait(0.5)
+		end
+		return false, { ok = false, error = "Capture finalize timed out" }
+	end
+
 	syncFn = function(options)
 		if syncing then
 			return { ok = false, error = "Sync already running." }
@@ -1815,7 +1837,12 @@ function CapturePanel.build(parent, ctx)
 		local okComplete, completeResult = ctx.transport.requestJson("POST", "/studio-stud/capture/complete", {
 			syncId = syncId,
 			expectedChunks = expectedChunks,
-		})
+		}, 60)
+		if okComplete and completeResult and completeResult.status == "finalizing" then
+			ctx.setStatus("syncing", "Finalizing capture on daemon...")
+			local finalizeSyncId = completeResult.syncId or syncId
+			okComplete, completeResult = waitForCaptureFinalize(finalizeSyncId, 120)
+		end
 		syncing = false
 		setConnectButtonState()
 		if okComplete and completeResult and responseNeedsRebaseline(completeResult) then

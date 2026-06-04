@@ -21,7 +21,8 @@ use crate::storage::{
 
 use crate::util::{
     CRITICAL_NAMES, DEFAULT_PROJECT_KEY, build_search_text, hex_bytes, looks_like_invisible_helper,
-    matches_keyword, normalize_query_path, now_utc, open_db, opt_str_field, path_root, safe_key,
+    compact_db_after_bulk_write, matches_keyword, normalize_query_path, now_utc, open_db,
+    opt_str_field, path_root, safe_key,
     str_field, value_to_string,
 };
 
@@ -50,13 +51,20 @@ pub(crate) fn materialize_snapshot(
 
     let tx = conn.transaction()?;
 
-    delete_all_tables(&tx)?;
+    {
+        let _span = crate::obs::span("capture", "materialize_delete_all");
+        delete_all_tables(&tx)?;
+    }
 
-    ingest_rows(&tx, snapshot, &meta)?;
+    let fingerprint = {
+        let _span = crate::obs::span("capture", "materialize_ingest_rows");
+        ingest_rows(&tx, snapshot, &meta)?
+    };
 
-    tx.commit()?;
-
-    let fingerprint = fingerprint_state(&conn, &meta.capture_id)?;
+    {
+        let _span = crate::obs::span("capture", "materialize_commit");
+        tx.commit()?;
+    }
 
     let live_state = LiveState {
         capture_id: meta.capture_id.clone(),
@@ -82,7 +90,15 @@ pub(crate) fn materialize_snapshot(
         instance_count: meta.instance_count,
     };
 
-    write_live_state(&conn, &live_state)?;
+    {
+        let _span = crate::obs::span("capture", "materialize_write_live_state");
+        write_live_state(&conn, &live_state)?;
+    }
+
+    {
+        let _span = crate::obs::span("capture", "materialize_compact");
+        compact_db_after_bulk_write(&conn)?;
+    }
 
     fs::write(&place.baseline_path, &raw_bytes)?;
 
@@ -260,7 +276,7 @@ pub(crate) fn ingest_rows(
     tx: &Transaction<'_>,
     snapshot: &Value,
     meta: &CaptureMeta,
-) -> Result<()> {
+) -> Result<String> {
     tx.execute(
         "INSERT INTO captures (
 
@@ -302,6 +318,8 @@ pub(crate) fn ingest_rows(
 
     let mut finding_state = FindingState::default();
 
+    let mut fingerprint_acc = [0u8; 32];
+
     for inst in instances {
         let class_name = str_field(inst, "className");
 
@@ -313,7 +331,13 @@ pub(crate) fn ingest_rows(
 
         path_blob.push(' ');
 
-        upsert_instance(tx, &meta.capture_id, inst)?;
+        insert_instance(tx, &meta.capture_id, inst)?;
+
+        let digest = fingerprint_digest_from_instance(inst)?;
+
+        for (i, byte) in digest.iter().enumerate() {
+            fingerprint_acc[i] ^= byte;
+        }
 
         update_findings(&mut finding_state, inst);
     }
@@ -329,7 +353,7 @@ pub(crate) fn ingest_rows(
 
     insert_findings(tx, &meta.capture_id, finding_state)?;
 
-    Ok(())
+    Ok(hex_bytes(&fingerprint_acc))
 }
 
 pub(crate) fn delete_instance_rows(
@@ -357,13 +381,23 @@ pub(crate) fn delete_instance_rows(
 pub(crate) fn upsert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Value) -> Result<()> {
     let id = str_field(inst, "id");
 
+    if id.is_empty() || str_field(inst, "path").is_empty() {
+        return Err(anyhow!("instance id and path required"));
+    }
+
+    delete_instance_rows(tx, capture_id, &id)?;
+
+    insert_instance(tx, capture_id, inst)
+}
+
+fn insert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Value) -> Result<()> {
+    let id = str_field(inst, "id");
+
     let path = str_field(inst, "path");
 
     if id.is_empty() || path.is_empty() {
         return Err(anyhow!("instance id and path required"));
     }
-
-    delete_instance_rows(tx, capture_id, &id)?;
 
     let display_path = opt_str_field(inst, "displayPath");
 
@@ -427,18 +461,6 @@ pub(crate) fn upsert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Val
             serde_json::to_string(&properties)?,
         ],
     )?;
-
-    if let Some(props) = properties.as_object() {
-        for (prop_name, value) in props {
-            tx.execute(
-
-                "INSERT INTO instance_properties (capture_id, instance_id, property_name, value_json) VALUES (?, ?, ?, ?)",
-
-                params![capture_id, id, prop_name, serde_json::to_string(value)?],
-
-            )?;
-        }
-    }
 
     if let Some(attrs) = attributes.as_object() {
         for (attr_name, value) in attrs {
@@ -515,6 +537,69 @@ pub(crate) fn recompute_critical_presence_from_db(
     recompute_critical_presence(tx, capture_id, &path_blob)
 }
 
+fn json_object_to_btree(value: &Value) -> BTreeMap<String, Value> {
+    let mut out = BTreeMap::new();
+    if let Some(obj) = value.as_object() {
+        for (key, val) in obj {
+            out.insert(key.clone(), val.clone());
+        }
+    }
+    out
+}
+
+fn canonical_value_from_instance(inst: &Value) -> Result<Value> {
+    let properties = json_object_to_btree(
+        &inst
+            .get("properties")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    );
+    let attributes = json_object_to_btree(
+        &inst
+            .get("attributes")
+            .cloned()
+            .unwrap_or_else(|| json!({})),
+    );
+    let tags: Vec<Value> = inst
+        .get("tags")
+        .and_then(Value::as_array)
+        .map(|arr| {
+            let mut values: Vec<Value> = arr.to_vec();
+            values.sort_by(|a, b| {
+                a.as_str()
+                    .unwrap_or_default()
+                    .cmp(b.as_str().unwrap_or_default())
+            });
+            values
+        })
+        .unwrap_or_default();
+
+    Ok(json!({
+        "attributes": attributes,
+        "childCount": inst.get("childCount").and_then(Value::as_i64),
+        "className": str_field(inst, "className"),
+        "depth": inst.get("depth").and_then(Value::as_i64),
+        "duplicateSiblingName": inst
+            .get("duplicateSiblingName")
+            .and_then(Value::as_bool)
+            .unwrap_or(false),
+        "id": str_field(inst, "id"),
+        "name": str_field(inst, "name"),
+        "parentId": opt_str_field(inst, "parentId"),
+        "path": str_field(inst, "path"),
+        "properties": properties,
+        "siblingIndex": inst.get("siblingIndex").and_then(Value::as_i64),
+        "tags": tags,
+    }))
+}
+
+pub(crate) fn fingerprint_digest_from_instance(inst: &Value) -> Result<[u8; 32]> {
+    let canonical = canonical_value_from_instance(inst)?;
+    let mut hasher = Sha256::new();
+    hasher.update(serde_json::to_string(&canonical)?);
+    Ok(hasher.finalize().into())
+}
+
 pub(crate) fn fingerprint_state(conn: &Connection, capture_id: &str) -> Result<String> {
     let mut stmt = conn
         .prepare("SELECT instance_id FROM instances WHERE capture_id = ? ORDER BY instance_id")?;
@@ -563,7 +648,7 @@ pub(crate) fn canonical_instance_value(
 ) -> Result<Value> {
     let row = conn.query_row(
 
-        "SELECT parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate_sibling_name
+        "SELECT parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate_sibling_name, property_json
 
          FROM instances WHERE capture_id = ? AND instance_id = ?",
 
@@ -589,26 +674,37 @@ pub(crate) fn canonical_instance_value(
 
                 row.get::<_, Option<i64>>(7)?,
 
+                row.get::<_, String>(8)?,
+
             ))
 
         },
 
     )?;
 
-    let mut props: BTreeMap<String, Value> = BTreeMap::new();
+    let (
+        parent_id,
+        path,
+        name,
+        class_name,
+        depth,
+        child_count,
+        sibling_index,
+        duplicate_sibling_name,
+        property_json,
+    ) = row;
 
-    let mut prop_stmt = conn.prepare(
-
-        "SELECT property_name, value_json FROM instance_properties WHERE capture_id = ? AND instance_id = ? ORDER BY property_name",
-
-    )?;
-
-    for prop_row in prop_stmt.query_map(params![capture_id, instance_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-    })? {
-        let (name, value_json) = prop_row?;
-
-        props.insert(name, serde_json::from_str(&value_json)?);
+    let mut props: BTreeMap<String, Value> = serde_json::from_str(&property_json).unwrap_or_default();
+    if props.is_empty() {
+        let mut prop_stmt = conn.prepare(
+            "SELECT property_name, value_json FROM instance_properties WHERE capture_id = ? AND instance_id = ? ORDER BY property_name",
+        )?;
+        for prop_row in prop_stmt.query_map(params![capture_id, instance_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })? {
+            let (name, value_json) = prop_row?;
+            props.insert(name, serde_json::from_str(&value_json)?);
+        }
     }
 
     let mut attrs: BTreeMap<String, Value> = BTreeMap::new();
@@ -639,8 +735,6 @@ pub(crate) fn canonical_instance_value(
         tags.push(json!(tag_row?));
     }
 
-    let (parent_id, path, name, class_name, depth, child_count, sibling_index, duplicate) = row;
-
     Ok(json!({
 
         "attributes": attrs,
@@ -651,7 +745,7 @@ pub(crate) fn canonical_instance_value(
 
         "depth": depth,
 
-        "duplicateSiblingName": duplicate.map(|v| v != 0),
+        "duplicateSiblingName": duplicate_sibling_name.map(|v| v != 0),
 
         "id": instance_id,
 
@@ -1062,6 +1156,21 @@ mod tests {
             ]
 
         })
+    }
+
+    #[test]
+
+    fn ingest_fingerprint_matches_fingerprint_state() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let snapshot = minimal_snapshot();
+        let meta = capture_meta(&snapshot, b"{}").unwrap();
+        let tx = conn.transaction().unwrap();
+        delete_all_tables(&tx).unwrap();
+        let fp_ingest = ingest_rows(&tx, &snapshot, &meta).unwrap();
+        tx.commit().unwrap();
+        let fp_db = fingerprint_state(&conn, &meta.capture_id).unwrap();
+        assert_eq!(fp_ingest, fp_db);
     }
 
     #[test]

@@ -413,8 +413,6 @@ fn query_filtered(
         return Ok(json!({
             "returned": 0,
             "total": total,
-            "limit": limit,
-            "truncated": total > 0,
             "items": [],
         }));
     }
@@ -793,4 +791,79 @@ fn resolve_under_scope(conn: &Connection, capture_id: &str, value: &str) -> Resu
         norm: normalize_query_path(&path),
         path,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::capture::{capture_meta, ingest_sqlite};
+    use crate::storage::init_schema;
+    use rusqlite::Connection;
+    use serde_json::json;
+
+    fn part_snapshot() -> Value {
+        json!({
+            "place": { "placeId": "123", "placeKey": "Place123", "name": "Test" },
+            "sync": { "syncId": "test_cap" },
+            "instances": [
+                {
+                    "id": "a",
+                    "parentId": null,
+                    "path": "Workspace",
+                    "name": "Workspace",
+                    "className": "Workspace",
+                    "depth": 0,
+                    "childCount": 1,
+                    "siblingIndex": 0,
+                    "duplicateSiblingName": false,
+                    "properties": {},
+                    "attributes": {},
+                    "tags": []
+                },
+                {
+                    "id": "b",
+                    "parentId": "a",
+                    "path": "Workspace/Part",
+                    "name": "Part",
+                    "className": "Part",
+                    "depth": 1,
+                    "childCount": 0,
+                    "siblingIndex": 0,
+                    "duplicateSiblingName": false,
+                    "properties": {},
+                    "attributes": {},
+                    "tags": []
+                }
+            ]
+        })
+    }
+
+    #[test]
+    fn count_only_json_omits_limit_and_truncated() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+        let snap = part_snapshot();
+        let meta = capture_meta(&snap, b"{}").unwrap();
+        ingest_sqlite(&mut conn, &snap, &meta).unwrap();
+        let filters = QueryFilters {
+            class_name: Some("Part"),
+            find: None,
+            name: None,
+            path: None,
+            under: None,
+        };
+        let out = query_filtered(
+            &conn,
+            &meta.capture_id,
+            filters,
+            25,
+            true,
+            QueryOutputOptions { full_paths: false },
+        )
+        .unwrap();
+        assert!(out.get("limit").is_none());
+        assert!(out.get("truncated").is_none());
+        assert_eq!(out["total"], 1);
+        assert_eq!(out["returned"], 0);
+    }
 }

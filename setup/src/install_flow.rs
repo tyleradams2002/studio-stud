@@ -4,12 +4,14 @@ use anyhow::{Context, Result};
 use serde_json::{Map, Value, json};
 use studio_stud::setup_core::channels::last_channel_sequence_json;
 use studio_stud::setup_core::config::{
-    StudioStudConfig, load_config_or_default, register_repo, save_config,
+    StudioStudConfig, load_config_or_default, populate_install_fields, register_repo, save_config,
 };
 use studio_stud::setup_core::install::{
     copy_addon_payloads_from_repo, install_core_plugin, install_path_shim, lay_tool_payload,
     migrate_legacy_repo, write_starter_policy,
 };
+
+use crate::legacy_cleanup;
 
 pub struct HeadlessInstallParams {
     pub install_root: PathBuf,
@@ -25,6 +27,9 @@ pub struct HeadlessInstallParams {
 }
 
 pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
+    let repo_paths: Vec<String> = params.repo_paths.clone();
+    legacy_cleanup::run_legacy_cleanup(false, &params.install_root, &repo_paths)?;
+
     let version_meta = install_version_json(
         &params.daemon_version,
         &params.plugin_version,
@@ -44,14 +49,19 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
     install_path_shim(&params.install_root)?;
 
     let mut cfg = load_config_or_default();
-    cfg.install_root = params.install_root.display().to_string();
-    cfg.plugins_dir = params.plugins_dir.display().to_string();
-    if let Some(ch) = &params.channel {
-        cfg.channel = ch.clone();
-    }
-    cfg.versions.setup = env!("CARGO_PKG_VERSION").to_string();
-    cfg.versions.daemon = params.daemon_version.clone();
-    cfg.versions.plugin = params.plugin_version.clone();
+    let channel = params
+        .channel
+        .clone()
+        .unwrap_or_else(|| cfg.channel.clone());
+    populate_install_fields(
+        &mut cfg,
+        &params.install_root,
+        &params.plugins_dir,
+        &channel,
+        env!("CARGO_PKG_VERSION"),
+        &params.daemon_version,
+        &params.plugin_version,
+    );
     if params.install_repos {
         for r in &params.repo_paths {
             let p = PathBuf::from(r);

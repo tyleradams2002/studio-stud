@@ -8,6 +8,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -210,8 +211,30 @@ pub fn check(url: &str) -> Result<UpdateReport> {
 /// Remote check/download is owned by `studio-stud-setup update` (no race on latest.json).
 pub fn apply_staged_on_boot() {
     if let Some(v) = apply_staged() {
-        println!("Studio Stud: applied staged update ({v}). Now running it.");
+        crate::obs::event("update", &format!("staged update applied ({v}), re-exec"));
+        if reexec_daemon_process().is_ok() {
+            std::process::exit(0);
+        }
+        println!(
+            "Studio Stud: applied staged update ({v}). Restart 'studio-stud serve' to run it."
+        );
     }
+}
+
+fn reexec_daemon_process() -> Result<()> {
+    let target = reexec_target_exe();
+    let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
+    Command::new(&target).args(&args).spawn()?;
+    Ok(())
+}
+
+fn reexec_target_exe() -> PathBuf {
+    let canonical =
+        crate::setup_core::install::canonical_daemon_exe(&crate::setup_core::install::default_install_root());
+    if canonical.is_file() {
+        return canonical;
+    }
+    std::env::current_exe().unwrap_or(canonical)
 }
 
 /// Legacy entry — kept for `studio-stud update` CLI until setup binary owns it fully.

@@ -7,7 +7,7 @@ use serde_json::{Map, Value, json};
 
 use super::install::default_install_root;
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionsInfo {
     #[serde(default)]
@@ -99,6 +99,65 @@ fn install_version_json_path(cfg: &StudioStudConfig) -> PathBuf {
     }
 }
 
+/// Fill install paths, channel, and version metadata after a successful install.
+pub fn populate_install_fields(
+    cfg: &mut StudioStudConfig,
+    install_root: &Path,
+    plugins_dir: &Path,
+    channel: &str,
+    setup_version: &str,
+    daemon_version: &str,
+    plugin_version: &str,
+) {
+    cfg.install_root = install_root.display().to_string();
+    cfg.plugins_dir = plugins_dir.display().to_string();
+    if !channel.is_empty() {
+        cfg.channel = channel.to_string();
+    }
+    cfg.versions.setup = setup_version.to_string();
+    cfg.versions.daemon = daemon_version.to_string();
+    cfg.versions.plugin = plugin_version.to_string();
+    cfg.versions.protocol = crate::util::PROTOCOL_VERSION.to_string();
+}
+
+/// Infer global install root from a daemon running at `{installRoot}/bin/studio-stud.exe`.
+pub fn infer_install_root_from_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let bin_dir = exe.parent()?;
+    if bin_dir.file_name().and_then(|n| n.to_str()) == Some("bin") {
+        return bin_dir.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+pub fn read_install_version_channel(cfg: &StudioStudConfig) -> Option<String> {
+    let path = install_version_json_path(cfg);
+    let text = fs::read_to_string(&path).ok()?;
+    let v: Value = serde_json::from_str(&text).ok()?;
+    v.get("channel")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Channel for `update --check`: explicit CLI flag > config > install version.json > release.
+pub fn resolve_update_channel(
+    explicit: Option<&str>,
+    cfg: &StudioStudConfig,
+    version_json_channel: Option<&str>,
+) -> String {
+    if let Some(ch) = explicit.filter(|s| !s.is_empty()) {
+        return ch.to_string();
+    }
+    if !cfg.channel.is_empty() {
+        return cfg.channel.clone();
+    }
+    if let Some(ch) = version_json_channel.filter(|s| !s.is_empty()) {
+        return ch.to_string();
+    }
+    default_channel()
+}
+
 pub fn seed_config_from_install_version(cfg: &mut StudioStudConfig) {
     let path = install_version_json_path(cfg);
     let Ok(text) = fs::read_to_string(&path) else {
@@ -117,6 +176,52 @@ pub fn seed_config_from_install_version(cfg: &mut StudioStudConfig) {
             cfg.last_channel_sequence.insert(k.clone(), val.clone());
         }
     }
+    seed_versions_from_install_version(cfg, &v);
+}
+
+fn seed_versions_from_install_version(cfg: &mut StudioStudConfig, v: &Value) {
+    if cfg.versions.daemon.is_empty() {
+        if let Some(s) = v.get("daemonVersion").and_then(Value::as_str) {
+            cfg.versions.daemon = s.to_string();
+        }
+    }
+    if cfg.versions.plugin.is_empty() {
+        if let Some(s) = v.get("pluginVersion").and_then(Value::as_str) {
+            cfg.versions.plugin = s.to_string();
+        }
+    }
+    if cfg.versions.protocol.is_empty() {
+        cfg.versions.protocol = crate::util::PROTOCOL_VERSION.to_string();
+    }
+    if cfg.versions.setup.is_empty() {
+        cfg.versions.setup = env!("CARGO_PKG_VERSION").to_string();
+    }
+}
+
+/// Backfill empty install paths and channel/versions from on-disk install metadata.
+pub fn self_heal_config_on_serve(cfg: &mut StudioStudConfig) -> bool {
+    let mut changed = false;
+    if cfg.install_root.is_empty() {
+        if let Some(root) = infer_install_root_from_exe() {
+            cfg.install_root = root.display().to_string();
+            changed = true;
+        }
+    }
+    if cfg.plugins_dir.is_empty() {
+        cfg.plugins_dir = super::install::default_plugins_dir().display().to_string();
+        changed = true;
+    }
+    let before_channel = cfg.channel.clone();
+    let before_versions = cfg.versions.clone();
+    let before_seq = cfg.last_channel_sequence.clone();
+    seed_config_from_install_version(cfg);
+    if cfg.channel != before_channel
+        || cfg.versions != before_versions
+        || cfg.last_channel_sequence != before_seq
+    {
+        changed = true;
+    }
+    changed
 }
 
 pub fn load_config() -> Result<Option<StudioStudConfig>> {
@@ -237,6 +342,49 @@ mod tests {
         assert_eq!(cfg.channel, "beta");
         assert_eq!(cfg.last_channel_sequence["beta"], json!(3));
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn populate_install_fields_fills_all() {
+        let mut cfg = StudioStudConfig::default();
+        populate_install_fields(
+            &mut cfg,
+            Path::new("C:/Programs/StudioStud"),
+            Path::new("C:/Roblox/Plugins"),
+            "dev",
+            "0.4.10",
+            "0.4.10",
+            "0.4.10",
+        );
+        assert!(!cfg.install_root.is_empty());
+        assert!(!cfg.plugins_dir.is_empty());
+        assert_eq!(cfg.channel, "dev");
+        assert!(!cfg.versions.setup.is_empty());
+        assert!(!cfg.versions.daemon.is_empty());
+        assert!(!cfg.versions.plugin.is_empty());
+        assert!(!cfg.versions.protocol.is_empty());
+    }
+
+    #[test]
+    fn resolve_update_channel_precedence() {
+        let cfg = StudioStudConfig {
+            channel: "dev".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_update_channel(Some("beta"), &cfg, Some("release")),
+            "beta"
+        );
+        assert_eq!(resolve_update_channel(None, &cfg, Some("release")), "dev");
+        let empty_cfg = StudioStudConfig {
+            channel: String::new(),
+            ..Default::default()
+        };
+        assert_eq!(
+            resolve_update_channel(None, &empty_cfg, Some("dev")),
+            "dev"
+        );
+        assert_eq!(resolve_update_channel(None, &empty_cfg, None), "release");
     }
 
     #[test]
