@@ -352,9 +352,9 @@ mod tests {
             Path::new("C:/Programs/StudioStud"),
             Path::new("C:/Roblox/Plugins"),
             "dev",
-            "0.4.9",
-            "0.4.9",
-            "0.4.9",
+            "0.4.10",
+            "0.4.10",
+            "0.4.10",
         );
         assert!(!cfg.install_root.is_empty());
         assert!(!cfg.plugins_dir.is_empty());
