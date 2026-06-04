@@ -733,6 +733,10 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool, profi
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
     crate::obs::init(&storage.root, profile);
     let mut user_cfg = crate::setup_core::load_config_or_default();
+    if crate::setup_core::config::self_heal_config_on_serve(&mut user_cfg) {
+        let _ = crate::setup_core::save_config(&user_cfg);
+        crate::obs::event("config", "self-healed installRoot/channel on serve");
+    }
     if let Ok(cwd_repo) = resolve_repo_root(None) {
         let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
     }
