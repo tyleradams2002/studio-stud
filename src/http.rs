@@ -59,6 +59,13 @@ pub(crate) struct UploadState {
     chunks: BTreeMap<usize, Vec<u8>>,
 }
 
+#[derive(Clone)]
+pub(crate) enum CaptureFinalizeState {
+    Finalizing,
+    Done(Value),
+    Error(String),
+}
+
 #[derive(Default)]
 pub(crate) struct DaemonState {
     pending_requests: VecDeque<Value>,
@@ -66,6 +73,7 @@ pub(crate) struct DaemonState {
     uploads: HashMap<String, UploadState>,
     verify_uploads: HashMap<String, UploadState>,
     completions: HashMap<String, Value>,
+    finalize_by_sync: HashMap<String, CaptureFinalizeState>,
 }
 
 pub(crate) fn handle_daemon_request(
@@ -102,22 +110,24 @@ pub(crate) fn handle_daemon_request(
                 json!({ "ok": true, "request": request })
             }
             (tiny_http::Method::Get, "/studio-stud/capture/status") => {
-                let request_id = query.get("requestId").cloned().unwrap_or_default();
                 let guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                if let Some(done) = guard.completions.get(&request_id) {
-                    done.clone()
-                } else if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
-                    json!({ "ok": true, "requestId": request_id, "status": "in_progress" })
-                } else if guard
-                    .pending_requests
-                    .iter()
-                    .any(|item| item.get("id").and_then(Value::as_str) == Some(request_id.as_str()))
-                {
-                    json!({ "ok": true, "requestId": request_id, "status": "queued" })
+                if let Some(sync_id) = query.get("syncId") {
+                    capture_finalize_status(&guard, sync_id)
                 } else {
-                    json!({ "ok": true, "requestId": request_id, "status": "unknown" })
+                    let request_id = query.get("requestId").cloned().unwrap_or_default();
+                    if let Some(done) = guard.completions.get(&request_id) {
+                        done.clone()
+                    } else if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
+                        json!({ "ok": true, "requestId": request_id, "status": "in_progress" })
+                    } else if guard.pending_requests.iter().any(|item| {
+                        item.get("id").and_then(Value::as_str) == Some(request_id.as_str())
+                    }) {
+                        json!({ "ok": true, "requestId": request_id, "status": "queued" })
+                    } else {
+                        json!({ "ok": true, "requestId": request_id, "status": "unknown" })
+                    }
                 }
             }
             (tiny_http::Method::Post, "/request-sync")
@@ -618,6 +628,78 @@ fn handle_admin_shutdown(request: &mut tiny_http::Request, config: &ServeConfig)
     Ok(json!({ "ok": true, "shuttingDown": true }))
 }
 
+fn capture_finalize_status(guard: &DaemonState, sync_id: &str) -> Value {
+    match guard.finalize_by_sync.get(sync_id) {
+        Some(CaptureFinalizeState::Finalizing) => {
+            json!({ "ok": true, "syncId": sync_id, "status": "finalizing" })
+        }
+        Some(CaptureFinalizeState::Done(completion)) => {
+            let mut out = completion.clone();
+            if let Some(obj) = out.as_object_mut() {
+                obj.entry("syncId".to_string())
+                    .or_insert(json!(sync_id));
+                obj.entry("status".to_string())
+                    .or_insert(json!("done"));
+            }
+            out
+        }
+        Some(CaptureFinalizeState::Error(message)) => {
+            json!({ "ok": false, "syncId": sync_id, "status": "error", "error": message })
+        }
+        None => json!({ "ok": false, "syncId": sync_id, "status": "unknown" }),
+    }
+}
+
+fn materialize_capture_upload(
+    bytes: &[u8],
+    sync_id: &str,
+    active_request_id: Option<String>,
+    storage_root: Option<PathBuf>,
+    project_key: &str,
+) -> Result<Value> {
+    let raw_json = decode_raw_snapshot(bytes)?;
+    let mut snapshot: Value = serde_json::from_str(&raw_json)?;
+    let request_id = snapshot
+        .get("sync")
+        .and_then(|sync| sync.get("requestId"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or(active_request_id);
+    inject_sync_metadata(&mut snapshot, sync_id, request_id.as_deref());
+    let _span = crate::obs::span("capture", "materialize_snapshot");
+    let result = materialize_snapshot(&snapshot, storage_root.clone(), project_key)?;
+    if let Ok(storage) = crate::storage::Storage::new(storage_root.clone(), project_key)
+        && let Some(place_id) = result.get("placeId").and_then(Value::as_str)
+    {
+        set_active_place(&storage, place_id);
+        if let Ok(pid) = place_id.parse::<i64>() {
+            let resolver = crate::RepoResolver::load();
+            let _ = resolver.learn_place_from_cwd(pid);
+        }
+    }
+    Ok(json!({
+        "ok": true,
+        "status": "completed",
+        "requestId": request_id,
+        "result": result,
+    }))
+}
+
+fn record_capture_completion(guard: &mut DaemonState, completion: &Value) {
+    if let Some(request_id) = completion
+        .get("requestId")
+        .and_then(Value::as_str)
+        .map(str::to_string)
+    {
+        guard
+            .completions
+            .insert(request_id.clone(), completion.clone());
+        if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
+            guard.active_request_id = None;
+        }
+    }
+}
+
 pub(crate) fn complete_daemon_upload(
     sync_id: &str,
     expected_chunks: Option<usize>,
@@ -635,43 +717,48 @@ pub(crate) fn complete_daemon_upload(
         (upload, guard.active_request_id.clone())
     };
     let bytes = assemble_upload(upload, expected_chunks)?;
-    let raw_json = decode_raw_snapshot(&bytes)?;
-    let mut snapshot: Value = serde_json::from_str(&raw_json)?;
-    let request_id = snapshot
-        .get("sync")
-        .and_then(|sync| sync.get("requestId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or(active_request_id);
-    inject_sync_metadata(&mut snapshot, sync_id, request_id.as_deref());
-    let result = materialize_snapshot(&snapshot, storage_root.clone(), project_key)?;
-    if let Ok(storage) = crate::storage::Storage::new(storage_root.clone(), project_key)
-        && let Some(place_id) = result.get("placeId").and_then(Value::as_str)
     {
-        set_active_place(&storage, place_id);
-        if let Ok(pid) = place_id.parse::<i64>() {
-            let resolver = crate::RepoResolver::load();
-            let _ = resolver.learn_place_from_cwd(pid);
-        }
-    }
-    let completion = json!({
-        "ok": true,
-        "status": "completed",
-        "requestId": request_id,
-        "result": result,
-    });
-    if let Some(request_id) = request_id {
         let mut guard = state
             .lock()
             .map_err(|_| anyhow!("daemon state lock poisoned"))?;
         guard
-            .completions
-            .insert(request_id.clone(), completion.clone());
-        if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
-            guard.active_request_id = None;
-        }
+            .finalize_by_sync
+            .insert(sync_id.to_string(), CaptureFinalizeState::Finalizing);
     }
-    Ok(completion)
+    let sync_id_owned = sync_id.to_string();
+    let project_key_owned = project_key.to_string();
+    let state_worker = Arc::clone(&state);
+    std::thread::spawn(move || {
+        let outcome = materialize_capture_upload(
+            &bytes,
+            &sync_id_owned,
+            active_request_id,
+            storage_root,
+            &project_key_owned,
+        );
+        let Ok(mut guard) = state_worker.lock() else {
+            return;
+        };
+        match outcome {
+            Ok(completion) => {
+                record_capture_completion(&mut guard, &completion);
+                guard
+                    .finalize_by_sync
+                    .insert(sync_id_owned, CaptureFinalizeState::Done(completion));
+            }
+            Err(err) => {
+                guard.finalize_by_sync.insert(
+                    sync_id_owned,
+                    CaptureFinalizeState::Error(format!("{err:#}")),
+                );
+            }
+        }
+    });
+    Ok(json!({
+        "ok": true,
+        "status": "finalizing",
+        "syncId": sync_id,
+    }))
 }
 
 pub(crate) fn complete_verify_upload(
