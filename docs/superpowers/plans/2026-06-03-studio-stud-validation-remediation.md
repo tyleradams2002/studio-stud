@@ -517,9 +517,9 @@ git commit -m "perf(db): incremental auto_vacuum + remove duplicate property sto
 
 **Files:** Modify `src/capture.rs` (`materialize_snapshot` / re-baseline path [capture.rs:28-106](../../../src/capture.rs#L28))
 
-- [ ] **Step 1: Instrument** — with `--profile`, capture the re-baseline timing breakdown (`obs::span` around delete/ingest/commit) so the ~10–11 s is attributable.
-- [ ] **Step 2: Optimize the dominant cost** — likely the full DELETE+INSERT+WAL-checkpoint. Options to apply based on the profile: wrap in a single transaction (confirm it already is), batch inserts with a prepared statement, and avoid re-checkpointing the full file when the DB is already compacted (Task 4.2). Target the runbook's ~3 s.
-- [ ] **Step 3: In-Studio verify** — Ctrl+C + restart `serve`; the place returns to "Live" measurably faster than 10–11 s; `logs/daemon.log` shows the per-stage timings.
+- [x] **Step 1: Instrument** — `obs::span` sub-stages in `materialize_snapshot` (`materialize_delete_all`, `materialize_ingest_rows`, `materialize_commit`, `materialize_write_live_state`, `materialize_compact`); outer `materialize_snapshot` span unchanged in `http.rs`.
+- [x] **Step 2: Optimize the dominant cost** — baseline ingest uses `insert_instance` (no per-row `delete_instance_rows` after `delete_all_tables`); fingerprint computed in-memory during ingest (skips post-commit `fingerprint_state` scan); WAL checkpoint `PASSIVE` instead of `TRUNCATE`.
+- [ ] **Step 3: In-Studio verify** — full capture; `daemon.log` should show sub-stage timings and lower `materialize_snapshot` total than ~33 s baseline.
 - [ ] **Step 4: Commit** `perf(capture): faster re-baseline via batched ingest + compacted DB (F-J)`.
 
 **Phase 4 exit criteria:** First full capture succeeds without false timeout; `syncs.db` is materially smaller; re-baseline is meaningfully faster; all timings visible in `logs/daemon.log`.
