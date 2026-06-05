@@ -87,6 +87,35 @@ jobs:
       - name: Use generated manifest (overwrite committed)
         run: cp manifest/latest.json site/latest.json
 
+      # Guard: never publish the release manifest ahead of its GitHub Release.
+      # The manifest (this job, on main) and the release assets (github-release
+      # job, on a v* tag) are published by independent triggers — so a version
+      # can be advertised before its artifacts exist (the v0.4.10 install-404
+      # incident). Fail here unless every asset the manifest points at is already
+      # downloadable. Correct order: push the v<version> tag FIRST so the release
+      # is built, then merge to main to publish the manifest.
+      - name: Verify release assets exist before publishing manifest
+        run: |
+          VER=$(jq -r .daemonVersion manifest/latest.json)
+          TAG="v$VER"
+          echo "Manifest declares $TAG — verifying its GitHub Release assets exist..."
+          MISSING=0
+          for ASSET in studio-stud.exe studio-stud-setup.exe StudioStud.plugin.lua studio-stud-bundle.zip; do
+            URL="https://github.com/${{ github.repository }}/releases/download/$TAG/$ASSET"
+            CODE=$(curl -s -o /dev/null -w '%{http_code}' -L "$URL")
+            if [ "$CODE" = "200" ]; then
+              echo "  ok    $ASSET"
+            else
+              echo "  MISS  $ASSET (HTTP $CODE)"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" -ne 0 ]; then
+            echo "::error::Refusing to publish the release manifest for $TAG — its GitHub Release assets are missing (404). Push the $TAG tag first so the github-release job builds and uploads them, then re-run this deploy."
+            exit 1
+          fi
+          echo "All $TAG assets present — safe to publish manifest."
+
       - name: Deploy site/ to gh-pages (release channel root)
         uses: peaceiris/actions-gh-pages@v4
         with:
