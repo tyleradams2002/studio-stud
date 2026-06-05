@@ -157,6 +157,20 @@ fn cmd_policy_explain(repo_root: &Path, rel_path: &str, place_id: Option<i64>) -
     Ok(())
 }
 
+/// If the daemon is reachable AND reports an active play session, fail fast so writes
+/// don't land while Studio is frozen mid-playtest. If the daemon is not running, writes
+/// proceed (offline use is unaffected — only a confirmed, active play session blocks).
+fn ensure_not_in_play_session() -> Result<()> {
+    if let Ok(ping) = crate::http::daemon_json("GET", "/studio-stud/ping", None) {
+        if ping.get("sessionMode").and_then(Value::as_str) == Some("play") {
+            return Err(anyhow!(
+                "Studio is in a play session; world state is frozen — retry the write after the playtest."
+            ));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn cmd_write_validate(args: WriteValidateArgs) -> Result<()> {
     run_write_command(
         &args.repo_root,
@@ -182,6 +196,7 @@ pub(crate) fn cmd_write_preview(args: WritePreviewArgs) -> Result<()> {
 }
 
 pub(crate) fn cmd_write_apply(args: WriteApplyArgs) -> Result<()> {
+    ensure_not_in_play_session()?;
     run_write_command(
         &args.repo_root,
         &args.path,

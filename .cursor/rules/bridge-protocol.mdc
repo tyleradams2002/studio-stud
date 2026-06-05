@@ -16,4 +16,7 @@ The single most breakage-prone part of Studio Stud is the boundary between the e
 - **Serialize at the edge.** `serde` derives on dedicated wire structs (DTOs); don't serialize internal engine types directly — keep an explicit DTO layer so refactors don't leak into the protocol.
 - **Backward-compatible first.** Prefer additive changes (new optional field, new message) over breaking ones. When you must break, bump the version and update both sides + the doc in the same change.
 
+## Session mode (edit vs play)
+The plugin reports whether Studio is in a genuine edit session or a play/run session on every heartbeat: the 3 s `GET /studio-stud/capture/request` poll carries `?sessionMode=edit|play` (derived from `RunService:IsEdit()`). This is additive — absent ⇒ `edit`, so the protocol stays **v1**. The daemon tracks it in-memory with a short freshness TTL (a closed plugin reverts to `edit`, so writes are never frozen by a stale signal), surfaces it on the `/studio-stud/ping` response (`sessionMode`, `staleSince`), and while a fresh `play` is reported it withholds queued capture work and refuses `/studio-stud/write/{token,validate,preview,apply}` and `/studio-stud/live/delta` with `{ "ok": false, "error": "studio_in_play_session" }`. The plugin also gates these client-side, so daemon refusal is defense-in-depth for CLI/Cursor-originated writes.
+
 When in doubt about a field's meaning, the protocol doc (`docs/usage.md`) and the Rust DTO — not memory — are authoritative.

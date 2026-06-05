@@ -83,6 +83,15 @@ Daemon connection count reference (measured June 2026, ExamplePlaceA):
 | 4 consecutive delta failures | Teardown → polling → auto re-baseline on reconnect |
 | `undo`/`redo` | Sets `verifyNeeded=true`; next verify clears drift |
 
+## Edit-Session Gating (play vs edit)
+
+Studio Stud talks to the daemon **only during a genuine edit session**. The plugin derives its mode from `RunService:IsEdit()` and reports it on every 3 s heartbeat (`GET /studio-stud/capture/request?sessionMode=edit|play`).
+
+- **Entering a play/run session** (F5 Play, Play Here, F8 Run, Team Test) tears down live mode — `DescendantAdded`/`DescendantRemoving` and per-instance listeners are dropped, so no deltas accumulate — and the panel shows `Paused — Studio in play session`. No capture, delta, or verify traffic is sent while the running-game DataModel is live, so it never pollutes the edit baseline and never hitches the playtest.
+- **Returning to edit** runs a smart catch-up: the plugin asks `/studio-stud/live/fingerprint`; if the daemon still holds the pre-play baseline (the common case — Stop restores the edit tree) it re-arms live in place and emits one readiness line (`Live resumed — rev N · X instances · ready`). Only on detected drift (e.g. F8 run-persisted edits) does it pay a full re-baseline.
+- **Daemon side.** While the plugin reports a fresh `play` session the daemon withholds queued capture work and refuses `/studio-stud/write/{token,validate,preview,apply}` and `/studio-stud/live/delta` with `{ ok:false, error:"studio_in_play_session" }`. It exposes `sessionMode` and `staleSince` on `/studio-stud/ping`, and `studio-stud status` shows the current `sessionMode`. Session state is in-memory with a short freshness TTL, so a closed plugin or a daemon restart reverts to `edit` — a stale signal never freezes writes.
+- **CLI.** `studio-stud capture` and `studio-stud write apply` fail fast with a friendly "Studio is in a play session…" message when an active play session is detected; if the daemon isn't running, CLI writes proceed as before.
+
 ## Output Contract
 
 - Default command output is compact JSON for AI.
@@ -294,6 +303,8 @@ Requires `studio-stud serve` running. The write token is issued locally and stor
 | `POST /studio-stud/write/apply` | Validate + atomic write |
 
 Token transport: header `X-StudioStud-Token` first; body field `token` is fallback. Missing/invalid token ⇒ **401** `tokenInvalid`. Malformed JSON ⇒ **400** `badRequest`. Policy/validation blocks ⇒ **200** with `{ ok:false, blocked:true, blockedReason }`.
+
+While Studio is in a play session, token issuance and all write modes are refused with `{ ok:false, error:"studio_in_play_session" }` (see *Edit-Session Gating*) — retry after the playtest stops.
 
 **Honesty note:** the localhost token mainly prevents accidental cross-talk from other local tools. Real protection is the allowlist, policy caps, place-id gate, and (later) hash CAS — not the token alone.
 

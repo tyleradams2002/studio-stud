@@ -165,3 +165,60 @@ This phase is separable from Phases 1-2 (which already stop the hitch) but is in
    when tree unchanged), live delta streaming resumes.
 4. While in a play session, run `studio-stud status` and a write/capture command — confirm
    `studio_in_play_session` fast-fail with the friendly message.
+
+---
+
+## 9. Re-validation addendum — 2026-06-04 (executed at v0.4.10 → 0.4.11)
+
+This plan was written at plugin v0.3.7 and never executed; the codebase advanced to v0.4.10
+through the validation-remediation work. Confirmed via a live test with Clayton on 2026-06-04 that
+the tool still captures during play (the symptom this plan was meant to kill). Re-validated against
+current code; architecture intact, line anchors refreshed below.
+
+### Decisions for this execution
+- **Branch:** implement directly on `development` (maintainer will run the live acceptance test).
+- **Primitive:** `RunService:IsEdit()` primary + `not RunService:IsRunning()` defensive conjunct.
+  Transitions logged behind the existing `debugLogging` setting so the maintainer can confirm
+  `IsEdit()`/`IsRunning()` across F5 Play / Play Here / F8 Run / Team Test (no throwaway Phase 0).
+- **Versioning:** plugin `PLUGIN_VERSION` and daemon `Cargo.toml` → `0.4.11`. Protocol stays **v1**
+  (`sessionMode` is additive/optional, defaults to `edit`).
+- **Heartbeat channel:** carry `sessionMode` as a query param on the existing 3 s
+  `GET /studio-stud/capture/request` poll. Backward-compatible.
+- **DEVIATION from original Phase 3 storage plan — session state is IN-MEMORY, not persisted.**
+  Keep `session_mode` + a heartbeat freshness timestamp in `DaemonState` (http.rs), NOT in the
+  `LiveState` SQLite schema. Rationale: session mode is ephemeral runtime state. Persisting it means
+  a daemon restart mid-play (or a crashed plugin) leaves the DB pinned to `"play"` forever, locking
+  out Cursor writes. In-memory + freshness timeout gives the correct failure mode: restart → defaults
+  to `edit`; heartbeats stop → goes stale → reverts to `edit`. No schema migration needed.
+- **CLI reads live daemon, not the DB:** CLI `status`/`capture`/write commands already ping the
+  daemon, so they read `sessionMode` from the ping response — no persisted field required.
+
+### Refreshed anchors (v0.4.10)
+Plugin `plugin/StudioStud.plugin.lua` (3689 lines):
+- Requires block lines 7–9 → add `RunService` at line 10. `PLUGIN_VERSION` line 13.
+- `syncFn` def @1773 · `startupConnectAndCapture` @1939 · `Live` table @1956 (`liveRunning` init @1957)
+- `Live.flushDirty` @2286 (POST `/live/delta` @2365) · `Live.sendVerify` @2455 · `Live.teardown` @2633
+- `Live.setupAfterBaseline` @2666 (spawns loops @2740–2741) · `startDebounceLoop` @2553 · `startVerifyLoop` @2574
+- 3 s poll loop @2754–2793 (GET `/capture/request` @2760) · write-token fetch @1055
+- `Transport.requestJson` @1007 / `requestBody` @1125 · `setStatus` @2873 / `setConnected` @2886
+- `SelfTest` @3400 (run @3411, teardown asserts @3600–3608, global @3654) · `plugin.Unloading` @3668
+
+Daemon (Rust `src/`):
+- `http.rs`: dispatcher @79; `DaemonState` @69; GET/POST `/capture/request` @98–99/@133–153;
+  `/live/delta` @243; `/live/fingerprint` @263; `/write/token` @331; `/write/{validate,preview,apply}`
+  @334–340; `handle_write_route` @409 (token check @444); `manifest_json_with_update` @879 (ping body @889–900)
+- `live.rs`: `apply_delta` @100 (returns `{ok:false,error:...}` on reject — natural gate site)
+- `storage.rs`: `LiveState` @17 (already has `revision`) — **no change needed under in-memory design**
+- `cli.rs`: `status` @471, `capture` @641 · write cmds in `stage3_cli.rs` (@160/@172/@184)
+- `Cargo.toml` version @8 · `util.rs` `PROTOCOL_VERSION` @17
+
+### Execution order (this session)
+Plugin Phases 1–2 first (self-contained core fix, stops the hitch with zero daemon changes), then
+daemon/CLI Phase 3 with strict cargo TDD, then Phase 4 (versions/docs/sweep). Rust changes are
+red-green TDD; the Lua gate is covered by the in-plugin `SelfTest` harness + the §8 live acceptance
+test (no headless Luau runtime available locally).
+
+### Open detail resolved during impl
+Daemon staleness behavior: refuse writes ONLY on a *fresh* `play` heartbeat; if the last heartbeat is
+stale (beyond timeout) or absent, report `staleSince` but ALLOW writes — a closed plugin must not
+freeze Cursor.

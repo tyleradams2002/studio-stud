@@ -274,6 +274,120 @@ fn write_http_token_matrix_and_status_codes() {
 }
 
 #[test]
+fn write_blocked_during_play_session() {
+    let repo = temp_repo("playgate");
+    let storage = temp_storage("playgate");
+    let serve = start_serve(&repo, &storage);
+    let port = serve.port;
+
+    // Baseline: with no heartbeat yet the daemon defaults to edit, so token issuance works.
+    let (status, body) = http_request("GET", port, "/studio-stud/write/token", None, &[]);
+    assert_eq!(status, 200, "token should issue in edit mode");
+    assert!(
+        parse_json(&body)
+            .get("token")
+            .and_then(Value::as_str)
+            .is_some()
+    );
+
+    // Plugin heartbeats that Studio entered a play session.
+    let (status, _) = http_request(
+        "GET",
+        port,
+        "/studio-stud/capture/request?sessionMode=play",
+        None,
+        &[],
+    );
+    assert_eq!(status, 200);
+
+    // Ping now reflects the play session.
+    let (_, ping) = http_request("GET", port, "/studio-stud/ping", None, &[]);
+    assert_eq!(
+        parse_json(&ping).get("sessionMode").and_then(Value::as_str),
+        Some("play")
+    );
+
+    // Write-token issuance is refused while the world state is frozen.
+    let (_, body) = http_request("GET", port, "/studio-stud/write/token", None, &[]);
+    let v = parse_json(&body);
+    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        v.get("error").and_then(Value::as_str),
+        Some("studio_in_play_session")
+    );
+
+    // Returning to edit re-enables writes.
+    let (status, _) = http_request(
+        "GET",
+        port,
+        "/studio-stud/capture/request?sessionMode=edit",
+        None,
+        &[],
+    );
+    assert_eq!(status, 200);
+    let (_, ping) = http_request("GET", port, "/studio-stud/ping", None, &[]);
+    assert_eq!(
+        parse_json(&ping).get("sessionMode").and_then(Value::as_str),
+        Some("edit")
+    );
+    let (status, body) = http_request("GET", port, "/studio-stud/write/token", None, &[]);
+    assert_eq!(status, 200, "token should issue again after returning to edit");
+    assert!(
+        parse_json(&body)
+            .get("token")
+            .and_then(Value::as_str)
+            .is_some()
+    );
+}
+
+#[test]
+fn capture_request_withheld_during_play_session() {
+    let repo = temp_repo("playcap");
+    let storage = temp_storage("playcap");
+    let serve = start_serve(&repo, &storage);
+    let port = serve.port;
+
+    // Queue a capture request (as the CLI would).
+    let (status, _) = http_request(
+        "POST",
+        port,
+        "/studio-stud/capture/request",
+        Some(r#"{"reason":"test"}"#),
+        &[],
+    );
+    assert_eq!(status, 200);
+
+    // While in a play session, the plugin's poll must NOT receive the queued request.
+    let (_, body) = http_request(
+        "GET",
+        port,
+        "/studio-stud/capture/request?sessionMode=play",
+        None,
+        &[],
+    );
+    let v = parse_json(&body);
+    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(
+        v.get("request").map_or(true, |r| r.is_null()),
+        "no capture work should be handed out during play"
+    );
+
+    // Back in edit, the still-queued request is delivered.
+    let (_, body) = http_request(
+        "GET",
+        port,
+        "/studio-stud/capture/request?sessionMode=edit",
+        None,
+        &[],
+    );
+    let v = parse_json(&body);
+    assert!(
+        v.get("request").map_or(false, |r| !r.is_null()),
+        "queued request delivered in edit"
+    );
+}
+
+#[test]
 fn write_http_capture_ping_still_reachable() {
     let repo = temp_repo("capture");
     let storage = temp_storage("capture");

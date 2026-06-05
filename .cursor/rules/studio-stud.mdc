@@ -19,5 +19,6 @@ Dataflow: `Studio plugin (Luau) ⇄ HTTP bridge ⇄ Rust engine ⇄ disk/Studio`
 - **Keep context small.** Touch the fewest files needed; don't read generated files; ask the engine for a summary instead of scanning raw output.
 - **Never hand-edit generated code or generated protocol types.** Change the source and regenerate.
 - **The Rust↔Luau contract is sacred.** Changing one side without the other breaks the tool — see the `bridge-protocol` rule and the `add-protocol-message` skill.
+- **Edit-only by design.** Studio Stud talks to the daemon ONLY during a genuine edit session. The plugin gates on `RunService:IsEdit()`: entering a play/run session (F5 Play / Play Here / F8 Run / Team Test) pauses all capture, delta streaming, and verify; on return to edit it runs a smart catch-up (fingerprint short-circuit, full re-baseline only on drift). The daemon mirrors this — while the plugin reports a play session it withholds capture work and refuses write-token issuance and write apply/validate/preview with a `studio_in_play_session` error. So **AI writes will be refused while a playtest is running** — retry after the user stops the test. See the `bridge-protocol` rule for the `sessionMode` heartbeat field.
 
 Scoped detail: the `rust-core`, `luau-plugin`, `bridge-protocol`, `powershell-glue` rules and the `.cursor/skills/` workflows.

@@ -476,6 +476,11 @@ fn cmd_status(markdown: bool, include_paths: bool, common: &CommonArgs) -> Resul
                 "state": "running",
                 "version": payload.get("version").and_then(Value::as_str),
                 "protocolVersion": payload.get("protocolVersion").and_then(Value::as_i64),
+                "sessionMode": payload
+                    .get("sessionMode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("edit"),
+                "staleSince": payload.get("staleSince").cloned().unwrap_or(Value::Null),
             })
         })
         .unwrap_or_else(|_| json!({ "state": "not-running" }));
@@ -513,6 +518,13 @@ fn cmd_status(markdown: bool, include_paths: bool, common: &CommonArgs) -> Resul
             "- daemon: `{}`",
             daemon
                 .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown")
+        );
+        println!(
+            "- sessionMode: `{}`",
+            daemon
+                .get("sessionMode")
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
         );
@@ -661,9 +673,14 @@ fn server_manifest_check() -> DoctorCheck {
     }
 }
 fn cmd_capture(timeout: u64, no_wait: bool) -> Result<()> {
-    daemon_json("GET", "/studio-stud/ping", None).with_context(|| {
+    let ping = daemon_json("GET", "/studio-stud/ping", None).with_context(|| {
         "Studio Stud daemon is not running. Start it in its own terminal with `studio-stud serve`, leave that terminal open, then rerun capture."
     })?;
+    if ping.get("sessionMode").and_then(Value::as_str) == Some("play") {
+        return Err(anyhow!(
+            "Studio is in a play session; world state is frozen — retry the capture after the playtest."
+        ));
+    }
     let request_id = make_id("request");
     let payload = json!({
         "requestId": request_id,

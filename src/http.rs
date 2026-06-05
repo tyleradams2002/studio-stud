@@ -66,6 +66,11 @@ pub(crate) enum CaptureFinalizeState {
     Error(String),
 }
 
+/// How long a play-session heartbeat is trusted before the daemon assumes the plugin
+/// is gone (heartbeats arrive every ~3 s) and reverts to treating the session as edit.
+/// In-memory only: a daemon restart or a closed plugin must never leave writes frozen.
+const SESSION_HEARTBEAT_TTL: Duration = Duration::from_secs(10);
+
 #[derive(Default)]
 pub(crate) struct DaemonState {
     pending_requests: VecDeque<Value>,
@@ -74,6 +79,64 @@ pub(crate) struct DaemonState {
     verify_uploads: HashMap<String, UploadState>,
     completions: HashMap<String, Value>,
     finalize_by_sync: HashMap<String, CaptureFinalizeState>,
+    /// Last session mode the plugin reported on its heartbeat ("edit" | "play").
+    session_mode: String,
+    /// Monotonic timestamp of that heartbeat, for freshness checks.
+    session_heartbeat_at: Option<Instant>,
+    /// Wall-clock timestamp of that heartbeat, surfaced as `staleSince` when aged out.
+    last_heartbeat_utc: Option<String>,
+}
+
+impl DaemonState {
+    fn record_session_mode(&mut self, mode: &str, now_utc: String) {
+        self.session_mode = if mode == "play" { "play" } else { "edit" }.to_string();
+        self.session_heartbeat_at = Some(Instant::now());
+        self.last_heartbeat_utc = Some(now_utc);
+    }
+
+    /// True only when the plugin reported a play session within the freshness window.
+    fn in_play_session(&self) -> bool {
+        self.session_mode == "play"
+            && self
+                .session_heartbeat_at
+                .map(|at| at.elapsed() < SESSION_HEARTBEAT_TTL)
+                .unwrap_or(false)
+    }
+
+    /// (effective session mode for ping/status, `staleSince` timestamp or null).
+    /// A "play" report that has aged past the TTL is reported as edit but with
+    /// `staleSince` set, so callers can see the plugin went quiet mid-play.
+    fn session_report(&self) -> (&'static str, Value) {
+        if self.in_play_session() {
+            return ("play", Value::Null);
+        }
+        let stale_since = if self.session_mode == "play" {
+            self.last_heartbeat_utc
+                .clone()
+                .map(Value::from)
+                .unwrap_or(Value::Null)
+        } else {
+            Value::Null
+        };
+        ("edit", stale_since)
+    }
+}
+
+/// Standard refusal returned for daemon operations that must not run while Studio is
+/// mid-playtest (write-token issuance, write apply/validate/preview, live deltas).
+fn play_session_block() -> Value {
+    json!({
+        "ok": false,
+        "error": "studio_in_play_session",
+        "detail": "Studio is in a play session; world state is frozen — retry after the playtest.",
+    })
+}
+
+fn is_in_play(state: &Arc<Mutex<DaemonState>>) -> Result<bool> {
+    Ok(state
+        .lock()
+        .map_err(|_| anyhow!("daemon state lock poisoned"))?
+        .in_play_session())
 }
 
 pub(crate) fn handle_daemon_request(
@@ -92,22 +155,40 @@ pub(crate) fn handle_daemon_request(
     let result = (|| -> Result<Value> {
         Ok(match (method, path.as_str()) {
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
-                manifest_json_with_update(config)
+                let mut manifest = manifest_json_with_update(config);
+                let (mode, stale_since) = {
+                    let guard = state
+                        .lock()
+                        .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                    guard.session_report()
+                };
+                if let Some(obj) = manifest.as_object_mut() {
+                    obj.insert("sessionMode".to_string(), json!(mode));
+                    obj.insert("staleSince".to_string(), stale_since);
+                }
+                manifest
             }
             (tiny_http::Method::Get, "/studio-stud/manifest") => manifest_json_with_update(config),
             (tiny_http::Method::Get, "/request-sync")
             | (tiny_http::Method::Get, "/studio-stud/capture/request") => {
+                let mode = query.get("sessionMode").map(String::as_str).unwrap_or("edit");
                 let mut guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                let request = guard.pending_requests.pop_front();
-                if let Some(request) = &request {
-                    guard.active_request_id = request
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(str::to_string);
+                guard.record_session_mode(mode, now_utc());
+                if guard.in_play_session() {
+                    // Studio is mid-playtest: heartbeat only, hand out no capture work.
+                    json!({ "ok": true, "request": Value::Null, "sessionMode": "play" })
+                } else {
+                    let request = guard.pending_requests.pop_front();
+                    if let Some(request) = &request {
+                        guard.active_request_id = request
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::to_string);
+                    }
+                    json!({ "ok": true, "request": request })
                 }
-                json!({ "ok": true, "request": request })
             }
             (tiny_http::Method::Get, "/studio-stud/capture/status") => {
                 let guard = state
@@ -241,24 +322,29 @@ pub(crate) fn handle_daemon_request(
                 )?
             }
             (tiny_http::Method::Post, "/studio-stud/live/delta") => {
-                let payload = read_request_json(&mut request)?;
-                let delta = parse_delta_request(&payload)?;
-                crate::obs::event(
-                    "live-delta",
-                    &format!(
-                        "RECV delta upserted={} removed={}",
-                        delta.upserted.len(),
-                        delta.removed.len()
-                    ),
-                );
-                let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
-                set_active_place(&storage, &delta.place_id);
-                apply_delta(
-                    storage_root.clone(),
-                    project_key,
-                    Some(delta.place_id.as_str()),
-                    &delta,
-                )?
+                if is_in_play(&state)? {
+                    // Defense-in-depth: the plugin already gates deltas during play.
+                    play_session_block()
+                } else {
+                    let payload = read_request_json(&mut request)?;
+                    let delta = parse_delta_request(&payload)?;
+                    crate::obs::event(
+                        "live-delta",
+                        &format!(
+                            "RECV delta upserted={} removed={}",
+                            delta.upserted.len(),
+                            delta.removed.len()
+                        ),
+                    );
+                    let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
+                    set_active_place(&storage, &delta.place_id);
+                    apply_delta(
+                        storage_root.clone(),
+                        project_key,
+                        Some(delta.place_id.as_str()),
+                        &delta,
+                    )?
+                }
             }
             (tiny_http::Method::Get, "/studio-stud/live/fingerprint") => {
                 let place_id = query.get("placeId").map(String::as_str);
@@ -329,16 +415,32 @@ pub(crate) fn handle_daemon_request(
                 )?
             }
             (tiny_http::Method::Get, "/studio-stud/write/token") => {
-                json!({ "ok": true, "token": config.write_token })
+                if is_in_play(&state)? {
+                    play_session_block()
+                } else {
+                    json!({ "ok": true, "token": config.write_token })
+                }
             }
             (tiny_http::Method::Post, "/studio-stud/write/validate") => {
-                handle_write_route(&mut request, config, WriteMode::Validate)?
+                if is_in_play(&state)? {
+                    play_session_block()
+                } else {
+                    handle_write_route(&mut request, config, WriteMode::Validate)?
+                }
             }
             (tiny_http::Method::Post, "/studio-stud/write/preview") => {
-                handle_write_route(&mut request, config, WriteMode::Preview)?
+                if is_in_play(&state)? {
+                    play_session_block()
+                } else {
+                    handle_write_route(&mut request, config, WriteMode::Preview)?
+                }
             }
             (tiny_http::Method::Post, "/studio-stud/write/apply") => {
-                handle_write_route(&mut request, config, WriteMode::Apply)?
+                if is_in_play(&state)? {
+                    play_session_block()
+                } else {
+                    handle_write_route(&mut request, config, WriteMode::Apply)?
+                }
             }
             (tiny_http::Method::Get, "/studio-stud/context") => {
                 handle_context_route(&query, config)?
@@ -865,13 +967,17 @@ pub(crate) fn daemon_json(method: &str, path: &str, body: Option<&Value>) -> Res
         .ok_or_else(|| anyhow!("invalid daemon HTTP response"))?;
     let value: Value = serde_json::from_str(payload.trim())?;
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
-        return Err(anyhow!(
-            "{}",
-            value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("daemon request failed")
-        ));
+        let error = value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("daemon request failed");
+        if error == "studio_in_play_session" {
+            let detail = value.get("detail").and_then(Value::as_str).unwrap_or(
+                "Studio is in a play session; world state is frozen — retry after the playtest.",
+            );
+            return Err(anyhow!("{detail}"));
+        }
+        return Err(anyhow!("{error}"));
     }
     Ok(value)
 }

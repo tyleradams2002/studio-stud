@@ -7,10 +7,26 @@
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+
+-- == Session mode (edit vs play) ==
+-- Studio Stud is a standard edit-DataModel plugin and must talk to the daemon ONLY
+-- during a genuine edit session. During any play/run session (F5 Play / Play Here /
+-- F8 Run / Team Test) the plugin sees the running-game DataModel; capturing or
+-- streaming it pollutes the single-per-place daemon DB and hitches the playtest.
+-- RunService:IsEdit() is the documented inverse of IsRunning() and returns false in
+-- every play/run context; we require BOTH (IsEdit and not IsRunning) as defense-in-depth.
+local Session = {}
+function Session.isEdit()
+	return RunService:IsEdit() and not RunService:IsRunning()
+end
+function Session.mode()
+	return Session.isEdit() and "edit" or "play"
+end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.10"
+local PLUGIN_VERSION = "0.4.11"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -1771,6 +1787,11 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	syncFn = function(options)
+		-- Edit-session gate: never build a snapshot or touch the daemon during a play session.
+		if not Session.isEdit() then
+			debugLog("capture skipped — Studio in play session (mode=", Session.mode(), ")")
+			return { ok = false, error = "studio_in_play_session" }
+		end
 		if syncing then
 			return { ok = false, error = "Sync already running." }
 		end
@@ -1937,6 +1958,10 @@ function CapturePanel.build(parent, ctx)
 
 	-- Ping daemon; on first success this session, run baseline capture + live mode.
 	local function startupConnectAndCapture()
+		-- Edit-session gate: do not connect/capture while Studio is in a play session.
+		if not Session.isEdit() then
+			return { ok = false, error = "studio_in_play_session" }
+		end
 		if syncing then
 			return { ok = false, error = "Sync already running." }
 		end
@@ -2288,6 +2313,10 @@ function CapturePanel.build(parent, ctx)
 			warn("[StudioStud] flushDirty skipped — live mode is off (click Capture/Query)")
 			return
 		end
+		-- Edit-session gate: never push deltas while Studio is in a play session.
+		if not Session.isEdit() then
+			return
+		end
 		if Live.syncInFlight then
 			return
 		end
@@ -2454,6 +2483,10 @@ function CapturePanel.build(parent, ctx)
 	-- Send a full verify snapshot → /live/verify/*
 	function Live.sendVerify()
 		if not Live.liveRunning then
+			return
+		end
+		-- Edit-session gate: never build/send the verify snapshot during a play session.
+		if not Session.isEdit() then
 			return
 		end
 		if Live.syncInFlight then
@@ -2749,15 +2782,108 @@ function CapturePanel.build(parent, ctx)
 		end
 	end)
 
+	-- Smart catch-up when returning from a play session to edit. Cheap fingerprint
+	-- short-circuit when the daemon still holds our pre-play baseline (the common case,
+	-- since Stop restores the edit tree); otherwise a full re-baseline.
+	local pausedBaseline = nil
+	local function onReturnToEdit()
+		task.wait(1.5) -- let the edit DataModel settle after Stop
+		if not Session.isEdit() then
+			return -- bounced back into a play session; the poll loop will re-handle
+		end
+		local baseline = pausedBaseline
+		pausedBaseline = nil
+		local resumed = false
+		if baseline then
+			local ok, result = ctx.transport.requestJson(
+				"GET",
+				"/studio-stud/live/fingerprint?placeId=" .. HttpService:UrlEncode(tostring(game.PlaceId)),
+				nil
+			)
+			if
+				ok
+				and result
+				and result.ok
+				and result.revision == baseline.revision
+				and result.instanceCount == baseline.instanceCount
+			then
+				-- Daemon still holds our baseline → re-arm live without a full re-walk.
+				-- Defer one verify to reconcile any F8 run-persisted edit-tree drift.
+				Live.setupAfterBaseline({ revision = result.revision, instances = result.instanceCount })
+				Live.verifyNeeded = true
+				ctx.setConnected(true)
+				sessionHasBaseline = true
+				setConnectButtonState()
+				ctx.setStatus(
+					"connected",
+					("Live resumed — rev %d · %d instances · ready"):format(
+						tonumber(result.revision) or 0,
+						tonumber(result.instanceCount) or 0
+					)
+				)
+				ctx.setStats(
+					("rev %d · %d instances"):format(
+						tonumber(result.revision) or 0,
+						tonumber(result.instanceCount) or 0
+					)
+				)
+				debugLog("session: resumed live via fingerprint short-circuit (rev ", result.revision, ")")
+				resumed = true
+			end
+		end
+		if not resumed then
+			debugLog("session: return-to-edit needs full re-baseline")
+			Live.triggerRebaseline("return-to-edit")
+		end
+	end
+
 	pollGeneration += 1
 	local myGeneration = pollGeneration
+	local lastSessionMode = Session.mode()
 	task.spawn(function()
 		while running do
 			task.wait(3)
 			if not running then
 				break
 			end
-			local ok, result = ctx.transport.requestJson("GET", "/studio-stud/capture/request", nil)
+
+			-- Edit/play session state machine: detect transitions each tick.
+			local mode = Session.mode()
+			if mode ~= lastSessionMode then
+				lastSessionMode = mode
+				if mode == "play" then
+					-- edit → play: snapshot the baseline, drop live connections so no dirty
+					-- accumulates, and pause all daemon comms (heartbeat continues below).
+					pausedBaseline = {
+						revision = (Live and Live.currentRevision) or 0,
+						instanceCount = (Live and Live.liveInstanceCount) or 0,
+					}
+					if Live and Live.liveRunning then
+						Live.teardown()
+					end
+					ctx.setStatus("idle", "Paused — Studio in play session")
+					ctx.setStats("")
+					debugLog("session: entered play — live paused, baseline rev ", pausedBaseline.revision)
+				else
+					-- play → edit: smart catch-up (debounced) then resume.
+					debugLog("session: returned to edit — scheduling catch-up")
+					task.defer(onReturnToEdit)
+				end
+			end
+
+			-- Heartbeat every tick so the daemon learns our session mode (carried as a
+			-- query param). This is the only daemon traffic during a play session.
+			local ok, result = ctx.transport.requestJson(
+				"GET",
+				"/studio-stud/capture/request?sessionMode=" .. HttpService:UrlEncode(mode),
+				nil
+			)
+
+			-- During a play session: heartbeat only — no captures, no reconnects.
+			if mode ~= "edit" then
+				continue
+			end
+
 			if ok then
 				-- Daemon reachable
 				if result and result.request and not syncing then
@@ -3629,6 +3755,21 @@ function SelfTest.run()
 	else
 		-- Live handle not available: skip but don't fail
 		print("[Studio Stud SelfTest] SKIP: live handle not available (live tests skipped)")
+	end
+
+	-- == Edit-session gate self-tests ==
+	-- SelfTest runs in a genuine edit session, so the primitive MUST resolve to edit.
+	-- A failure here means the gate would wrongly suspend all capture during normal editing.
+	do
+		SelfTest.assert("Session.isEdit is a function", type(Session.isEdit) == "function", failures)
+		SelfTest.assert("Session.mode is a function", type(Session.mode) == "function", failures)
+		SelfTest.assert("Session.mode() == 'edit' while editing", Session.mode() == "edit", failures)
+		SelfTest.assert("Session.isEdit() true while editing", Session.isEdit() == true, failures)
+		SelfTest.assert(
+			"Session.isEdit agrees with Session.mode",
+			Session.isEdit() == (Session.mode() == "edit"),
+			failures
+		)
 	end
 
 	Settings.setBool(SETTINGS.liveCaptureEnabled, origLive)
