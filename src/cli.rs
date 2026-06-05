@@ -148,6 +148,10 @@ pub(crate) enum Commands {
         /// Emit timing spans for daemon operations (also logs per-request latency).
         #[arg(long)]
         profile: bool,
+        /// Print all daemon activity to the console. Without it the console stays quiet
+        /// (startup + errors only); everything is still written to logs/daemon.log.
+        #[arg(long)]
+        verbose: bool,
         /// Deprecated no-op (update is owned by studio-stud-setup).
         #[arg(long, hide = true)]
         no_update: bool,
@@ -384,15 +388,16 @@ fn dispatch(cli: Cli) -> Result<()> {
             host,
             port,
             profile,
+            verbose,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, profile),
+        }) => cmd_serve(&host, port, &common, no_update, profile, verbose),
         Some(Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, false),
+        }) => cmd_serve(&host, port, &common, no_update, false, false),
         Some(Commands::Bench {
             raw,
             baseline,
@@ -743,7 +748,14 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool, profile: bool) -> Result<()> {
+fn cmd_serve(
+    host: &str,
+    port: u16,
+    common: &CommonArgs,
+    _no_update: bool,
+    profile: bool,
+    verbose: bool,
+) -> Result<()> {
     crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
@@ -757,7 +769,14 @@ fn cmd_serve(host: &str, port: u16, common: &CommonArgs, _no_update: bool, profi
         )
     })?;
     let storage = Storage::new(common.storage_root.clone(), &common.project_key)?;
-    crate::obs::init(&storage.root, profile);
+    // Console stays quiet by default; --verbose, --profile, or STUDIO_STUD_VERBOSE=1
+    // surfaces the full per-request stream. daemon.log always gets everything.
+    let verbose = verbose
+        || profile
+        || std::env::var("STUDIO_STUD_VERBOSE")
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+    crate::obs::init(&storage.root, profile, verbose);
     let mut user_cfg = crate::setup_core::load_config_or_default();
     if crate::setup_core::config::self_heal_config_on_serve(&mut user_cfg) {
         let _ = crate::setup_core::save_config(&user_cfg);

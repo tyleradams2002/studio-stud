@@ -4,29 +4,51 @@
 -- testing. The plugin is read-only: it exports live Studio DataModel metadata
 -- to a local daemon for AI review.
 
+-- Plugin-only guard. This file MUST run as a Studio plugin (loaded from the Plugins
+-- folder), where the `plugin` global exists. If a copy of this source is ever embedded
+-- in a place (e.g. pasted into Workspace as a Script and saved), it would otherwise run
+-- inside the running game's Server/Client DataModels during a playtest and capture the
+-- live game. When `plugin` is nil we are NOT a plugin — bail out immediately.
+if not plugin then
+	warn(
+		"[StudioStud] This is a Studio plugin, not a game script. Install it via the Roblox "
+			.. "Plugins folder and remove any embedded copy (e.g. Workspace.Script) from the place."
+	)
+	return
+end
+
 local HttpService = game:GetService("HttpService")
 local ChangeHistoryService = game:GetService("ChangeHistoryService")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 
 -- == Session mode (edit vs play) ==
--- Studio Stud is a standard edit-DataModel plugin and must talk to the daemon ONLY
--- during a genuine edit session. During any play/run session (F5 Play / Play Here /
--- F8 Run / Team Test) the plugin sees the running-game DataModel; capturing or
--- streaming it pollutes the single-per-place daemon DB and hitches the playtest.
--- RunService:IsEdit() is the documented inverse of IsRunning() and returns false in
--- every play/run context; we require BOTH (IsEdit and not IsRunning) as defense-in-depth.
+-- Studio Stud must talk to the daemon ONLY during a genuine edit session. Code running in a
+-- play/run DataModel (Play Solo / F8 Run, or a stray copy embedded in the place) reports
+-- IsRunning()=true / IsEdit()=false and is gated to "play". The real plugin runs in the edit
+-- DataModel; during an F5 playtest (a separate DataModel) it stays "edit" and never sees the
+-- running game, so there is nothing to capture there.
+-- decide() is a PURE function so its truth table stays unit-testable in SelfTest.
 local Session = {}
-function Session.isEdit()
-	return RunService:IsEdit() and not RunService:IsRunning()
+function Session.signals()
+	return {
+		isEdit = RunService:IsEdit(),
+		isRunning = RunService:IsRunning(),
+	}
+end
+function Session.decide(sig)
+	return (sig.isEdit and not sig.isRunning) and "edit" or "play"
 end
 function Session.mode()
-	return Session.isEdit() and "edit" or "play"
+	return Session.decide(Session.signals())
+end
+function Session.isEdit()
+	return Session.mode() == "edit"
 end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.11"
+local PLUGIN_VERSION = "0.4.12"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -3761,15 +3783,31 @@ function SelfTest.run()
 	-- SelfTest runs in a genuine edit session, so the primitive MUST resolve to edit.
 	-- A failure here means the gate would wrongly suspend all capture during normal editing.
 	do
-		SelfTest.assert("Session.isEdit is a function", type(Session.isEdit) == "function", failures)
-		SelfTest.assert("Session.mode is a function", type(Session.mode) == "function", failures)
-		SelfTest.assert("Session.mode() == 'edit' while editing", Session.mode() == "edit", failures)
-		SelfTest.assert("Session.isEdit() true while editing", Session.isEdit() == true, failures)
+		SelfTest.assert("Session.decide is a function", type(Session.decide) == "function", failures)
+		SelfTest.assert("Session.signals is a function", type(Session.signals) == "function", failures)
+		-- Pure decision truth table (independent of the live RunService):
 		SelfTest.assert(
-			"Session.isEdit agrees with Session.mode",
-			Session.isEdit() == (Session.mode() == "edit"),
+			"decide edit when isEdit & !isRunning",
+			Session.decide({ isEdit = true, isRunning = false }) == "edit",
 			failures
 		)
+		SelfTest.assert(
+			"decide play when isRunning",
+			Session.decide({ isEdit = false, isRunning = true }) == "play",
+			failures
+		)
+		SelfTest.assert(
+			"decide play when !isEdit",
+			Session.decide({ isEdit = false, isRunning = false }) == "play",
+			failures
+		)
+		SelfTest.assert(
+			"decide play when isEdit & isRunning",
+			Session.decide({ isEdit = true, isRunning = true }) == "play",
+			failures
+		)
+		-- SelfTest runs in a genuine edit session, so the LIVE decision must be edit:
+		SelfTest.assert("Session.mode() == 'edit' while editing", Session.mode() == "edit", failures)
 	end
 
 	Settings.setBool(SETTINGS.liveCaptureEnabled, origLive)
