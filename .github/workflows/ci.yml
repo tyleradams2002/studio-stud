@@ -1,10 +1,9 @@
 name: CI
 
-# Runs only on pull requests — gates merges into beta and main.
-# Branch pushes are handled by deploy.yml.
+# Runs on pull requests into main — gates merges. Branch pushes are handled by deploy.yml.
 on:
   pull_request:
-    branches: [beta, main]
+    branches: [main]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -28,3 +27,35 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+  version-gate:
+    name: Version bump gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Enforce matching, incremented version
+        run: |
+          set -euo pipefail
+          CARGO=$(grep -m1 -oP '^version\s*=\s*"\K[^"]+' Cargo.toml)
+          PLUGIN=$(grep -m1 -oP 'PLUGIN_VERSION\s*=\s*"\K[^"]+' plugin/StudioStud.plugin.lua)
+          echo "Cargo=$CARGO  Plugin=$PLUGIN"
+          if [ "$CARGO" != "$PLUGIN" ]; then
+            echo "::error::Cargo.toml ($CARGO) and plugin PLUGIN_VERSION ($PLUGIN) must match. Use scripts/bump-version.ps1."
+            exit 1
+          fi
+          git fetch --tags --quiet || true
+          if git rev-parse -q --verify "refs/tags/v$CARGO" >/dev/null; then
+            echo "::error::Tag v$CARGO already exists — bump the version before this PR can merge."
+            exit 1
+          fi
+          LATEST=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+          LATEST=${LATEST:-0.0.0}
+          HIGHEST=$(printf '%s\n%s\n' "$LATEST" "$CARGO" | sort -V | tail -1)
+          if [ "$CARGO" = "$LATEST" ] || [ "$HIGHEST" != "$CARGO" ]; then
+            echo "::error::Version $CARGO must be strictly greater than the last release v$LATEST."
+            exit 1
+          fi
+          echo "Version gate passed: $CARGO > $LATEST"
