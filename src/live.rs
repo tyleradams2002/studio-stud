@@ -21,7 +21,7 @@ use crate::storage::{
     resolve_place, write_live_state,
 };
 
-use crate::util::{hex_bytes, make_id, now_utc, open_db, str_field};
+use crate::util::{hex_bytes, make_id, normalize_query_path, now_utc, open_db, str_field};
 
 pub(crate) struct DeltaRequest {
     pub place_id: String,
@@ -730,6 +730,94 @@ pub(crate) fn live_services(
         "global": global,
         "services": services,
         "xorOfServices": hex_bytes(&xor_acc),
+    }))
+}
+
+pub(crate) fn script_source(
+    storage_root: Option<PathBuf>,
+    project_key: &str,
+    place: Option<&str>,
+    path: &str,
+) -> Result<Value> {
+    let storage = Storage::new(storage_root, project_key)?;
+    let place_storage = resolve_place(&storage, place)?;
+    let conn = open_db(&place_storage.db_path)?;
+    init_schema(&conn)?;
+
+    let live = current_state(&conn)?;
+    let capture_id = live.capture_id.clone();
+    let path_norm = normalize_query_path(path);
+
+    let instance_id: Option<String> = conn
+        .query_row(
+            "SELECT instance_id FROM instances WHERE capture_id = ? AND path_norm = ?",
+            params![capture_id, path_norm],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(instance_id) = instance_id else {
+        return Ok(json!({ "ok": false, "error": "not_found" }));
+    };
+
+    let row: Option<(String, String)> = conn
+        .query_row(
+            "SELECT source_text, source_hash FROM script_sources WHERE capture_id = ? AND instance_id = ?",
+            params![capture_id, instance_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+
+    let Some((source_text, source_hash)) = row else {
+        return Ok(json!({ "ok": false, "error": "no_source" }));
+    };
+
+    Ok(json!({
+        "ok": true,
+        "path": path,
+        "instanceId": instance_id,
+        "sourceText": source_text,
+        "sourceHash": source_hash,
+    }))
+}
+
+pub(crate) fn script_sources(
+    storage_root: Option<PathBuf>,
+    project_key: &str,
+    place: Option<&str>,
+) -> Result<Value> {
+    let storage = Storage::new(storage_root, project_key)?;
+    let place_storage = resolve_place(&storage, place)?;
+    let conn = open_db(&place_storage.db_path)?;
+    init_schema(&conn)?;
+
+    let live = current_state(&conn)?;
+    let capture_id = live.capture_id.clone();
+
+    let mut stmt = conn.prepare(
+        "SELECT i.path, s.instance_id, s.source_hash
+         FROM script_sources s
+         JOIN instances i ON i.capture_id = s.capture_id AND i.instance_id = s.instance_id
+         WHERE s.capture_id = ?
+         ORDER BY i.path",
+    )?;
+    let rows = stmt.query_map([&capture_id], |row| {
+        Ok(json!({
+            "path": row.get::<_, String>(0)?,
+            "instanceId": row.get::<_, String>(1)?,
+            "sourceHash": row.get::<_, String>(2)?,
+        }))
+    })?;
+
+    let mut entries = Vec::new();
+    for row in rows {
+        entries.push(row?);
+    }
+
+    Ok(json!({
+        "ok": true,
+        "count": entries.len(),
+        "entries": entries,
     }))
 }
 

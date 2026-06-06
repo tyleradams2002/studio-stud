@@ -414,6 +414,7 @@ pub(crate) fn delete_instance_rows(
         "instance_attributes",
         "instance_properties",
         "keyword_hits",
+        "script_sources",
         "instances",
     ] {
         tx.execute(
@@ -528,6 +529,12 @@ fn insert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Value) -> Resu
             "INSERT INTO keyword_hits (capture_id, instance_id, path, name, class_name) VALUES (?, ?, ?, ?, ?)",
         )?
         .execute(params![capture_id, id, path, name, class_name])?;
+    }
+
+    if let Some(src) = inst.get("source").and_then(Value::as_str) {
+        let normalized = crate::write::safety::normalize_newlines(src);
+        let hash = crate::write::safety::sha256_hex(normalized.as_bytes());
+        crate::storage::upsert_script_source(tx, capture_id, &id, &normalized, &hash)?;
     }
 
     Ok(())
