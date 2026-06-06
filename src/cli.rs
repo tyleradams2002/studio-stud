@@ -13,8 +13,9 @@ use serde_json::{Value, json};
 use crate::analyze::cmd_analyze;
 use crate::bench::cmd_bench;
 use crate::capture::{decode_raw_snapshot, materialize_snapshot};
+use crate::conn_registry::ConnRegistry;
 use crate::http::{DaemonState, ServeConfig, daemon_json, handle_daemon_request};
-use crate::live::{apply_delta, live_dump, parse_delta_request, verify_drift};
+use crate::live::{apply_delta, live_dump, live_services, parse_delta_request, verify_drift};
 use crate::output::live_state_compact_json;
 use crate::policy::resolve_repo_root;
 use crate::query::cmd_query;
@@ -220,6 +221,14 @@ pub(crate) enum Commands {
         #[command(flatten)]
         common: CommonArgs,
     },
+    /// Dump per-service fingerprints (hidden).
+    #[command(name = "live-services", hide = true)]
+    LiveServices {
+        #[arg(value_name = "PLACE_ID_OR_KEY")]
+        place: Option<String>,
+        #[command(flatten)]
+        common: CommonArgs,
+    },
     /// Manage the repo write policy file.
     Policy {
         #[command(flatten)]
@@ -418,6 +427,9 @@ fn dispatch(cli: Cli) -> Result<()> {
             cmd_live_verify(&raw, place.as_deref(), &common)
         }
         Some(Commands::LiveDump { place, common }) => cmd_live_dump(place.as_deref(), &common),
+        Some(Commands::LiveServices { place, common }) => {
+            cmd_live_services(place.as_deref(), &common)
+        }
         Some(Commands::Policy { args }) => cmd_policy(args),
         Some(Commands::ProjectCmd { args }) => cmd_project(args),
         Some(Commands::WriteValidate { args }) => cmd_write_validate(args),
@@ -829,6 +841,7 @@ fn cmd_serve(
     std::thread::spawn(move || {
         let _ = cu.ping_fields();
     });
+    let registry_conns = ConnRegistry::new();
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
@@ -839,6 +852,7 @@ fn cmd_serve(
         port,
         shutdown: Arc::clone(&shutdown),
         channel_update,
+        registry_conns,
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
@@ -902,7 +916,13 @@ fn cmd_ingest(raw_path: &Path, common: &CommonArgs) -> Result<()> {
     let raw_bytes = fs::read(raw_path).with_context(|| format!("read {}", raw_path.display()))?;
     let raw_json = decode_raw_snapshot(&raw_bytes)?;
     let snapshot: Value = serde_json::from_str(&raw_json)?;
-    let result = materialize_snapshot(&snapshot, common.storage_root.clone(), &common.project_key)?;
+    let registry = ConnRegistry::new();
+    let result = materialize_snapshot(
+        &snapshot,
+        common.storage_root.clone(),
+        &common.project_key,
+        &registry,
+    )?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }
@@ -912,11 +932,13 @@ fn cmd_live_delta(raw_path: &Path, place: Option<&str>, common: &CommonArgs) -> 
     let raw_json = decode_raw_snapshot(&raw_bytes)?;
     let value: Value = serde_json::from_str(&raw_json)?;
     let request = parse_delta_request(&value)?;
+    let registry = ConnRegistry::new();
     let result = apply_delta(
         common.storage_root.clone(),
         &common.project_key,
         place,
         &request,
+        &registry,
     )?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
@@ -939,6 +961,12 @@ fn cmd_live_verify(raw_path: &Path, place: Option<&str>, common: &CommonArgs) ->
 
 fn cmd_live_dump(place: Option<&str>, common: &CommonArgs) -> Result<()> {
     let result = live_dump(common.storage_root.clone(), &common.project_key, place)?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
+}
+
+fn cmd_live_services(place: Option<&str>, common: &CommonArgs) -> Result<()> {
+    let result = live_services(common.storage_root.clone(), &common.project_key, place)?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }
