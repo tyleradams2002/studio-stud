@@ -12,8 +12,8 @@ use serde_json::{Value, json};
 use crate::conn_registry::ConnRegistry;
 use crate::capture::{
     canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_instance,
-    fingerprint_state, ingest_rows, recompute_critical_presence_from_db, recompute_findings,
-    service_of, upsert_instance,
+    fingerprint_state, fp_digest_from_entry, ingest_rows, parse_fp_hex, read_stored_fp,
+    recompute_critical_presence_from_db, recompute_findings, service_of, upsert_instance,
 };
 
 use crate::storage::{
@@ -80,19 +80,7 @@ pub(crate) fn parse_delta_request(value: &Value) -> Result<DeltaRequest> {
 }
 
 fn parse_fingerprint_hex(hex: &str) -> Result<[u8; 32]> {
-    if hex.len() != 64 {
-        return Err(anyhow!("invalid fingerprint hex length"));
-    }
-
-    let mut out = [0u8; 32];
-
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk)?;
-
-        out[i] = u8::from_str_radix(s, 16)?;
-    }
-
-    Ok(out)
+    parse_fp_hex(hex)
 }
 
 fn fingerprint_hex(acc: [u8; 32]) -> String {
@@ -211,7 +199,7 @@ pub(crate) fn apply_delta(
     })
 }
 
-fn apply_delta_tx(
+pub(crate) fn apply_delta_tx(
     tx: &Transaction<'_>,
 
     capture_id: &str,
@@ -229,7 +217,9 @@ fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Ok(digest) = fingerprint_instance(tx, capture_id, removed_id) {
+        if let Some(digest) = read_stored_fp(tx, capture_id, removed_id)?
+            .or_else(|| fingerprint_instance(tx, capture_id, removed_id).ok())
+        {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -276,7 +266,9 @@ fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Ok(digest) = fingerprint_instance(tx, capture_id, &id) {
+        if let Some(digest) = read_stored_fp(tx, capture_id, &id)?
+            .or_else(|| fingerprint_instance(tx, capture_id, &id).ok())
+        {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -297,7 +289,7 @@ fn apply_delta_tx(
 
         upsert_instance(tx, capture_id, inst)?;
 
-        let digest = fingerprint_instance(tx, capture_id, &id)?;
+        let digest = fp_digest_from_entry(inst)?;
 
         for (i, byte) in digest.iter().enumerate() {
             acc[i] ^= byte;
