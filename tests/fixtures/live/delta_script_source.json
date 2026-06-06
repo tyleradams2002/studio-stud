@@ -1,0 +1,24 @@
+{
+  "placeId": "999001",
+  "baseRevision": 0,
+  "ops": {
+    "removed": [],
+    "upserted": [
+      {
+        "id": "mod1",
+        "parentId": "folder",
+        "path": "Workspace/Folder/MyModule",
+        "name": "MyModule",
+        "className": "ModuleScript",
+        "depth": 2,
+        "childCount": 0,
+        "siblingIndex": 0,
+        "duplicateSiblingName": false,
+        "properties": {},
+        "attributes": {},
+        "tags": [],
+        "source": "print('updated')\r\n"
+      }
+    ]
+  }
+}

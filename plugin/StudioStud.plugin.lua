@@ -48,7 +48,7 @@ end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.16"
+local PLUGIN_VERSION = "0.4.18"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -1040,6 +1040,67 @@ function Transport.currentUrl()
 	return Settings.getString(SETTINGS.daemonUrl, DEFAULT_DAEMON_URL)
 end
 
+-- Make a value JSON-safe IN PLACE so HttpService:JSONEncode can never hard-fail a capture:
+--   * non-finite numbers (NaN / ±inf) -> 0   (corrupted physics can yield these in CFrame fields)
+--   * invalid-UTF-8 strings            -> valid prefix + U+FFFD  (script Source, captured in 0.4.17+)
+--   * cyclic tables                    -> dropped
+--   * userdata / function / thread     -> {type="Unsupported"}   (defensive; serializeValue normally
+--                                                                  converts these already)
+-- Appends a human-readable description of every offender to `report` so the cause is logged.
+function Transport.sanitizeJsonValue(value, path, report, seen)
+	local t = type(value)
+	if t == "number" then
+		if value ~= value or value == math.huge or value == -math.huge then
+			report[#report + 1] = path .. "=" .. tostring(value)
+			return 0
+		end
+		return value
+	elseif t == "string" then
+		local len, firstBad = utf8.len(value)
+		if len == nil then
+			report[#report + 1] = path .. " (invalid utf-8, " .. #value .. "B)"
+			return string.sub(value, 1, (firstBad or 1) - 1) .. utf8.char(0xFFFD)
+		end
+		return value
+	elseif t == "table" then
+		seen = seen or {}
+		if seen[value] then
+			report[#report + 1] = path .. " (cyclic)"
+			return nil
+		end
+		seen[value] = true
+		for key, item in pairs(value) do
+			value[key] = Transport.sanitizeJsonValue(item, path .. "." .. tostring(key), report, seen)
+		end
+		seen[value] = nil
+		return value
+	elseif t == "boolean" or t == "nil" then
+		return value
+	end
+	report[#report + 1] = path .. " (type=" .. typeof(value) .. ")"
+	return { type = "Unsupported", reason = typeof(value) }
+end
+
+-- Encode, but never crash the capture on a stray non-encodable value: on failure, sanitize in place
+-- (logging exactly which fields were wrong) and retry. Zero overhead on clean payloads. Returns
+-- (ok, jsonTextOrError) just like a guarded pcall(JSONEncode).
+function Transport.safeEncode(value, label)
+	local okEnc, encoded = pcall(HttpService.JSONEncode, HttpService, value)
+	if okEnc then
+		return true, encoded
+	end
+	local report = {}
+	Transport.sanitizeJsonValue(value, label or "root", report, nil)
+	warn(
+		("[StudioStud] safeEncode: %s had %d non-JSON value(s), sanitized: %s"):format(
+			tostring(label),
+			#report,
+			table.concat(report, ", ")
+		)
+	)
+	return pcall(HttpService.JSONEncode, HttpService, value)
+end
+
 function Transport.requestJson(method, path, body, timeoutSeconds)
 	local url = Transport.currentUrl() .. path
 	local request = {
@@ -1049,7 +1110,7 @@ function Transport.requestJson(method, path, body, timeoutSeconds)
 		Timeout = timeoutSeconds or 30,
 	}
 	if body ~= nil then
-		local encOk, encoded = pcall(HttpService.JSONEncode, HttpService, body)
+		local encOk, encoded = Transport.safeEncode(body, path)
 		if not encOk then
 			warn("[StudioStud] JSONEncode failed for", path, ":", encoded)
 			return false, { error = "JSONEncode: " .. tostring(encoded) }
@@ -1108,7 +1169,7 @@ function Transport.requestJsonAuthed(method, path, body, timeoutSeconds)
 		}
 		Transport._selfTestLastRequest = request
 		if body ~= nil then
-			local encOk, encoded = pcall(HttpService.JSONEncode, HttpService, body)
+			local encOk, encoded = Transport.safeEncode(body, path)
 			if not encOk then
 				warn("[StudioStud] JSONEncode failed for", path, ":", encoded)
 				return false, { error = "JSONEncode: " .. tostring(encoded) }
@@ -1551,9 +1612,15 @@ function CapturePanel.build(parent, ctx)
 		end
 	end
 
+	local BASELINE_YIELD_EVERY = 500
+
 	local Capture = {}
 	local instanceIdByRef = {}
 	local pathByRef = {}
+
+	function Capture.shouldYield(processedCount, yieldEvery)
+		return yieldEvery > 0 and processedCount > 0 and (processedCount % yieldEvery) == 0
+	end
 
 	function Capture.serializeVector3(value)
 		return { type = "Vector3", x = value.X, y = value.Y, z = value.Z }
@@ -1682,18 +1749,38 @@ function CapturePanel.build(parent, ctx)
 		return set
 	end
 
-	function Capture.readProperties(inst)
+	function Capture.readPropsFrom(fakeInst, names)
 		local properties = {}
 		local errors = {}
-		for _, propName in ipairs(Capture.getPropertyNames(inst)) do
+		for _, propName in ipairs(names) do
 			local ok, value = pcall(function()
-				return inst[propName]
+				return fakeInst[propName]
 			end)
 			if ok then
 				properties[propName] = Capture.serializeValue(value)
 			else
 				table.insert(errors, { property = propName, error = tostring(value) })
 			end
+		end
+		return properties, errors
+	end
+
+	function Capture.readProperties(inst)
+		local names = Capture.getPropertyNames(inst)
+		local properties = {}
+		local errors = {}
+		local batchOk, batchProps = pcall(function()
+			local props = {}
+			for _, propName in ipairs(names) do
+				props[propName] = Capture.serializeValue(inst[propName])
+			end
+			return props
+		end)
+		if batchOk then
+			properties = batchProps
+		else
+			properties = {}
+			properties, errors = Capture.readPropsFrom(inst, names)
 		end
 
 		if inst:IsA("Model") then
@@ -1712,6 +1799,19 @@ function CapturePanel.build(parent, ctx)
 			end
 		end
 		return properties, errors
+	end
+
+	function Capture.readSource(inst)
+		if not inst:IsA("LuaSourceContainer") then
+			return nil
+		end
+		local ok, src = pcall(function()
+			return inst.Source
+		end)
+		if ok and typeof(src) == "string" then
+			return src
+		end
+		return nil
 	end
 
 	function Capture.readAttributes(inst)
@@ -1775,6 +1875,7 @@ function CapturePanel.build(parent, ctx)
 		local rootNames = {}
 		instanceIdByRef = {}
 		pathByRef = {}
+		local processedCount = 0
 
 		local function walk(inst, parentId, parentPath, depth, siblingIndex, duplicate, includeDescendants)
 			local id = inst:GetDebugId(0)
@@ -1803,6 +1904,10 @@ function CapturePanel.build(parent, ctx)
 				duplicateSiblingName = duplicate,
 			}
 			table.insert(instances, entry)
+			processedCount += 1
+			if Capture.shouldYield(processedCount, BASELINE_YIELD_EVERY) then
+				task.wait()
+			end
 
 			if not includeDescendants then
 				return
@@ -1834,6 +1939,7 @@ function CapturePanel.build(parent, ctx)
 			idToEntry[entry.id] = entry
 		end
 
+		local processedCount = 0
 		for inst, id in pairs(instanceIdByRef) do
 			local entry = idToEntry[id]
 			if entry then
@@ -1843,8 +1949,16 @@ function CapturePanel.build(parent, ctx)
 				entry.tags = Capture.readTags(inst)
 				entry.properties = properties
 				entry.propertyErrors = propErrors
+				local src = Capture.readSource(inst)
+				if src ~= nil then
+					entry.source = src
+				end
 				for _, attrError in ipairs(attrErrors) do
 					table.insert(entry.propertyErrors, attrError)
+				end
+				processedCount += 1
+				if Capture.shouldYield(processedCount, BASELINE_YIELD_EVERY) then
+					task.wait()
 				end
 			end
 		end
@@ -1909,7 +2023,15 @@ function CapturePanel.build(parent, ctx)
 		errorLabel.Text = ""
 
 		local snapshot = Capture.buildSnapshot(options)
-		local jsonText = HttpService:JSONEncode(snapshot)
+		local okEnc, jsonText = Transport.safeEncode(snapshot, "capture-snapshot")
+		if not okEnc then
+			syncing = false
+			setConnectButtonState()
+			errorLabel.Text = formatError("Encode failed", { error = tostring(jsonText) })
+			ctx.setStatus("error", "Capture failed")
+			ctx.setConnected(false)
+			return { ok = false, error = "json_encode_failed" }
+		end
 		local okStart, startResult = ctx.transport.requestJson("POST", "/studio-stud/capture/start", {
 			pluginVersion = PLUGIN_VERSION,
 			protocolVersion = PROTOCOL_VERSION,
@@ -2197,9 +2319,12 @@ function CapturePanel.build(parent, ctx)
 	-- Pure: classify a Changed property for an instance. Returns "name" | "dirty" | "gap".
 	-- NOTE: curatedSet maps propName -> readOnly(boolean); a writable curated prop is `false`,
 	-- so membership MUST be tested with `~= nil`, not truthiness (else writable props are missed).
+	-- Source is PluginSecurity-only (excluded from allow-list) — special-cased here so live edits ship.
 	function Live.classifyChangedProp(prop, curatedSet)
 		if prop == "Name" then
 			return "name"
+		elseif prop == "Source" then
+			return "dirty"
 		elseif curatedSet[prop] ~= nil then
 			return "dirty"
 		else
@@ -2445,7 +2570,9 @@ function CapturePanel.build(parent, ctx)
 		local attributes, _ = Capture.readAttributes(inst)
 		local tags = Capture.readTags(inst)
 		local displayPath = inst:GetFullName()
-		return {
+		-- Phase 4: any dirty script re-ships full Source (per-property granularity is Phase 5).
+		local src = Capture.readSource(inst)
+		local entry = {
 			id = id,
 			parentId = parentId,
 			path = path,
@@ -2460,6 +2587,10 @@ function CapturePanel.build(parent, ctx)
 			attributes = attributes,
 			tags = tags,
 		}
+		if src ~= nil then
+			entry.source = src
+		end
+		return entry
 	end
 
 	-- Flush dirty sets → POST /live/delta
@@ -2654,7 +2785,13 @@ function CapturePanel.build(parent, ctx)
 
 		debugLog("verify: building snapshot...")
 		local snapshot = Capture.buildSnapshot({ reason = "live-verify" })
-		local jsonText = HttpService:JSONEncode(snapshot)
+		local okEnc, jsonText = Transport.safeEncode(snapshot, "verify-snapshot")
+		if not okEnc then
+			warn("[StudioStud] verify: encode failed:", tostring(jsonText))
+			Live.verifyNeeded = true
+			finish()
+			return
+		end
 		local maxChunk = 900000
 		local okStart, startResult = ctx.transport.requestJson("POST", "/studio-stud/live/verify/start", {
 			pluginVersion = PLUGIN_VERSION,
@@ -3916,6 +4053,85 @@ function SelfTest.run()
 		end
 	end
 
+	-- == Phase 4: baseline yield + readPropsFrom + readSource ==
+	do
+		local captureExports = Registry.getHandle("capture")
+		local capture = captureExports and captureExports.capture
+		if capture then
+			SelfTest.assert("shouldYield(0,500)=false", not capture.shouldYield(0, 500), failures)
+			SelfTest.assert("shouldYield(500,500)=true", capture.shouldYield(500, 500), failures)
+			SelfTest.assert("shouldYield(750,500)=false", not capture.shouldYield(750, 500), failures)
+			SelfTest.assert("shouldYield(1000,500)=true", capture.shouldYield(1000, 500), failures)
+			SelfTest.assert("shouldYield(5,0)=false", not capture.shouldYield(5, 0), failures)
+
+			local fakeOk = { Transparency = 0.5, Size = Vector3.new(1, 2, 3) }
+			local propsOk, errsOk = capture.readPropsFrom(fakeOk, { "Transparency", "Size" })
+			SelfTest.assert(
+				"readPropsFrom success path",
+				propsOk.Transparency == 0.5 and propsOk.Size ~= nil and #errsOk == 0,
+				failures
+			)
+
+			local fakeThrow = setmetatable({}, {
+				__index = function(_, key)
+					if key == "BadProp" then
+						error("read failed")
+					end
+					if key == "GoodProp" then
+						return 1
+					end
+					if key == "GoodProp2" then
+						return 1
+					end
+					return nil
+				end,
+			})
+			local propsFb, errsFb = capture.readPropsFrom(fakeThrow, { "GoodProp", "BadProp", "GoodProp2" })
+			SelfTest.assert(
+				"readPropsFrom fallback returns rest",
+				propsFb.GoodProp == 1 and propsFb.GoodProp2 == 1 and #errsFb == 1,
+				failures
+			)
+
+			local mod = Instance.new("ModuleScript")
+			mod.Source = "return 42"
+			SelfTest.assert("readSource ModuleScript", capture.readSource(mod) == "return 42", failures)
+			local part = Instance.new("Part")
+			SelfTest.assert("readSource non-script nil", capture.readSource(part) == nil, failures)
+			mod:Destroy()
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available (phase 4)")
+		end
+	end
+
+	-- == JSON safety: a snapshot must always encode, even with NaN/inf or invalid-UTF-8 (0.4.18) ==
+	do
+		local report = {}
+		local dirty = {
+			nan = 0 / 0,
+			posInf = math.huge,
+			negInf = -math.huge,
+			ok = 1.5,
+			badStr = "abc" .. string.char(0xFF, 0xFE) .. "z",
+			goodStr = "héllo",
+			nested = { x = 0 / 0, y = 2 },
+		}
+		local rawOk = pcall(function()
+			return HttpService:JSONEncode(dirty)
+		end)
+		SelfTest.assert("dirty snapshot fails raw JSONEncode", not rawOk, failures)
+		Transport.sanitizeJsonValue(dirty, "root", report, nil)
+		local postOk = pcall(function()
+			return HttpService:JSONEncode(dirty)
+		end)
+		SelfTest.assert("sanitized snapshot encodes", postOk, failures)
+		SelfTest.assert("sanitize reported offenders", #report >= 4, failures)
+		SelfTest.assert("sanitize replaced NaN with 0", dirty.nan == 0, failures)
+		SelfTest.assert("sanitize kept finite number", dirty.ok == 1.5, failures)
+		SelfTest.assert("sanitize kept valid multibyte string", dirty.goodStr == "héllo", failures)
+	end
+
 	if live then
 		live.teardown()
 		SelfTest.assert("live.teardown clears liveRunning", not live.liveRunning, failures)
@@ -3951,6 +4167,7 @@ function SelfTest.run()
 		do
 			local curated = { Transparency = false }
 			SelfTest.assert("classify Name -> name", live.classifyChangedProp("Name", curated) == "name", failures)
+			SelfTest.assert("classify Source -> dirty", live.classifyChangedProp("Source", curated) == "dirty", failures)
 			SelfTest.assert("classify curated -> dirty", live.classifyChangedProp("Transparency", curated) == "dirty", failures)
 			SelfTest.assert("classify uncurated -> gap", live.classifyChangedProp("Archivable", curated) == "gap", failures)
 

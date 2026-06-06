@@ -804,7 +804,6 @@ pub(crate) fn write_reflection_version(conn: &Connection, version: &str) -> Resu
     Ok(())
 }
 
-#[allow(dead_code)]
 pub(crate) fn upsert_script_source(
     conn: &Connection,
     capture_id: &str,
