@@ -48,7 +48,7 @@ end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.16"
+local PLUGIN_VERSION = "0.4.17"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
