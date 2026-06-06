@@ -1,14 +1,14 @@
 {
-  "daemonVersion": "0.4.14",
-  "pluginVersion": "0.4.14",
+  "daemonVersion": "0.4.15",
+  "pluginVersion": "0.4.15",
   "protocolVersion": 1,
   "minPluginProtocolVersion": 1,
   "minDaemonProtocolVersion": 1,
-  "binaryUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.4.14/studio-stud.exe",
-  "pluginUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.4.14/StudioStud.plugin.lua",
+  "binaryUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.4.15/studio-stud.exe",
+  "pluginUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.4.15/StudioStud.plugin.lua",
   "installUrl": "https://tyleradams2002.github.io/studio-stud/install.ps1",
-  "releasedAt": "2026-06-06T14:51:38Z",
-  "channelSequence": 18,
+  "releasedAt": "2026-06-06T16:30:34Z",
+  "channelSequence": 19,
   "bundleEncUrl": "https://tyleradams2002.github.io/studio-stud/dev/studio-stud-bundle.zip.enc",
-  "signature": "f+pc3mDp79dVUJju2FeLoMQhoGQNePrZtR5ENduRB3hqUuWK0lGBMcBUg0A+DhCHCMpY2TD/pAVeVbzaPAWcCQ=="
+  "signature": "43d9sPQDyqha+ZP2mRBs5DbzGU4/avSJ7EDmSldHDoyp400+ebZLZfIjmcJYCLBH9qKombVQKxIZqxBxn2XVCw=="
 }
