@@ -1191,6 +1191,75 @@ function Transport.requestBody(path, body)
 	return true, decoded
 end
 
+-- == Property allow-list (fetched from daemon /allowlist; static CLASS_PROPERTIES is the fallback) ==
+local AllowList = {}
+AllowList.loaded = false
+AllowList.version = nil
+AllowList.sets = {} -- [className] = { [propName] = readOnly(boolean) }   (O(1) membership)
+AllowList.lists = {} -- [className] = { propName, ... }                    (ordered, for capture)
+
+-- Pure: turn a decoded /allowlist response into per-class sets + ordered lists. Returns nil on bad input.
+function AllowList.parse(decoded)
+	if type(decoded) ~= "table" or type(decoded.classes) ~= "table" then
+		return nil
+	end
+	local sets, lists = {}, {}
+	for className, props in pairs(decoded.classes) do
+		if type(props) == "table" then
+			local set, list = {}, {}
+			for _, entry in ipairs(props) do
+				if type(entry) == "table" and type(entry.name) == "string" then
+					set[entry.name] = entry.readOnly == true
+					table.insert(list, entry.name)
+				end
+			end
+			sets[className] = set
+			lists[className] = list
+		end
+	end
+	return { version = decoded.version, sets = sets, lists = lists }
+end
+
+-- Fetch from the daemon and cache. Returns true on success; leaves the static fallback in place on failure.
+function AllowList.fetch()
+	local ok, decoded = Transport.requestJson("GET", "/studio-stud/allowlist", nil, 15)
+	if not ok then
+		debugLog("allowlist: fetch failed (static fallback):", decoded and decoded.error)
+		return false
+	end
+	local parsed = AllowList.parse(decoded)
+	if not parsed then
+		debugLog("allowlist: bad response (static fallback)")
+		return false
+	end
+	AllowList.sets = parsed.sets
+	AllowList.lists = parsed.lists
+	AllowList.version = parsed.version
+	AllowList.loaded = true
+	local count = 0
+	for _ in pairs(parsed.sets) do
+		count += 1
+	end
+	debugLog("allowlist: loaded version", tostring(parsed.version), "classes", count)
+	return true
+end
+
+-- Ordered property names for an exact class (nil if not loaded / class unknown).
+function AllowList.namesFor(className)
+	if AllowList.loaded then
+		return AllowList.lists[className]
+	end
+	return nil
+end
+
+-- Membership set {propName = readOnly} for an exact class (nil if not loaded / class unknown).
+function AllowList.setFor(className)
+	if AllowList.loaded then
+		return AllowList.sets[className]
+	end
+	return nil
+end
+
 -- == Global API (_G.StudioStud wiring) ==
 
 local GlobalApi = {}
@@ -1578,6 +1647,12 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	function Capture.getPropertyNames(inst)
+		-- Phase 3: prefer the daemon allow-list (per exact ClassName, includes inherited props).
+		local fromAllow = AllowList.namesFor(inst.ClassName)
+		if fromAllow then
+			return fromAllow
+		end
+		-- Fallback: static CLASS_PROPERTIES (IsA-based accumulation).
 		local names = {}
 		if inst:IsA("BasePart") then
 			for _, name in ipairs(CLASS_PROPERTIES.BasePart) do
@@ -1592,6 +1667,19 @@ function CapturePanel.build(parent, ctx)
 			end
 		end
 		return names
+	end
+
+	-- Membership set for the inst's class (allow-list when loaded, else built from the static names).
+	function Capture.curatedSet(inst)
+		local fromAllow = AllowList.setFor(inst.ClassName)
+		if fromAllow then
+			return fromAllow
+		end
+		local set = {}
+		for _, name in ipairs(Capture.getPropertyNames(inst)) do
+			set[name] = false
+		end
+		return set
 	end
 
 	function Capture.readProperties(inst)
@@ -1989,6 +2077,9 @@ function CapturePanel.build(parent, ctx)
 		if not (ping and ping.ok) then
 			return ping
 		end
+		if not AllowList.loaded then -- Phase 3: load once per connect (best-effort; static fallback on failure)
+			AllowList.fetch()
+		end
 		if sessionHasBaseline or (Live and Live.liveRunning) then
 			return ping
 		end
@@ -2103,28 +2194,43 @@ function CapturePanel.build(parent, ctx)
 		end
 	end
 
+	-- Pure: classify a Changed property for an instance. Returns "name" | "dirty" | "gap".
+	function Live.classifyChangedProp(prop, curatedSet)
+		if prop == "Name" then
+			return "name"
+		elseif curatedSet[prop] then
+			return "dirty"
+		else
+			return "gap"
+		end
+	end
+
+	-- Uncurated properties that fired, deduped, for later reporting to the daemon (Phase 5).
+	Live.propGaps = {} -- [className.."/"..prop] = true
+	function Live.recordPropGap(className, prop)
+		local key = (className or "?") .. "/" .. tostring(prop)
+		if not Live.propGaps[key] then
+			Live.propGaps[key] = true
+			debugLog("allowlist gap:", key)
+		end
+	end
+
+	-- Shared name-change cascade (was the body of the old Name signal).
+	function Live.onNameChanged(inst)
+		local oldPath = pathByRef[inst] or ""
+		local oldName = oldPath:match("([^%[/]+)%[%d+%]$") or inst.Name
+		Live.markSubtreeUpsert(inst)
+		local parent = Live.parentByInst[inst] or inst.Parent
+		Live.markSiblingsDirty(parent, oldName)
+		Live.markSiblingsDirty(parent, inst.Name)
+	end
+
 	-- Connect per-instance signals for one instance
 	function Live.registerInstance(inst)
 		if Live.instConns[inst] then
 			return
 		end
 		local conns = {}
-
-		-- Name change: path cascade for inst + subtree, plus sibling-group reorder
-		local okN, cN = pcall(function()
-			return inst:GetPropertyChangedSignal("Name"):Connect(function()
-				-- extract old name from cached path segment (best-effort)
-				local oldPath = pathByRef[inst] or ""
-				local oldName = oldPath:match("([^%[/]+)%[%d+%]$") or inst.Name
-				Live.markSubtreeUpsert(inst)
-				local parent = Live.parentByInst[inst] or inst.Parent
-				Live.markSiblingsDirty(parent, oldName)
-				Live.markSiblingsDirty(parent, inst.Name)
-			end)
-		end)
-		if okN then
-			table.insert(conns, cN)
-		end
 
 		-- AncestryChanged: intra-root reparent (fires on moved node AND each dragged descendant)
 		local okA, cA = pcall(function()
@@ -2133,7 +2239,6 @@ function CapturePanel.build(parent, ctx)
 					Live.dirtyUpsert[inst] = true
 				end
 				if changedChild == inst then
-					-- This instance's own parent changed — handle sibling groups
 					local oldParent = Live.parentByInst[inst]
 					if oldParent ~= newParent then
 						Live.markSiblingsDirty(oldParent, inst.Name)
@@ -2159,17 +2264,45 @@ function CapturePanel.build(parent, ctx)
 			table.insert(conns, cAt)
 		end
 
-		-- Curated property signals
-		for _, propName in ipairs(Capture.getPropertyNames(inst)) do
-			local okP, cP = pcall(function()
-				return inst:GetPropertyChangedSignal(propName):Connect(function()
+		if inst:IsA("ValueBase") then
+			-- ValueBase fires .Changed with the VALUE, not the property name → use explicit signals.
+			local okN, cN = pcall(function()
+				return inst:GetPropertyChangedSignal("Name"):Connect(function()
+					Live.onNameChanged(inst)
+				end)
+			end)
+			if okN then
+				table.insert(conns, cN)
+			end
+			local okV, cV = pcall(function()
+				return inst:GetPropertyChangedSignal("Value"):Connect(function()
 					if instanceIdByRef[inst] then
 						Live.dirtyUpsert[inst] = true
 					end
 				end)
 			end)
-			if okP then
-				table.insert(conns, cP)
+			if okV then
+				table.insert(conns, cV)
+			end
+		else
+			-- One Changed connection replaces ~N per-property signals + the Name signal.
+			local curated = Capture.curatedSet(inst)
+			local okC, cC = pcall(function()
+				return inst.Changed:Connect(function(prop)
+					local kind = Live.classifyChangedProp(prop, curated)
+					if kind == "name" then
+						Live.onNameChanged(inst)
+					elseif kind == "dirty" then
+						if instanceIdByRef[inst] then
+							Live.dirtyUpsert[inst] = true
+						end
+					else
+						Live.recordPropGap(inst.ClassName, prop)
+					end
+				end)
+			end)
+			if okC then
+				table.insert(conns, cC)
 			end
 		end
 
@@ -2960,6 +3093,7 @@ function CapturePanel.build(parent, ctx)
 		onConnectRequested = startupConnectAndCapture,
 		destroy = destroy,
 		live = Live, -- exposed for self-tests and _G.StudioStud.Live
+		capture = Capture, -- Phase 3: exposed for self-tests
 	}
 end
 
@@ -3742,6 +3876,44 @@ function SelfTest.run()
 	-- Live sub-table state after teardown
 	local captureHandleLive = Registry.getHandle("capture")
 	local live = captureHandleLive and captureHandleLive.live
+
+	-- == Phase 3: getPropertyNames + curatedSet routing ==
+	do
+		local captureExports = Registry.getHandle("capture")
+		local capture = captureExports and captureExports.capture
+		if capture then
+			local part = Instance.new("Part")
+			-- not loaded -> static fallback includes CFrame (BasePart)
+			AllowList.loaded = false
+			local fallbackNames = capture.getPropertyNames(part)
+			local hasCFrame = false
+			for _, n in ipairs(fallbackNames) do
+				if n == "CFrame" then
+					hasCFrame = true
+				end
+			end
+			SelfTest.assert("getPropertyNames fallback includes CFrame", hasCFrame, failures)
+			-- loaded -> uses the allow-list
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency" } }
+			AllowList.sets = { Part = { Transparency = false } }
+			local allowNames = capture.getPropertyNames(part)
+			SelfTest.assert(
+				"getPropertyNames uses allow-list when loaded",
+				#allowNames == 1 and allowNames[1] == "Transparency",
+				failures
+			)
+			SelfTest.assert("curatedSet membership from allow-list", capture.curatedSet(part).Transparency == false, failures)
+			-- restore
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available")
+		end
+	end
+
 	if live then
 		live.teardown()
 		SelfTest.assert("live.teardown clears liveRunning", not live.liveRunning, failures)
@@ -3772,9 +3944,68 @@ function SelfTest.run()
 		live.dirtyUpsert = {}
 		live.dirtyRemoved = {}
 		dummyInst:Destroy()
+
+		-- == Phase 3: detection collapse ==
+		do
+			local curated = { Transparency = false }
+			SelfTest.assert("classify Name -> name", live.classifyChangedProp("Name", curated) == "name", failures)
+			SelfTest.assert("classify curated -> dirty", live.classifyChangedProp("Transparency", curated) == "dirty", failures)
+			SelfTest.assert("classify uncurated -> gap", live.classifyChangedProp("Archivable", curated) == "gap", failures)
+
+			-- gap-probe dedup
+			live.propGaps = {}
+			live.recordPropGap("Part", "Foo")
+			live.recordPropGap("Part", "Foo")
+			local gapCount = 0
+			for _ in pairs(live.propGaps) do
+				gapCount += 1
+			end
+			SelfTest.assert("recordPropGap dedups", gapCount == 1, failures)
+
+			-- connection-count collapse: a Part should register ~3 connections, not ~20
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency", "Size" } }
+			AllowList.sets = { Part = { Transparency = false, Size = false } }
+			local part = Instance.new("Part")
+			live.registerInstance(part)
+			local partConns = live.instConns[part]
+			SelfTest.assert("registerInstance collapses Part to <=4 conns", partConns ~= nil and #partConns <= 4, failures)
+			live.unregisterInstance(part)
+			part:Destroy()
+
+			-- ValueBase registers explicit signals (Ancestry + Attribute + Name + Value)
+			local iv = Instance.new("IntValue")
+			live.registerInstance(iv)
+			local ivConns = live.instConns[iv]
+			SelfTest.assert("ValueBase registers >=3 conns", ivConns ~= nil and #ivConns >= 3, failures)
+			live.unregisterInstance(iv)
+			iv:Destroy()
+
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+		end
 	else
 		-- Live handle not available: skip but don't fail
 		print("[Studio Stud SelfTest] SKIP: live handle not available (live tests skipped)")
+	end
+
+	-- == Phase 3: allow-list parse (pure) ==
+	do
+		local parsed = AllowList.parse({
+			version = "1.2.3.4",
+			classes = {
+				Part = {
+					{ name = "Transparency", readOnly = false },
+					{ name = "AbsoluteSize", readOnly = true },
+				},
+			},
+		})
+		SelfTest.assert("allowlist parse version", parsed ~= nil and parsed.version == "1.2.3.4", failures)
+		SelfTest.assert("allowlist parse membership", parsed ~= nil and parsed.sets.Part.Transparency == false, failures)
+		SelfTest.assert("allowlist parse readOnly flag", parsed ~= nil and parsed.sets.Part.AbsoluteSize == true, failures)
+		SelfTest.assert("allowlist parse ordered list", parsed ~= nil and #parsed.lists.Part == 2, failures)
+		SelfTest.assert("allowlist parse rejects bad input", AllowList.parse({}) == nil, failures)
 	end
 
 	-- == Edit-session gate self-tests ==
