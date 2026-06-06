@@ -62,6 +62,15 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
         &params.daemon_version,
         &params.plugin_version,
     );
+    // Persist the channel password so self-update can decrypt the bundle later. install.ps1
+    // captures the password and forwards it via this env var; both the GUI and silent install
+    // paths funnel through here, so this is the single seam that needs it.
+    let channel_password = std::env::var("STUDIO_STUD_CHANNEL_PASSWORD").ok();
+    studio_stud::setup_core::config::store_channel_key_if_encrypted(
+        &mut cfg,
+        &channel,
+        channel_password.as_deref(),
+    )?;
     if params.install_repos {
         for r in &params.repo_paths {
             let p = PathBuf::from(r);
