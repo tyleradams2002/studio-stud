@@ -842,6 +842,22 @@ fn cmd_serve(
         let _ = cu.ping_fields();
     });
     let registry_conns = ConnRegistry::new();
+    {
+        // Background idle-eviction: close per-place connections left unused past
+        // the registry's idle timeout so a long session over many places doesn't
+        // leak handles. Detached; checks the shutdown flag each tick.
+        let evict_registry = Arc::clone(&registry_conns);
+        let evict_shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if evict_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                evict_registry.evict_idle(std::time::Instant::now());
+            }
+        });
+    }
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),

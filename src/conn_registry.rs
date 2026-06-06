@@ -18,7 +18,7 @@ struct PlaceHandle {
 }
 
 pub struct ConnRegistry {
-    inner: Mutex<HashMap<String, PlaceHandle>>,
+    inner: Mutex<HashMap<String, Arc<PlaceHandle>>>,
     idle_timeout: Duration,
 }
 
@@ -46,22 +46,30 @@ impl ConnRegistry {
         })
     }
 
-    pub fn with_writer<T, F>(&self, db_path: &Path, f: F) -> Result<T>
-    where
-        F: FnOnce(&mut Connection) -> Result<T>,
-    {
+    /// Resolve (lazily opening) the handle for a place and return a clone of its
+    /// `Arc`, so the outer map lock is released *before* the caller locks the
+    /// per-place connection. This is what keeps one place's long operation — or a
+    /// long read — from blocking every other place behind the global map mutex.
+    fn handle(&self, db_path: &Path) -> Result<Arc<PlaceHandle>> {
         let key = Self::key(db_path);
         let mut map = self
             .inner
             .lock()
             .map_err(|_| anyhow!("connection registry lock poisoned"))?;
-        if !map.contains_key(&key) {
-            let handle = Self::open_handle(db_path)?;
-            map.insert(key.clone(), handle);
+        if let Some(handle) = map.get(&key) {
+            return Ok(Arc::clone(handle));
         }
-        let handle = map
-            .get_mut(&key)
-            .ok_or_else(|| anyhow!("connection registry missing handle"))?;
+        let handle = Arc::new(Self::open_handle(db_path)?);
+        map.insert(key, Arc::clone(&handle));
+        Ok(handle)
+        // map lock released here, before the caller touches the connection
+    }
+
+    pub fn with_writer<T, F>(&self, db_path: &Path, f: F) -> Result<T>
+    where
+        F: FnOnce(&mut Connection) -> Result<T>,
+    {
+        let handle = self.handle(db_path)?;
         *handle
             .last_used
             .lock()
@@ -78,18 +86,7 @@ impl ConnRegistry {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
-        let key = Self::key(db_path);
-        let mut map = self
-            .inner
-            .lock()
-            .map_err(|_| anyhow!("connection registry lock poisoned"))?;
-        if !map.contains_key(&key) {
-            let handle = Self::open_handle(db_path)?;
-            map.insert(key.clone(), handle);
-        }
-        let handle = map
-            .get_mut(&key)
-            .ok_or_else(|| anyhow!("connection registry missing handle"))?;
+        let handle = self.handle(db_path)?;
         *handle
             .last_used
             .lock()
@@ -172,5 +169,39 @@ mod tests {
                 Ok(())
             })
             .unwrap();
+    }
+
+    #[test]
+    fn writer_releases_map_lock_during_closure() {
+        // Regression guard for the global-map-lock serialization bug: with the
+        // old impl the map lock was held across the closure, so a nested
+        // with_writer on a DIFFERENT place would deadlock on the (non-reentrant)
+        // map mutex. The timeout makes a re-introduced bug fail cleanly instead
+        // of hanging the suite.
+        let dir =
+            std::env::temp_dir().join(format!("ss_conn_reentry_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_a = dir.join("a.db");
+        let db_b = dir.join("b.db");
+        let registry = ConnRegistry::new();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reg = Arc::clone(&registry);
+        let worker = std::thread::spawn(move || {
+            let result = reg.with_writer(&db_a, |_conn_a| {
+                // nested access to another place must not deadlock on the map lock
+                reg.with_writer(&db_b, |conn_b| {
+                    conn_b.execute_batch("CREATE TEMP TABLE t(x INTEGER);")?;
+                    Ok(())
+                })
+            });
+            let _ = tx.send(result.is_ok());
+        });
+
+        let ok = rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("nested with_writer deadlocked: map lock held across the closure");
+        assert!(ok, "nested with_writer should succeed");
+        worker.join().unwrap();
     }
 }
