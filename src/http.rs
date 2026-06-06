@@ -4,7 +4,7 @@ use std::{
     net::TcpStream,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock,
         atomic::{AtomicBool, Ordering},
     },
     time::{Duration, Instant},
@@ -39,6 +39,7 @@ pub struct ServeConfig {
     pub shutdown: Arc<AtomicBool>,
     pub channel_update: Arc<crate::setup_core::channel_update::ChannelUpdateCache>,
     pub registry_conns: Arc<ConnRegistry>,
+    pub(crate) allowlist: Arc<RwLock<crate::reflection::AllowList>>,
 }
 
 fn parse_place_id_query(query: &HashMap<String, String>) -> Option<i64> {
@@ -157,7 +158,11 @@ pub(crate) fn handle_daemon_request(
     let result = (|| -> Result<Value> {
         Ok(match (method, path.as_str()) {
             (tiny_http::Method::Get, "/studio-stud/allowlist") => {
-                let al = crate::reflection::generate_allowlist();
+                let al = config
+                    .allowlist
+                    .read()
+                    .map_err(|_| anyhow!("allowlist lock poisoned"))?
+                    .clone();
                 json!({ "ok": true, "version": al.version, "classes": al.classes })
             }
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
