@@ -4002,7 +4002,13 @@ function SelfTest.run()
 					if key == "BadProp" then
 						error("read failed")
 					end
-					return 1
+					if key == "GoodProp" then
+						return 1
+					end
+					if key == "GoodProp2" then
+						return 1
+					end
+					return nil
 				end,
 			})
 			local propsFb, errsFb = capture.readPropsFrom(fakeThrow, { "GoodProp", "BadProp", "GoodProp2" })
