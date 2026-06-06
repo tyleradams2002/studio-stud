@@ -1551,9 +1551,15 @@ function CapturePanel.build(parent, ctx)
 		end
 	end
 
+	local BASELINE_YIELD_EVERY = 500
+
 	local Capture = {}
 	local instanceIdByRef = {}
 	local pathByRef = {}
+
+	function Capture.shouldYield(processedCount, yieldEvery)
+		return yieldEvery > 0 and processedCount > 0 and (processedCount % yieldEvery) == 0
+	end
 
 	function Capture.serializeVector3(value)
 		return { type = "Vector3", x = value.X, y = value.Y, z = value.Z }
@@ -1682,18 +1688,38 @@ function CapturePanel.build(parent, ctx)
 		return set
 	end
 
-	function Capture.readProperties(inst)
+	function Capture.readPropsFrom(fakeInst, names)
 		local properties = {}
 		local errors = {}
-		for _, propName in ipairs(Capture.getPropertyNames(inst)) do
+		for _, propName in ipairs(names) do
 			local ok, value = pcall(function()
-				return inst[propName]
+				return fakeInst[propName]
 			end)
 			if ok then
 				properties[propName] = Capture.serializeValue(value)
 			else
 				table.insert(errors, { property = propName, error = tostring(value) })
 			end
+		end
+		return properties, errors
+	end
+
+	function Capture.readProperties(inst)
+		local names = Capture.getPropertyNames(inst)
+		local properties = {}
+		local errors = {}
+		local batchOk, batchProps = pcall(function()
+			local props = {}
+			for _, propName in ipairs(names) do
+				props[propName] = Capture.serializeValue(inst[propName])
+			end
+			return props
+		end)
+		if batchOk then
+			properties = batchProps
+		else
+			properties = {}
+			properties, errors = Capture.readPropsFrom(inst, names)
 		end
 
 		if inst:IsA("Model") then
@@ -1712,6 +1738,19 @@ function CapturePanel.build(parent, ctx)
 			end
 		end
 		return properties, errors
+	end
+
+	function Capture.readSource(inst)
+		if not inst:IsA("LuaSourceContainer") then
+			return nil
+		end
+		local ok, src = pcall(function()
+			return inst.Source
+		end)
+		if ok and typeof(src) == "string" then
+			return src
+		end
+		return nil
 	end
 
 	function Capture.readAttributes(inst)
@@ -1775,6 +1814,7 @@ function CapturePanel.build(parent, ctx)
 		local rootNames = {}
 		instanceIdByRef = {}
 		pathByRef = {}
+		local processedCount = 0
 
 		local function walk(inst, parentId, parentPath, depth, siblingIndex, duplicate, includeDescendants)
 			local id = inst:GetDebugId(0)
@@ -1803,6 +1843,10 @@ function CapturePanel.build(parent, ctx)
 				duplicateSiblingName = duplicate,
 			}
 			table.insert(instances, entry)
+			processedCount += 1
+			if Capture.shouldYield(processedCount, BASELINE_YIELD_EVERY) then
+				task.wait()
+			end
 
 			if not includeDescendants then
 				return
@@ -1834,6 +1878,7 @@ function CapturePanel.build(parent, ctx)
 			idToEntry[entry.id] = entry
 		end
 
+		local processedCount = 0
 		for inst, id in pairs(instanceIdByRef) do
 			local entry = idToEntry[id]
 			if entry then
@@ -1843,8 +1888,16 @@ function CapturePanel.build(parent, ctx)
 				entry.tags = Capture.readTags(inst)
 				entry.properties = properties
 				entry.propertyErrors = propErrors
+				local src = Capture.readSource(inst)
+				if src ~= nil then
+					entry.source = src
+				end
 				for _, attrError in ipairs(attrErrors) do
 					table.insert(entry.propertyErrors, attrError)
+				end
+				processedCount += 1
+				if Capture.shouldYield(processedCount, BASELINE_YIELD_EVERY) then
+					task.wait()
 				end
 			end
 		end
@@ -2197,9 +2250,12 @@ function CapturePanel.build(parent, ctx)
 	-- Pure: classify a Changed property for an instance. Returns "name" | "dirty" | "gap".
 	-- NOTE: curatedSet maps propName -> readOnly(boolean); a writable curated prop is `false`,
 	-- so membership MUST be tested with `~= nil`, not truthiness (else writable props are missed).
+	-- Source is PluginSecurity-only (excluded from allow-list) — special-cased here so live edits ship.
 	function Live.classifyChangedProp(prop, curatedSet)
 		if prop == "Name" then
 			return "name"
+		elseif prop == "Source" then
+			return "dirty"
 		elseif curatedSet[prop] ~= nil then
 			return "dirty"
 		else
@@ -2445,7 +2501,9 @@ function CapturePanel.build(parent, ctx)
 		local attributes, _ = Capture.readAttributes(inst)
 		local tags = Capture.readTags(inst)
 		local displayPath = inst:GetFullName()
-		return {
+		-- Phase 4: any dirty script re-ships full Source (per-property granularity is Phase 5).
+		local src = Capture.readSource(inst)
+		local entry = {
 			id = id,
 			parentId = parentId,
 			path = path,
@@ -2460,6 +2518,10 @@ function CapturePanel.build(parent, ctx)
 			attributes = attributes,
 			tags = tags,
 		}
+		if src ~= nil then
+			entry.source = src
+		end
+		return entry
 	end
 
 	-- Flush dirty sets → POST /live/delta
@@ -3916,6 +3978,52 @@ function SelfTest.run()
 		end
 	end
 
+	-- == Phase 4: baseline yield + readPropsFrom + readSource ==
+	do
+		local captureExports = Registry.getHandle("capture")
+		local capture = captureExports and captureExports.capture
+		if capture then
+			SelfTest.assert("shouldYield(0,500)=false", not capture.shouldYield(0, 500), failures)
+			SelfTest.assert("shouldYield(500,500)=true", capture.shouldYield(500, 500), failures)
+			SelfTest.assert("shouldYield(750,500)=false", not capture.shouldYield(750, 500), failures)
+			SelfTest.assert("shouldYield(1000,500)=true", capture.shouldYield(1000, 500), failures)
+			SelfTest.assert("shouldYield(5,0)=false", not capture.shouldYield(5, 0), failures)
+
+			local fakeOk = { Transparency = 0.5, Size = Vector3.new(1, 2, 3) }
+			local propsOk, errsOk = capture.readPropsFrom(fakeOk, { "Transparency", "Size" })
+			SelfTest.assert(
+				"readPropsFrom success path",
+				propsOk.Transparency == 0.5 and propsOk.Size ~= nil and #errsOk == 0,
+				failures
+			)
+
+			local fakeThrow = setmetatable({}, {
+				__index = function(_, key)
+					if key == "BadProp" then
+						error("read failed")
+					end
+					return 1
+				end,
+			})
+			local propsFb, errsFb = capture.readPropsFrom(fakeThrow, { "GoodProp", "BadProp", "GoodProp2" })
+			SelfTest.assert(
+				"readPropsFrom fallback returns rest",
+				propsFb.GoodProp == 1 and propsFb.GoodProp2 == 1 and #errsFb == 1,
+				failures
+			)
+
+			local mod = Instance.new("ModuleScript")
+			mod.Source = "return 42"
+			SelfTest.assert("readSource ModuleScript", capture.readSource(mod) == "return 42", failures)
+			local part = Instance.new("Part")
+			SelfTest.assert("readSource non-script nil", capture.readSource(part) == nil, failures)
+			mod:Destroy()
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available (phase 4)")
+		end
+	end
+
 	if live then
 		live.teardown()
 		SelfTest.assert("live.teardown clears liveRunning", not live.liveRunning, failures)
@@ -3951,6 +4059,7 @@ function SelfTest.run()
 		do
 			local curated = { Transparency = false }
 			SelfTest.assert("classify Name -> name", live.classifyChangedProp("Name", curated) == "name", failures)
+			SelfTest.assert("classify Source -> dirty", live.classifyChangedProp("Source", curated) == "dirty", failures)
 			SelfTest.assert("classify curated -> dirty", live.classifyChangedProp("Transparency", curated) == "dirty", failures)
 			SelfTest.assert("classify uncurated -> gap", live.classifyChangedProp("Archivable", curated) == "gap", failures)
 
