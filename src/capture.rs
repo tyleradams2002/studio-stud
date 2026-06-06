@@ -3,6 +3,7 @@ use std::{
     env, fs,
     io::{Read, Write},
     path::PathBuf,
+    time::Instant,
 };
 
 use anyhow::{Result, anyhow};
@@ -15,16 +16,24 @@ use serde_json::{Value, json};
 
 use sha2::{Digest, Sha256};
 
+use crate::conn_registry::ConnRegistry;
 use crate::storage::{
-    CaptureMeta, LiveState, Storage, delete_all_tables, init_schema, write_live_state,
+    CaptureMeta, LiveState, Storage, delete_all_tables, write_live_state,
 };
 
 use crate::util::{
     CRITICAL_NAMES, DEFAULT_PROJECT_KEY, build_search_text, hex_bytes, looks_like_invisible_helper,
-    compact_db_after_bulk_write, matches_keyword, normalize_query_path, now_utc, open_db,
+    compact_db_after_bulk_write, matches_keyword, normalize_query_path, now_utc,
     opt_str_field, path_root, safe_key,
     str_field, value_to_string,
 };
+
+pub(crate) fn service_of(path: &str) -> &str {
+    match path.split_once('/') {
+        Some((head, _)) => head,
+        None => path,
+    }
+}
 
 pub(crate) fn materialize_snapshot(
     snapshot: &Value,
@@ -32,6 +41,8 @@ pub(crate) fn materialize_snapshot(
     storage_root: Option<PathBuf>,
 
     project_key: &str,
+
+    registry: &ConnRegistry,
 ) -> Result<Value> {
     let storage = Storage::new(storage_root, project_key)?;
 
@@ -43,62 +54,72 @@ pub(crate) fn materialize_snapshot(
 
     fs::create_dir_all(&place.place_dir)?;
 
-    let mut conn = open_db(&place.db_path)?;
-
-    init_schema(&conn)?;
-
     let now = now_utc();
 
-    let tx = conn.transaction()?;
+    let live_state = registry.with_writer(&place.db_path, |conn| {
+        let tx = conn.transaction()?;
 
-    {
-        let _span = crate::obs::span("capture", "materialize_delete_all");
-        delete_all_tables(&tx)?;
-    }
+        {
+            let _span = crate::obs::span("capture", "materialize_delete_all");
+            delete_all_tables(&tx)?;
+        }
 
-    let fingerprint = {
-        let _span = crate::obs::span("capture", "materialize_ingest_rows");
-        ingest_rows(&tx, snapshot, &meta)?
-    };
+        let fingerprint = {
+            let _span = crate::obs::span("capture", "materialize_ingest_rows");
+            let started = Instant::now();
+            let fp = ingest_rows(&tx, snapshot, &meta)?;
+            crate::obs::event(
+                "telemetry",
+                &crate::telemetry::format_ingest(
+                    meta.instance_count,
+                    raw_bytes.len(),
+                    started.elapsed().as_millis(),
+                ),
+            );
+            fp
+        };
 
-    {
-        let _span = crate::obs::span("capture", "materialize_commit");
-        tx.commit()?;
-    }
+        {
+            let _span = crate::obs::span("capture", "materialize_commit");
+            tx.commit()?;
+        }
 
-    let live_state = LiveState {
-        capture_id: meta.capture_id.clone(),
+        let live_state = LiveState {
+            capture_id: meta.capture_id.clone(),
 
-        place_id: meta.place_id.clone(),
+            place_id: meta.place_id.clone(),
 
-        place_key: meta.place_key.clone(),
+            place_key: meta.place_key.clone(),
 
-        place_name: meta.place_name.clone(),
+            place_name: meta.place_name.clone(),
 
-        game_id: meta.game_id,
+            game_id: meta.game_id,
 
-        revision: 0,
+            revision: 0,
 
-        baseline_at_utc: meta.created_at_utc.clone(),
+            baseline_at_utc: meta.created_at_utc.clone(),
 
-        updated_at_utc: now.clone(),
+            updated_at_utc: now.clone(),
 
-        baseline_hash: meta.raw_sha256.clone(),
+            baseline_hash: meta.raw_sha256.clone(),
 
-        fingerprint,
+            fingerprint,
 
-        instance_count: meta.instance_count,
-    };
+            instance_count: meta.instance_count,
+        };
 
-    {
-        let _span = crate::obs::span("capture", "materialize_write_live_state");
-        write_live_state(&conn, &live_state)?;
-    }
+        {
+            let _span = crate::obs::span("capture", "materialize_write_live_state");
+            write_live_state(conn, &live_state)?;
+        }
 
-    {
-        let _span = crate::obs::span("capture", "materialize_compact");
-        compact_db_after_bulk_write(&conn)?;
-    }
+        {
+            let _span = crate::obs::span("capture", "materialize_compact");
+            compact_db_after_bulk_write(conn)?;
+        }
+
+        Ok(live_state)
+    })?;
 
     fs::write(&place.baseline_path, &raw_bytes)?;
 
@@ -117,6 +138,8 @@ pub(crate) fn materialize_snapshot(
         "revision": live_state.revision,
 
         "stored": true,
+
+        "fingerprint": live_state.fingerprint,
 
     }))
 }
@@ -319,6 +342,8 @@ pub(crate) fn ingest_rows(
     let mut finding_state = FindingState::default();
 
     let mut fingerprint_acc = [0u8; 32];
+    let mut service_fps: BTreeMap<String, [u8; 32]> = BTreeMap::new();
+    let mut service_counts: BTreeMap<String, i64> = BTreeMap::new();
 
     for inst in instances {
         let class_name = str_field(inst, "className");
@@ -334,19 +359,37 @@ pub(crate) fn ingest_rows(
         insert_instance(tx, &meta.capture_id, inst)?;
 
         let digest = fingerprint_digest_from_instance(inst)?;
+        let service = service_of(&path).to_string();
 
         for (i, byte) in digest.iter().enumerate() {
             fingerprint_acc[i] ^= byte;
+            service_fps
+                .entry(service.clone())
+                .or_insert([0u8; 32])[i] ^= byte;
         }
+        *service_counts.entry(service).or_default() += 1;
 
         update_findings(&mut finding_state, inst);
     }
 
+    for (service, acc) in &service_fps {
+        let count = service_counts.get(service).copied().unwrap_or(0);
+        tx.prepare_cached(
+            "INSERT INTO service_fingerprints (capture_id, service_name, fingerprint, instance_count) VALUES (?, ?, ?, ?)",
+        )?
+        .execute(params![
+            meta.capture_id,
+            service,
+            hex_bytes(acc),
+            count,
+        ])?;
+    }
+
     for (class_name, count) in class_counts {
-        tx.execute(
+        tx.prepare_cached(
             "INSERT INTO class_counts (capture_id, class_name, count) VALUES (?, ?, ?)",
-            params![meta.capture_id, class_name, count],
-        )?;
+        )?
+        .execute(params![meta.capture_id, class_name, count])?;
     }
 
     recompute_critical_presence(tx, &meta.capture_id, &path_blob)?;
@@ -433,64 +476,54 @@ fn insert_instance(tx: &Transaction<'_>, capture_id: &str, inst: &Value) -> Resu
 
     let search_text = build_search_text(&path, display_path.as_deref(), &name, &class_name);
 
-    tx.execute(
+    tx.prepare_cached(
         "INSERT INTO instances (
-
             capture_id, instance_id, parent_id, path, path_norm, display_path, display_path_norm,
-
             name, class_name, search_text, depth, child_count, sibling_index,
-
             duplicate_sibling_name, property_json
-
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        params![
-            capture_id,
-            id,
-            parent_id,
-            path,
-            path_norm,
-            display_path,
-            display_path_norm,
-            name,
-            class_name,
-            search_text,
-            depth,
-            child_count,
-            sibling_index,
-            duplicate as i64,
-            serde_json::to_string(&properties)?,
-        ],
-    )?;
+    )?
+    .execute(params![
+        capture_id,
+        id,
+        parent_id,
+        path,
+        path_norm,
+        display_path,
+        display_path_norm,
+        name,
+        class_name,
+        search_text,
+        depth,
+        child_count,
+        sibling_index,
+        duplicate as i64,
+        serde_json::to_string(&properties)?,
+    ])?;
 
     if let Some(attrs) = attributes.as_object() {
         for (attr_name, value) in attrs {
-            tx.execute(
-
+            tx.prepare_cached(
                 "INSERT INTO instance_attributes (capture_id, instance_id, attribute_name, value_json) VALUES (?, ?, ?, ?)",
-
-                params![capture_id, id, attr_name, serde_json::to_string(value)?],
-
-            )?;
+            )?
+            .execute(params![capture_id, id, attr_name, serde_json::to_string(value)?])?;
         }
     }
 
     if let Some(tag_values) = tags.as_array() {
         for tag in tag_values.iter().filter_map(Value::as_str) {
-            tx.execute(
+            tx.prepare_cached(
                 "INSERT INTO instance_tags (capture_id, instance_id, tag) VALUES (?, ?, ?)",
-                params![capture_id, id, tag],
-            )?;
+            )?
+            .execute(params![capture_id, id, tag])?;
         }
     }
 
     if matches_keyword(&format!("{path} {name} {class_name}")) {
-        tx.execute(
-
+        tx.prepare_cached(
             "INSERT INTO keyword_hits (capture_id, instance_id, path, name, class_name) VALUES (?, ?, ?, ?, ?)",
-
-            params![capture_id, id, path, name, class_name],
-
-        )?;
+        )?
+        .execute(params![capture_id, id, path, name, class_name])?;
     }
 
     Ok(())
@@ -1087,6 +1120,7 @@ mod tests {
     use rusqlite::Connection;
 
     use crate::storage::{init_schema, read_live_state};
+    use crate::util::open_db;
 
     fn minimal_snapshot() -> Value {
         json!({
@@ -1159,6 +1193,14 @@ mod tests {
     }
 
     #[test]
+    fn service_of_returns_first_segment() {
+        assert_eq!(service_of("Workspace/Model/Part"), "Workspace");
+        assert_eq!(service_of("ServerScriptService/Init"), "ServerScriptService");
+        assert_eq!(service_of("Workspace"), "Workspace");
+        assert_eq!(service_of(""), "");
+    }
+
+    #[test]
 
     fn ingest_fingerprint_matches_fingerprint_state() {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -1212,7 +1254,9 @@ mod tests {
 
         let snap1 = minimal_snapshot();
 
-        materialize_snapshot(&snap1, Some(dir.clone()), DEFAULT_PROJECT_KEY).unwrap();
+        let registry = ConnRegistry::new();
+        materialize_snapshot(&snap1, Some(dir.clone()), DEFAULT_PROJECT_KEY, &registry)
+            .unwrap();
 
         let mut snap2 = minimal_snapshot();
 
@@ -1220,7 +1264,7 @@ mod tests {
 
         snap2["instances"] = json!([snap1["instances"][0].clone()]);
 
-        materialize_snapshot(&snap2, Some(dir.clone()), DEFAULT_PROJECT_KEY).unwrap();
+        materialize_snapshot(&snap2, Some(dir.clone()), DEFAULT_PROJECT_KEY, &registry).unwrap();
 
         let place = Storage::new(Some(dir.clone()), DEFAULT_PROJECT_KEY)
             .unwrap()
