@@ -76,6 +76,11 @@ fn curated_for(class: &ClassDescriptor) -> Vec<PropEntry> {
     out
 }
 
+/// Whether the stored reflection version is missing or differs from the current one.
+pub(crate) fn needs_update(stored: Option<&str>, current: &str) -> bool {
+    stored != Some(current)
+}
+
 pub(crate) fn generate_allowlist() -> AllowList {
     let database = db();
     let mut classes = BTreeMap::new();
@@ -109,5 +114,12 @@ mod tests {
 
         // deprecated/non-scriptable aliases must be excluded (brickColor is a legacy alias)
         assert!(by_name("brickColor").is_none(), "legacy alias excluded");
+    }
+
+    #[test]
+    fn needs_update_logic() {
+        assert!(needs_update(None, "0.659.0.1")); // fresh db
+        assert!(!needs_update(Some("0.659.0.1"), "0.659.0.1")); // match
+        assert!(needs_update(Some("0.658.0.9"), "0.659.0.1")); // differs
     }
 }
