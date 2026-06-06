@@ -48,13 +48,13 @@ end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.18"
+local PLUGIN_VERSION = "0.4.19"
 local PLUGIN_LOGO_ASSET_ID = ""
-local PROTOCOL_VERSION = 1
+local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
 -- MIN_DAEMON_PROTOCOL_VERSION, so each side can tell the user which one is behind.
-local MIN_DAEMON_PROTOCOL_VERSION = 1
+local MIN_DAEMON_PROTOCOL_VERSION = 2
 -- Channel-aware install one-liner for the "update available" nudge. The daemon ping reports the
 -- machine's channel; dev/beta point at their own bootstrap so following the hint never silently
 -- switches the user onto release.
@@ -1801,17 +1801,86 @@ function CapturePanel.build(parent, ctx)
 		return properties, errors
 	end
 
+	local B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+	function Capture.base64encode(raw)
+		local out = {}
+		local i = 1
+		while i <= #raw do
+			local b1 = string.byte(raw, i)
+			local b2 = string.byte(raw, i + 1)
+			local b3 = string.byte(raw, i + 2)
+			local n = b1 * 65536 + ((b2 or 0) * 256) + (b3 or 0)
+			local c1 = math.floor(n / 262144) % 64 + 1
+			local c2 = math.floor(n / 4096) % 64 + 1
+			local c3 = math.floor(n / 64) % 64 + 1
+			local c4 = n % 64 + 1
+			table.insert(out, string.sub(B64_ALPHABET, c1, c1))
+			table.insert(out, string.sub(B64_ALPHABET, c2, c2))
+			if b2 then
+				table.insert(out, string.sub(B64_ALPHABET, c3, c3))
+			else
+				table.insert(out, "=")
+			end
+			if b3 then
+				table.insert(out, string.sub(B64_ALPHABET, c4, c4))
+			else
+				table.insert(out, "=")
+			end
+			i += 3
+		end
+		return table.concat(out)
+	end
+
+	function Capture.base64decode(encoded)
+		local map = {}
+		for idx = 1, #B64_ALPHABET do
+			map[string.sub(B64_ALPHABET, idx, idx)] = idx - 1
+		end
+		local cleaned = string.gsub(encoded or "", "[^A-Za-z0-9+/=]", "")
+		local out = {}
+		local i = 1
+		while i <= #cleaned do
+			local c1 = string.sub(cleaned, i, i)
+			local c2 = string.sub(cleaned, i + 1, i + 1)
+			local c3 = string.sub(cleaned, i + 2, i + 2)
+			local c4 = string.sub(cleaned, i + 3, i + 3)
+			if c1 == "" or c2 == "" then
+				break
+			end
+			local n = map[c1] * 262144 + map[c2] * 4096
+			if c3 ~= "=" and c3 ~= "" then
+				n += map[c3] * 64
+			end
+			if c4 ~= "=" and c4 ~= "" then
+				n += map[c4]
+			end
+			table.insert(out, string.char(math.floor(n / 65536) % 256))
+			if c3 ~= "=" and c3 ~= "" then
+				table.insert(out, string.char(math.floor(n / 256) % 256))
+			end
+			if c4 ~= "=" and c4 ~= "" then
+				table.insert(out, string.char(n % 256))
+			end
+			i += 4
+		end
+		return table.concat(out)
+	end
+
 	function Capture.readSource(inst)
 		if not inst:IsA("LuaSourceContainer") then
-			return nil
+			return nil, nil
 		end
 		local ok, src = pcall(function()
 			return inst.Source
 		end)
 		if ok and typeof(src) == "string" then
-			return src
+			if utf8.len(src) ~= nil then
+				return src, "utf8"
+			end
+			return Capture.base64encode(src), "base64"
 		end
-		return nil
+		return nil, nil
 	end
 
 	function Capture.readAttributes(inst)
@@ -1949,9 +2018,10 @@ function CapturePanel.build(parent, ctx)
 				entry.tags = Capture.readTags(inst)
 				entry.properties = properties
 				entry.propertyErrors = propErrors
-				local src = Capture.readSource(inst)
+				local src, srcEnc = Capture.readSource(inst)
 				if src ~= nil then
 					entry.source = src
+					entry.sourceEncoding = srcEnc or "utf8"
 				end
 				for _, attrError in ipairs(attrErrors) do
 					table.insert(entry.propertyErrors, attrError)
@@ -1986,144 +2056,16 @@ function CapturePanel.build(parent, ctx)
 		}
 	end
 
-	local function waitForCaptureFinalize(captureSyncId, timeoutSeconds)
-		local deadline = os.clock() + (timeoutSeconds or 120)
-		while os.clock() < deadline do
-			local okStatus, statusResult = ctx.transport.requestJson(
-				"GET",
-				"/studio-stud/capture/status?syncId=" .. HttpService:UrlEncode(captureSyncId),
-				nil
-			)
-			if okStatus and statusResult then
-				local status = statusResult.status
-				if status == "done" or status == "completed" then
-					return true, statusResult
-				end
-				if status == "error" or statusResult.ok == false then
-					return false, statusResult
-				end
-			end
-			task.wait(0.5)
-		end
-		return false, { ok = false, error = "Capture finalize timed out" }
-	end
-
 	syncFn = function(options)
-		-- Edit-session gate: never build a snapshot or touch the daemon during a play session.
 		if not Session.isEdit() then
-			debugLog("capture skipped — Studio in play session (mode=", Session.mode(), ")")
 			return { ok = false, error = "studio_in_play_session" }
 		end
-		if syncing then
-			return { ok = false, error = "Sync already running." }
+		if Live and Live.liveRunning then
+			Live.triggerFullBaseline(options and options.reason or "manual")
+			ctx.setStatus("syncing", "Scheduling tick baseline...")
+			return { ok = true, status = "baseline_scheduled" }
 		end
-		syncing = true
-		setConnectButtonState()
-		ctx.setStatus("syncing", "Capturing place data...")
-		errorLabel.Text = ""
-
-		local snapshot = Capture.buildSnapshot(options)
-		local okEnc, jsonText = Transport.safeEncode(snapshot, "capture-snapshot")
-		if not okEnc then
-			syncing = false
-			setConnectButtonState()
-			errorLabel.Text = formatError("Encode failed", { error = tostring(jsonText) })
-			ctx.setStatus("error", "Capture failed")
-			ctx.setConnected(false)
-			return { ok = false, error = "json_encode_failed" }
-		end
-		local okStart, startResult = ctx.transport.requestJson("POST", "/studio-stud/capture/start", {
-			pluginVersion = PLUGIN_VERSION,
-			protocolVersion = PROTOCOL_VERSION,
-			place = snapshot.place,
-		})
-		if not okStart then
-			syncing = false
-			setConnectButtonState()
-			errorLabel.Text = formatError("Start failed", startResult)
-			ctx.setStatus("error", "Capture failed")
-			ctx.setConnected(false)
-			return startResult
-		end
-		local syncId = startResult.syncId
-		local maxChunk = tonumber(startResult.maxChunkBytes) or 1000000
-
-		if #jsonText <= maxChunk then
-			local okBody, bodyResult = ctx.transport.requestBody(
-				"/studio-stud/capture/body?syncId=" .. HttpService:UrlEncode(syncId),
-				jsonText
-			)
-			if not okBody then
-				syncing = false
-				setConnectButtonState()
-				errorLabel.Text = formatError("Upload failed", bodyResult)
-				ctx.setStatus("error", "Capture failed")
-				ctx.setConnected(false)
-				return bodyResult
-			end
-		else
-			local chunkCount = math.ceil(#jsonText / maxChunk)
-			for index = 1, chunkCount do
-				local startByte = ((index - 1) * maxChunk) + 1
-				local chunk = string.sub(jsonText, startByte, startByte + maxChunk - 1)
-				local okChunk, chunkResult = ctx.transport.requestBody(
-					("/studio-stud/capture/chunk?syncId=%s&index=%d"):format(HttpService:UrlEncode(syncId), index - 1),
-					chunk
-				)
-				if not okChunk then
-					syncing = false
-					setConnectButtonState()
-					errorLabel.Text = formatError("Chunk failed", chunkResult)
-					ctx.setStatus("error", "Capture failed")
-					ctx.setConnected(false)
-					return chunkResult
-				end
-			end
-		end
-
-		local expectedChunks = nil
-		if #jsonText > maxChunk then
-			expectedChunks = math.ceil(#jsonText / maxChunk)
-		end
-		local okComplete, completeResult = ctx.transport.requestJson("POST", "/studio-stud/capture/complete", {
-			syncId = syncId,
-			expectedChunks = expectedChunks,
-		}, 60)
-		if okComplete and completeResult and completeResult.status == "finalizing" then
-			ctx.setStatus("syncing", "Finalizing capture on daemon...")
-			local finalizeSyncId = completeResult.syncId or syncId
-			okComplete, completeResult = waitForCaptureFinalize(finalizeSyncId, 120)
-		end
-		syncing = false
-		setConnectButtonState()
-		if okComplete and completeResult and responseNeedsRebaseline(completeResult) then
-			Live.triggerRebaseline("capture-unknown-sync")
-			return completeResult
-		end
-		if okComplete and completeResult.ok then
-			ctx.setConnected(true)
-			local materialized = completeResult.result or completeResult
-			local placeKey = tostring(materialized.placeKey or snapshot.place.placeKey)
-			local placeId = tostring(materialized.placeId or snapshot.place.placeId)
-			sessionHasBaseline = true
-			resultLabel.Text = ("Latest capture: OK\nPlace: %s\nInstances: %s\nCLI:\nstudio-stud analyze %s --report context"):format(
-				placeKey,
-				tostring(materialized.instances or materialized.totalItems),
-				placeId
-			)
-			if Live then
-				Live.setupAfterBaseline(materialized)
-				debugLog("live mode started, revision=", Live.currentRevision, "instances=", Live.liveInstanceCount)
-				ctx.setStatus("connected", "Live — delta streaming active")
-			else
-				ctx.setStatus("connected", "Capture complete")
-			end
-			return completeResult
-		end
-		errorLabel.Text = formatError("Complete failed", completeResult)
-		ctx.setStatus("error", "Capture failed")
-		ctx.setConnected(false)
-		return completeResult
+		return startupConnectAndCapture()
 	end
 
 	statusFn = function()
@@ -2202,11 +2144,19 @@ function CapturePanel.build(parent, ctx)
 		if not AllowList.loaded then -- Phase 3: load once per connect (best-effort; static fallback on failure)
 			AllowList.fetch()
 		end
-		if sessionHasBaseline or (Live and Live.liveRunning) then
+		if sessionHasBaseline and Live and Live.liveRunning then
 			return ping
 		end
-		debugLog("startup: daemon reachable — running initial capture")
-		return syncFn({ reason = "startup" })
+		debugLog("startup: daemon reachable — starting tick live mode")
+		if Live.connectLiveMode() then
+			Live.startTickLoop(pausedBaseline, onReturnToEdit)
+			ctx.setConnected(true)
+			sessionHasBaseline = true
+			setConnectButtonState()
+			resultLabel.Text = "Connected — first tick will baseline via /tick"
+			return { ok = true, daemon = ping.daemon }
+		end
+		return { ok = false, error = "live_connect_failed" }
 	end
 
 	-- == Live capture engine ==
@@ -2224,6 +2174,232 @@ function CapturePanel.build(parent, ctx)
 	Live.liveInstanceCount = 0
 	Live.syncInFlight = false
 	Live.networkErrorCount = 0
+	Live.instFp = {} -- [id] = 64-char hex
+	Live.serviceFpBytes = {} -- [service] = byte[32]
+	Live.upsertStamp = {} -- [Instance] = int
+	Live.removedStamp = {} -- [id] = int
+	Live.dirtyStamp = 0
+
+	local FNV32_OFFSETS = { 0x811C9DC5, 0x050C5D1F, 0x9E3779B9, 0x7F4A7C15 }
+	local FNV32_PRIME = 16777619
+
+	local function fpSortedKeys(tbl)
+		local keys = {}
+		for key in pairs(tbl) do
+			table.insert(keys, tostring(key))
+		end
+		table.sort(keys)
+		return keys
+	end
+
+	local function fpSerializeScalar(value)
+		local kind = typeof(value)
+		if kind == "string" then
+			return "s:" .. value
+		elseif kind == "number" then
+			return "n:" .. tostring(value)
+		elseif kind == "boolean" then
+			return "b:" .. (value and "1" or "0")
+		elseif kind == "nil" then
+			return "z"
+		elseif kind == "table" then
+			if #value > 0 then
+				local parts = {}
+				for _, item in ipairs(value) do
+					table.insert(parts, fpSerializeScalar(item))
+				end
+				return "[" .. table.concat(parts, ",") .. "]"
+			end
+			local parts = {}
+			for _, key in ipairs(fpSortedKeys(value)) do
+				table.insert(parts, key .. "=" .. fpSerializeScalar(value[key]))
+			end
+			return "{" .. table.concat(parts, ";") .. "}"
+		end
+		return "u:" .. tostring(value)
+	end
+
+	local function fpSerializeMap(map)
+		local parts = {}
+		for _, key in ipairs(fpSortedKeys(map or {})) do
+			table.insert(parts, key .. "=" .. fpSerializeScalar(map[key]))
+		end
+		return table.concat(parts, ";")
+	end
+
+	local function fnv32(str, offset)
+		local h = offset
+		for i = 1, #str do
+			h = bit32.bxor(h, string.byte(str, i))
+			h = (h * FNV32_PRIME) % 4294967296
+		end
+		return h
+	end
+
+	function Live.hashInstance(entry)
+		local parts = {
+			tostring(entry.className or ""),
+			tostring(entry.name or ""),
+			tostring(entry.parentId or ""),
+			tostring(entry.path or ""),
+			tostring(entry.depth or 0),
+			tostring(entry.siblingIndex or 0),
+			tostring(entry.childCount or 0),
+			(entry.duplicateSiblingName and "1" or "0"),
+			fpSerializeMap(entry.properties),
+			fpSerializeMap(entry.attributes),
+		}
+		local tagParts = {}
+		for _, tag in ipairs(entry.tags or {}) do
+			table.insert(tagParts, tostring(tag))
+		end
+		table.insert(parts, table.concat(tagParts, ","))
+		local canonical = table.concat(parts, "|")
+		local hexParts = {}
+		for lane = 1, 4 do
+			local lo = fnv32(canonical, FNV32_OFFSETS[lane])
+			local hi = fnv32(canonical .. "#" .. tostring(lane), bit32.bxor(FNV32_OFFSETS[lane], 0xA5A5A5A5))
+			table.insert(hexParts, string.format("%08x%08x", lo, hi))
+		end
+		return table.concat(hexParts)
+	end
+
+	local function fpZeroBytes()
+		local bytes = table.create(32, 0)
+		return bytes
+	end
+
+	local function fpHexToBytes(hex)
+		local bytes = table.create(32, 0)
+		for i = 1, 32 do
+			bytes[i] = tonumber(string.sub(hex, (i - 1) * 2 + 1, (i - 1) * 2 + 2), 16) or 0
+		end
+		return bytes
+	end
+
+	local function fpBytesToHex(bytes)
+		local parts = table.create(32, "")
+		for i = 1, 32 do
+			parts[i] = string.format("%02x", bytes[i] or 0)
+		end
+		return table.concat(parts)
+	end
+
+	local function fpXorBytes(target, source)
+		for i = 1, 32 do
+			target[i] = bit32.bxor(target[i] or 0, source[i] or 0)
+		end
+	end
+
+	function Live.serviceOf(path)
+		return string.match(path or "", "^([^/]+)") or (path or "")
+	end
+
+	function Live.serviceFpHex(service)
+		local bytes = Live.serviceFpBytes[service]
+		if not bytes then
+			return string.rep("0", 64)
+		end
+		return fpBytesToHex(bytes)
+	end
+
+	function Live.serviceFingerprintsWire()
+		local out = {}
+		for service, _ in pairs(Live.serviceFpBytes) do
+			out[service] = Live.serviceFpHex(service)
+		end
+		return out
+	end
+
+	function Live.applyFpUpsert(id, entry, oldPath)
+		local newFp = entry.fp or Live.hashInstance(entry)
+		entry.fp = newFp
+		local newService = Live.serviceOf(entry.path)
+		local oldFp = Live.instFp[id]
+		if oldFp then
+			local oldService = Live.serviceOf(oldPath or entry.path)
+			local svcBytes = Live.serviceFpBytes[oldService] or fpZeroBytes()
+			fpXorBytes(svcBytes, fpHexToBytes(oldFp))
+			Live.serviceFpBytes[oldService] = svcBytes
+		end
+		local newBytes = Live.serviceFpBytes[newService] or fpZeroBytes()
+		fpXorBytes(newBytes, fpHexToBytes(newFp))
+		Live.serviceFpBytes[newService] = newBytes
+		Live.instFp[id] = newFp
+	end
+
+	function Live.applyFpRemove(id, path)
+		local oldFp = Live.instFp[id]
+		if oldFp then
+			local service = Live.serviceOf(path or "")
+			local svcBytes = Live.serviceFpBytes[service] or fpZeroBytes()
+			fpXorBytes(svcBytes, fpHexToBytes(oldFp))
+			Live.serviceFpBytes[service] = svcBytes
+		end
+		Live.instFp[id] = nil
+	end
+
+	function Live.resetFingerprints()
+		Live.instFp = {}
+		Live.serviceFpBytes = {}
+	end
+
+	function Live.markDirtyUpsert(inst)
+		Live.markDirtyUpsert(inst)
+		Live.dirtyStamp += 1
+		Live.upsertStamp[inst] = Live.dirtyStamp
+	end
+
+	function Live.markDirtyRemoved(id)
+		Live.dirtyRemoved[id] = true
+		Live.dirtyStamp += 1
+		Live.removedStamp[id] = Live.dirtyStamp
+	end
+
+	local TICK_INLINE_THRESHOLD = 256 * 1024
+	Live.pendingBulkRef = nil
+	Live.baselineInProgress = false
+	Live.recoveryServices = nil
+	Live.tickGeneration = 0
+	Live.historyDirty = false
+
+	function Live.tickQuerySuffix()
+		return "placeId=" .. HttpService:UrlEncode(tostring(game.PlaceId))
+	end
+
+	function Live.buildTickBody(placeId, sessionMode, baseRevision, serviceFingerprints, ops, bulkRef)
+		return {
+			placeId = tostring(placeId),
+			sessionMode = sessionMode,
+			baseRevision = baseRevision,
+			serviceFingerprints = serviceFingerprints,
+			ops = ops,
+			bulkRef = bulkRef,
+		}
+	end
+
+	function Live.classifyPayload(byteLen)
+		if byteLen <= TICK_INLINE_THRESHOLD then
+			return "inline"
+		end
+		return "bulk"
+	end
+
+	function Live.scheduleDriftRecovery(driftServices, dirtyUpsert, dirtyRemoved)
+		local preservedUpsert = {}
+		for inst, _ in pairs(dirtyUpsert) do
+			preservedUpsert[inst] = true
+		end
+		local preservedRemoved = {}
+		for id, _ in pairs(dirtyRemoved) do
+			preservedRemoved[id] = true
+		end
+		return {
+			services = driftServices,
+			dirtyUpsert = preservedUpsert,
+			dirtyRemoved = preservedRemoved,
+		}
+	end
 
 	responseNeedsRebaseline = function(result)
 		if type(result) ~= "table" then
@@ -2236,7 +2412,6 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	function Live.triggerRebaseline(reason)
-		local delays = { 5, 15, 45 }
 		task.defer(function()
 			if Live.liveRunning then
 				Live.teardown()
@@ -2244,26 +2419,9 @@ function CapturePanel.build(parent, ctx)
 			ctx.setConnected(false)
 			sessionHasBaseline = false
 			setConnectButtonState()
-			ctx.setStatus("syncing", "Re-baselining after daemon restart...")
-			local attempt = 0
-			local function tryRebaseline()
-				attempt += 1
-				warn("[StudioStud] re-baseline attempt", attempt, "reason:", reason or "live-rebaseline")
-				local res = syncFn({ reason = reason or "live-rebaseline" })
-				if res and res.ok then
-					return
-				end
-				if attempt < #delays then
-					warn("[StudioStud] re-baseline failed, retrying in", delays[attempt], "s")
-					task.delay(delays[attempt], function()
-						tryRebaseline()
-					end)
-				else
-					warn("[StudioStud] re-baseline failed after", attempt, "attempts — click Capture/Query to reconnect")
-					ctx.setStatus("error", "Live lost — click Capture/Query to reconnect")
-				end
-			end
-			tryRebaseline()
+			ctx.setStatus("syncing", "Re-baselining...")
+			warn("[StudioStud] re-baseline:", reason or "live-rebaseline")
+			startupConnectAndCapture()
 		end)
 	end
 
@@ -2282,7 +2440,7 @@ function CapturePanel.build(parent, ctx)
 			local inst = queue[qi]
 			qi += 1
 			if instanceIdByRef[inst] then
-				Live.dirtyUpsert[inst] = true
+				Live.markDirtyUpsert(inst)
 			end
 			local ok, children = pcall(function()
 				return inst:GetChildren()
@@ -2301,7 +2459,7 @@ function CapturePanel.build(parent, ctx)
 			return
 		end
 		if instanceIdByRef[parent] then
-			Live.dirtyUpsert[parent] = true
+			Live.markDirtyUpsert(parent)
 		end
 		local ok, children = pcall(function()
 			return parent:GetChildren()
@@ -2311,7 +2469,7 @@ function CapturePanel.build(parent, ctx)
 		end
 		for _, sib in ipairs(children) do
 			if sib.Name == name and instanceIdByRef[sib] then
-				Live.dirtyUpsert[sib] = true
+				Live.markDirtyUpsert(sib)
 			end
 		end
 	end
@@ -2363,7 +2521,7 @@ function CapturePanel.build(parent, ctx)
 		local okA, cA = pcall(function()
 			return inst.AncestryChanged:Connect(function(changedChild, newParent)
 				if instanceIdByRef[inst] then
-					Live.dirtyUpsert[inst] = true
+					Live.markDirtyUpsert(inst)
 				end
 				if changedChild == inst then
 					local oldParent = Live.parentByInst[inst]
@@ -2383,7 +2541,7 @@ function CapturePanel.build(parent, ctx)
 		local okAt, cAt = pcall(function()
 			return inst.AttributeChanged:Connect(function()
 				if instanceIdByRef[inst] then
-					Live.dirtyUpsert[inst] = true
+					Live.markDirtyUpsert(inst)
 				end
 			end)
 		end)
@@ -2404,7 +2562,7 @@ function CapturePanel.build(parent, ctx)
 			local okV, cV = pcall(function()
 				return inst:GetPropertyChangedSignal("Value"):Connect(function()
 					if instanceIdByRef[inst] then
-						Live.dirtyUpsert[inst] = true
+						Live.markDirtyUpsert(inst)
 					end
 				end)
 			end)
@@ -2421,7 +2579,7 @@ function CapturePanel.build(parent, ctx)
 						Live.onNameChanged(inst)
 					elseif kind == "dirty" then
 						if instanceIdByRef[inst] then
-							Live.dirtyUpsert[inst] = true
+							Live.markDirtyUpsert(inst)
 						end
 					else
 						Live.recordPropGap(inst.ClassName, prop)
@@ -2459,7 +2617,8 @@ function CapturePanel.build(parent, ctx)
 			qi += 1
 			local id = instanceIdByRef[inst]
 			if id then
-				Live.dirtyRemoved[id] = true
+				Live.markDirtyRemoved(id)
+				Live.applyFpRemove(id, pathByRef[inst])
 			end
 			-- Disconnect without going through unregisterInstance (avoids table mutation during outer iteration)
 			local conns = Live.instConns[inst]
@@ -2503,7 +2662,7 @@ function CapturePanel.build(parent, ctx)
 		Live.parentByInst[child] = child.Parent
 		Live.registerInstance(child)
 		if instanceIdByRef[child] then
-			Live.dirtyUpsert[child] = true
+			Live.markDirtyUpsert(child)
 		end
 		Live.markSiblingsDirty(child.Parent, child.Name)
 	end
@@ -2570,8 +2729,7 @@ function CapturePanel.build(parent, ctx)
 		local attributes, _ = Capture.readAttributes(inst)
 		local tags = Capture.readTags(inst)
 		local displayPath = inst:GetFullName()
-		-- Phase 4: any dirty script re-ships full Source (per-property granularity is Phase 5).
-		local src = Capture.readSource(inst)
+		local src, srcEnc = Capture.readSource(inst)
 		local entry = {
 			id = id,
 			parentId = parentId,
@@ -2589,39 +2747,21 @@ function CapturePanel.build(parent, ctx)
 		}
 		if src ~= nil then
 			entry.source = src
+			entry.sourceEncoding = srcEnc or "utf8"
 		end
+		local oldPath = pathByRef[inst]
+		Live.applyFpUpsert(id, entry, oldPath)
 		return entry
 	end
 
-	-- Flush dirty sets → POST /live/delta
-	function Live.flushDirty()
-		if not Live.liveRunning then
-			warn("[StudioStud] flushDirty skipped — live mode is off (click Capture/Query)")
-			return
-		end
-		-- Edit-session gate: never push deltas while Studio is in a play session.
-		if not Session.isEdit() then
-			return
-		end
-		if Live.syncInFlight then
-			return
-		end
-		if not next(Live.dirtyUpsert) and not next(Live.dirtyRemoved) then
-			return
-		end
-
-		Live.syncInFlight = true
-		local function finish()
-			Live.syncInFlight = false
-		end
-
+	function Live.collectOpsFromDirty()
+		local sentUpsertStamps = {}
+		local sentRemovedStamps = {}
 		local removed = {}
 		for id, _ in pairs(Live.dirtyRemoved) do
 			table.insert(removed, id)
+			sentRemovedStamps[id] = Live.removedStamp[id]
 		end
-
-		-- Sort dirty-upserted by ancestor depth so parents are processed before children
-		-- (ensures pathByRef[parent] is updated before child uses it)
 		local upsertList = {}
 		for inst, _ in pairs(Live.dirtyUpsert) do
 			local id = instanceIdByRef[inst]
@@ -2633,12 +2773,12 @@ function CapturePanel.build(parent, ctx)
 					p = p.Parent
 				end
 				table.insert(upsertList, { inst = inst, depth = depth })
+				sentUpsertStamps[inst] = Live.upsertStamp[inst]
 			end
 		end
 		table.sort(upsertList, function(a, b)
 			return a.depth < b.depth
 		end)
-
 		local upserted = {}
 		for _, item in ipairs(upsertList) do
 			local inst = item.inst
@@ -2650,188 +2790,78 @@ function CapturePanel.build(parent, ctx)
 					local id = instanceIdByRef[inst]
 					if id then
 						table.insert(removed, id)
+						sentRemovedStamps[id] = Live.removedStamp[id]
 					end
 				end
 			else
-				-- Dead instance — treat as removed
 				local id = instanceIdByRef[inst]
 				if id then
 					table.insert(removed, id)
+					sentRemovedStamps[id] = Live.removedStamp[id]
 				end
 			end
 		end
-
-		if #upserted == 0 and #removed == 0 then
-			Live.dirtyUpsert = {}
-			Live.dirtyRemoved = {}
-			finish()
-			return
-		end
-
-		local body = {
-			placeId = tostring(game.PlaceId),
-			baseRevision = Live.currentRevision,
-			ops = {
-				upserted = upserted,
-				removed = removed,
-			},
-		}
-		debugLog("delta POST: upserted=", #upserted, "removed=", #removed, "baseRev=", Live.currentRevision)
-		local ok, result = ctx.transport.requestJson("POST", "/studio-stud/live/delta", body)
-		if ok and result and result.ok then
-			debugLog("delta OK: rev=", result.revision, "count=", result.instanceCount)
-			Live.currentRevision = result.revision or Live.currentRevision
-			Live.liveInstanceCount = result.instanceCount or Live.liveInstanceCount
-			Live.networkErrorCount = 0
-			Live.dirtyUpsert = {}
-			Live.dirtyRemoved = {}
-			ctx.setStatus("connected", "Live — delta streaming active")
-			ctx.setStats(("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount))
-		elseif ok and result and result.error == "revision_mismatch" then
-			-- Resync revision from daemon and retry — do NOT discard pending ops
-			warn(
-				"[StudioStud] delta MISMATCH: serverRev=",
-				result.revision,
-				"localRev=",
-				Live.currentRevision,
-				"— resyncing, will retry"
-			)
-			if result.revision then
-				Live.currentRevision = result.revision
-			end
-			finish()
-			task.defer(function()
-				if Live.liveRunning then
-					Live.flushDirty()
-				end
-			end)
-			return
-		elseif ok and result and result.error == "no_baseline" then
-			warn("[StudioStud] delta no_baseline — triggering re-baseline")
-			Live.dirtyUpsert = {}
-			Live.dirtyRemoved = {}
-			task.defer(function()
-				if Live.liveRunning then
-					Live.teardown()
-					-- Retry re-baseline up to 3 times with exponential backoff (5s, 15s, 45s)
-					local delays = { 5, 15, 45 }
-					local attempt = 0
-					local function tryRebaseline()
-						attempt += 1
-						warn("[StudioStud] re-baseline attempt", attempt)
-						local res = syncFn({ reason = "live-rebaseline" })
-						if res and res.ok then
-							return -- success, setupAfterBaseline already called inside syncFn
-						end
-						if attempt < #delays then
-							warn("[StudioStud] re-baseline failed, retrying in", delays[attempt], "s")
-							task.delay(delays[attempt], function()
-								if not Live.liveRunning then
-									tryRebaseline()
-								end
-							end)
-						else
-							warn("[StudioStud] re-baseline failed after", attempt, "attempts — click Capture/Query to reconnect")
-							ctx.setStatus("error", "Live lost — click Capture/Query to reconnect")
-						end
-					end
-					tryRebaseline()
-				end
-			end)
-		elseif ok and result and result.ok == false then
-			warn("[StudioStud] delta rejected:", result.error or "unknown", result)
-			Live.verifyNeeded = true
-		elseif result and result.statusCode == 404 then
-			-- Daemon does not support /live/* — fall back to poll-only
-			Live.teardown()
-		elseif not ok then
-			Live.networkErrorCount = Live.networkErrorCount + 1
-			warn("[StudioStud] delta network error (x" .. Live.networkErrorCount .. "):", result and result.error or "no response")
-			Live.verifyNeeded = true
-			if Live.networkErrorCount >= 4 then
-				task.defer(function()
-					if Live.liveRunning then
-						warn("[StudioStud] daemon unreachable — pausing live, will reconnect automatically")
-						Live.teardown()
-						ctx.setConnected(false)
-						sessionHasBaseline = false
-						setConnectButtonState()
-						ctx.setStatus("error", "Daemon offline — reconnecting automatically")
-						ctx.setStats("")
-					end
-				end)
-			end
-		end
-		finish()
-		-- On network error: keep dirty sets; retry next debounce cycle
+		return upserted, removed, sentUpsertStamps, sentRemovedStamps
 	end
 
-	-- Send a full verify snapshot → /live/verify/*
-	function Live.sendVerify()
-		if not Live.liveRunning then
-			return
+	function Live.clearSentDirty(sentUpsertStamps, sentRemovedStamps)
+		for inst, stamp in pairs(sentUpsertStamps) do
+			if Live.upsertStamp[inst] == stamp then
+				Live.dirtyUpsert[inst] = nil
+				Live.upsertStamp[inst] = nil
+			end
 		end
-		-- Edit-session gate: never build/send the verify snapshot during a play session.
-		if not Session.isEdit() then
-			return
+		for id, stamp in pairs(sentRemovedStamps) do
+			if Live.removedStamp[id] == stamp then
+				Live.dirtyRemoved[id] = nil
+				Live.removedStamp[id] = nil
+			end
 		end
-		if Live.syncInFlight then
-			return
-		end
-		Live.syncInFlight = true
-		local function finish()
-			Live.syncInFlight = false
-		end
+	end
 
-		debugLog("verify: building snapshot...")
-		local snapshot = Capture.buildSnapshot({ reason = "live-verify" })
-		local okEnc, jsonText = Transport.safeEncode(snapshot, "verify-snapshot")
-		if not okEnc then
-			warn("[StudioStud] verify: encode failed:", tostring(jsonText))
-			Live.verifyNeeded = true
-			finish()
-			return
-		end
-		local maxChunk = 900000
-		local okStart, startResult = ctx.transport.requestJson("POST", "/studio-stud/live/verify/start", {
-			pluginVersion = PLUGIN_VERSION,
-			protocolVersion = PROTOCOL_VERSION,
-		})
-		if not okStart then
-			warn("[StudioStud] verify: start failed:", startResult and startResult.error or "no response")
-			Live.verifyNeeded = true -- retry on next cycle
-			finish()
-			return
+	function Live.uploadTickBulk(jsonText, reason)
+		local query = Live.tickQuerySuffix()
+		local okStart, startResult = ctx.transport.requestJson(
+			"POST",
+			"/studio-stud/tick/bulk/start?" .. query,
+			{
+				pluginVersion = PLUGIN_VERSION,
+				protocolVersion = PROTOCOL_VERSION,
+				place = {
+					placeId = game.PlaceId,
+					placeKey = tostring(game.PlaceId ~= 0 and ("Place" .. tostring(game.PlaceId)) or game.Name),
+					name = game.Name,
+				},
+			}
+		)
+		if not okStart or not startResult or not startResult.syncId then
+			return false, startResult
 		end
 		local syncId = startResult.syncId
+		local maxChunk = tonumber(startResult.maxChunkBytes) or 900000
 		if #jsonText <= maxChunk then
 			local okBody = ctx.transport.requestBody(
-				"/studio-stud/live/verify/body?syncId=" .. HttpService:UrlEncode(syncId),
+				"/studio-stud/tick/bulk/chunk?" .. query .. "&syncId=" .. HttpService:UrlEncode(syncId) .. "&index=0",
 				jsonText
 			)
 			if not okBody then
-				warn("[StudioStud] verify: body upload failed")
-				Live.verifyNeeded = true
-				finish()
-				return
+				return false, { error = "bulk chunk failed" }
 			end
 		else
 			local chunkCount = math.ceil(#jsonText / maxChunk)
-			for i = 1, chunkCount do
-				local startByte = ((i - 1) * maxChunk) + 1
+			for index = 1, chunkCount do
+				local startByte = ((index - 1) * maxChunk) + 1
 				local chunk = string.sub(jsonText, startByte, startByte + maxChunk - 1)
 				local okChunk = ctx.transport.requestBody(
-					("/studio-stud/live/verify/chunk?syncId=%s&index=%d"):format(
+					("/studio-stud/tick/bulk/chunk?%s&syncId=%s&index=%d"):format(
+						query,
 						HttpService:UrlEncode(syncId),
-						i - 1
+						index - 1
 					),
 					chunk
 				)
 				if not okChunk then
-					warn("[StudioStud] verify: chunk", i, "upload failed")
-					Live.verifyNeeded = true
-					finish()
-					return
+					return false, { error = "bulk chunk failed", index = index }
 				end
 			end
 		end
@@ -2839,117 +2869,370 @@ function CapturePanel.build(parent, ctx)
 		if #jsonText > maxChunk then
 			expectedChunks = math.ceil(#jsonText / maxChunk)
 		end
-		local okComplete, completeResult = ctx.transport.requestJson("POST", "/studio-stud/live/verify/complete", {
-			syncId = syncId,
-			placeId = tostring(game.PlaceId),
-			expectedChunks = expectedChunks,
-		}, 120)
-		if okComplete and completeResult and completeResult.ok then
-			local drift = completeResult.drift and #completeResult.drift or 0
-			if drift > 0 then
-				debugLog("verify: corrected", completeResult.corrected, "drifted instances, new rev=", completeResult.revision)
-			else
-				debugLog("verify: no drift, rev=", completeResult.revision)
-			end
-			if completeResult.revision then
-				Live.currentRevision = completeResult.revision
-			end
-			Live.networkErrorCount = 0
-			-- Full snapshot replaced daemon state — local dirty tracking is stale
-			Live.dirtyUpsert = {}
-			Live.dirtyRemoved = {}
-			ctx.setStatus("connected", "Live — delta streaming active")
-			ctx.setStats(("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount))
-		else
-			local errText = completeResult and completeResult.error or "no response"
-			warn("[StudioStud] verify: complete failed:", errText)
-			if responseNeedsRebaseline(completeResult) then
-				Live.triggerRebaseline("verify-unknown-sync")
-			else
-				Live.verifyNeeded = true
-			end
-			finish()
-			return
+		local okComplete, completeResult = ctx.transport.requestJson(
+			"POST",
+			"/studio-stud/tick/bulk/complete?" .. query,
+			{ syncId = syncId, expectedChunks = expectedChunks }
+		)
+		if not okComplete or not completeResult or completeResult.ok ~= true then
+			return false, completeResult
 		end
-		Live.verifyNeeded = false
-		finish()
+		debugLog("tick bulk staged:", reason or "bulk", syncId)
+		return true, { syncId = syncId }
 	end
 
-	function Live.startDebounceLoop()
-		task.spawn(function()
-			while Live.liveRunning do
-				local debounceSeconds = Settings.getDebounceMs() / 1000
-				task.wait(debounceSeconds)
-				if not Live.liveRunning then
-					break
-				end
-				if Live.syncInFlight then
-					continue
-				end
-				if next(Live.dirtyUpsert) or next(Live.dirtyRemoved) then
-					local ok, err = pcall(Live.flushDirty)
-					if not ok then
-						warn("[StudioStud] flushDirty error:", err)
-					end
+	function Live.initFingerprintsFromWalk()
+		Live.resetFingerprints()
+		local processed = 0
+		for inst, _ in pairs(instanceIdByRef) do
+			if inst.Parent ~= nil then
+				buildUpsertedEntry(inst)
+				processed += 1
+				if Capture.shouldYield(processed, BASELINE_YIELD_EVERY) then
+					task.wait()
 				end
 			end
-		end)
+		end
 	end
 
-	function Live.startVerifyLoop()
-		local checkSeconds = 45
-		local hardVerifySeconds = 180 -- full verify every 3 minutes regardless
-		local elapsed = 0
-		task.spawn(function()
-			while Live.liveRunning do
-				task.wait(checkSeconds)
-				if not Live.liveRunning then
-					break
-				end
-				elapsed += checkSeconds
-				-- Update stats line every heartbeat
-				do
-					local pending = 0
-					for _ in pairs(Live.dirtyUpsert) do pending += 1 end
-					for _ in pairs(Live.dirtyRemoved) do pending += 1 end
-					local statsText = ("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount)
-					if pending > 0 then
-						statsText = statsText .. (" · %d pending"):format(pending)
-					end
-					ctx.setStats(statsText)
-				end
+	function Live.buildBaselineSnapshot(reason)
+		local snapshot = Capture.buildSnapshot({ reason = reason or "tick-baseline" })
+		for _, entry in ipairs(snapshot.instances) do
+			if not entry.fp then
+				entry.fp = Live.hashInstance(entry)
+				Live.applyFpUpsert(entry.id, entry, nil)
+			end
+		end
+		return snapshot
+	end
 
-				local shouldVerify = Live.verifyNeeded or elapsed >= hardVerifySeconds
-				if not shouldVerify then
-					-- Quick instance-count check via fingerprint endpoint
-					if Live.syncInFlight then
-						continue
+	function Live.rewalkDriftedServices(serviceNames)
+		if not serviceNames or #serviceNames == 0 then
+			return true
+		end
+		local targetSet = {}
+		for _, name in ipairs(serviceNames) do
+			targetSet[name] = true
+		end
+		local instances = {}
+		local processed = 0
+		for _, root in ipairs(Capture.getRootEntries()) do
+			if targetSet[root.name] then
+				local queue = { root.instance }
+				local qi = 1
+				while qi <= #queue do
+					local inst = queue[qi]
+					qi += 1
+					if instanceIdByRef[inst] then
+						local entry = buildUpsertedEntry(inst)
+						if entry then
+							table.insert(instances, entry)
+						end
+						processed += 1
+						if Capture.shouldYield(processed, BASELINE_YIELD_EVERY) then
+							task.wait()
+						end
 					end
-					local ok, result = ctx.transport.requestJson(
-						"GET",
-						"/studio-stud/live/fingerprint?placeId=" .. HttpService:UrlEncode(tostring(game.PlaceId)),
-						nil
-					)
-					if ok and result and result.ok then
-						local daemonCount = result.instanceCount
-						if daemonCount and daemonCount ~= Live.liveInstanceCount then
-							shouldVerify = true
+					if root.includeDescendants then
+						local ok, children = pcall(function()
+							return inst:GetChildren()
+						end)
+						if ok then
+							for _, child in ipairs(children) do
+								table.insert(queue, child)
+							end
 						end
 					end
 				end
-				if next(Live.dirtyUpsert) or next(Live.dirtyRemoved) then
-					-- Try flushing deltas before falling back to a full verify
-					if not Live.syncInFlight then
-						Live.flushDirty()
-					end
-					if next(Live.dirtyUpsert) or next(Live.dirtyRemoved) then
-						shouldVerify = true
+			end
+		end
+		local snapshot = {
+			formatVersion = 1,
+			snapshotKind = "studio-stud-live-snapshot",
+			serviceName = SERVICE_NAME,
+			pluginVersion = PLUGIN_VERSION,
+			place = {
+				placeKey = tostring(game.PlaceId ~= 0 and ("Place" .. tostring(game.PlaceId)) or game.Name),
+				name = game.Name,
+				placeId = game.PlaceId,
+				gameId = game.GameId,
+			},
+			sync = {
+				reason = "drift-recovery",
+				startedAtUtc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+				finishedAtUtc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+				consistency = "service-rewalk",
+			},
+			instances = instances,
+		}
+		local okEnc, jsonText = Transport.safeEncode(snapshot, "drift-recovery")
+		if not okEnc then
+			return false
+		end
+		local okBulk, bulkResult = Live.uploadTickBulk(jsonText, "drift-recovery")
+		if okBulk and bulkResult and bulkResult.syncId then
+			Live.pendingBulkRef = bulkResult.syncId
+			return true
+		end
+		return false
+	end
+
+	function Live.triggerFullBaseline(reason)
+		if Live.baselineInProgress or not Live.liveRunning then
+			return false
+		end
+		if not Session.isEdit() then
+			return false
+		end
+		Live.baselineInProgress = true
+		task.spawn(function()
+			local snapshot = Live.buildBaselineSnapshot(reason or "tick-baseline")
+			local okEnc, jsonText = Transport.safeEncode(snapshot, "tick-baseline")
+			if not okEnc then
+				warn("[StudioStud] baseline encode failed:", tostring(jsonText))
+				Live.baselineInProgress = false
+				return
+			end
+			local okBulk, bulkResult = Live.uploadTickBulk(jsonText, reason or "tick-baseline")
+			if okBulk and bulkResult and bulkResult.syncId then
+				Live.pendingBulkRef = bulkResult.syncId
+				debugLog("baseline bulk staged, awaiting tick commit")
+			else
+				warn("[StudioStud] baseline bulk upload failed")
+			end
+			Live.baselineInProgress = false
+		end)
+		return true
+	end
+
+	function Live.runTick(sessionMode)
+		if not Live.liveRunning or Live.syncInFlight then
+			return
+		end
+		if sessionMode == "edit" and Live.historyDirty then
+			Live.historyDirty = false
+			Live.triggerFullBaseline("history-change")
+		end
+		Live.syncInFlight = true
+		local function finish()
+			Live.syncInFlight = false
+		end
+
+		local mode = sessionMode or (Session.isEdit() and "edit" or "play")
+		local serviceFingerprints = Live.serviceFingerprintsWire()
+		local bulkRef = Live.pendingBulkRef
+		local upserted, removed, sentUpsertStamps, sentRemovedStamps = {}, {}, {}, {}
+		if mode == "edit" and not bulkRef then
+			upserted, removed, sentUpsertStamps, sentRemovedStamps = Live.collectOpsFromDirty()
+		end
+		local ops = { upserted = upserted, removed = removed }
+		local body = Live.buildTickBody(
+			game.PlaceId,
+			mode,
+			Live.currentRevision,
+			serviceFingerprints,
+			ops,
+			bulkRef
+		)
+		local okEnc, encoded = Transport.safeEncode(body, "tick")
+		if not okEnc then
+			warn("[StudioStud] tick encode failed:", tostring(encoded))
+			finish()
+			return
+		end
+		if mode == "edit" and not bulkRef and Live.classifyPayload(#encoded) == "bulk" then
+			local inlineSnapshot = Live.buildBaselineSnapshot("tick-inline-spill")
+			inlineSnapshot.instances = upserted
+			local okSpill, spillText = Transport.safeEncode(inlineSnapshot, "tick-spill")
+			if okSpill then
+				local okBulk, bulkResult = Live.uploadTickBulk(spillText, "tick-spill")
+				if okBulk and bulkResult and bulkResult.syncId then
+					bulkRef = bulkResult.syncId
+					body.bulkRef = bulkRef
+					body.ops = { upserted = {}, removed = removed }
+					okEnc, encoded = Transport.safeEncode(body, "tick-bulkref")
+				end
+			end
+		end
+
+		local tickPath = "/studio-stud/tick?" .. Live.tickQuerySuffix()
+		local ok, result = ctx.transport.requestJson("POST", tickPath, body)
+		if ok and result and result.ok then
+			Live.currentRevision = result.revision or Live.currentRevision
+			Live.liveInstanceCount = result.instanceCount or Live.liveInstanceCount
+			Live.networkErrorCount = 0
+			if bulkRef then
+				Live.pendingBulkRef = nil
+			end
+			if mode == "edit" then
+				Live.clearSentDirty(sentUpsertStamps, sentRemovedStamps)
+			end
+			local drift = result.driftServices
+			if type(drift) == "table" and #drift > 0 then
+				debugLog("tick drift services:", table.concat(drift, ", "))
+				Live.recoveryServices = drift
+				task.spawn(function()
+					Live.rewalkDriftedServices(drift)
+				end)
+			end
+			if result.request then
+				debugLog("tick request from daemon:", result.request)
+			end
+			ctx.setStatus("connected", "Live — tick sync active")
+		elseif ok and result and result.error == "revision_mismatch" then
+			warn("[StudioStud] tick revision_mismatch: server=", result.revision, "local=", Live.currentRevision)
+			if result.revision then
+				Live.currentRevision = result.revision
+			end
+		elseif ok and result and result.error == "no_baseline" then
+			debugLog("tick no_baseline — scheduling full baseline")
+			Live.triggerFullBaseline("tick-no-baseline")
+		elseif not ok or (result and result.ok == false) then
+			Live.networkErrorCount += 1
+			warn("[StudioStud] tick error:", result and result.error or "no response")
+			if Live.networkErrorCount >= 4 then
+				Live.teardown()
+				ctx.setConnected(false)
+				sessionHasBaseline = false
+				setConnectButtonState()
+				ctx.setStatus("error", "Daemon offline — reconnecting automatically")
+				ctx.setStats("")
+			end
+		end
+		finish()
+	end
+
+	function Live.connectLiveMode()
+		if not Settings.getBool(SETTINGS.liveCaptureEnabled, true) then
+			return false
+		end
+		Live.teardown()
+		Live.liveRunning = true
+		Live.currentRevision = 0
+		Live.liveInstanceCount = 0
+		Live.pendingBulkRef = nil
+		instanceIdByRef = {}
+		pathByRef = {}
+		Capture.collectBaseInstances()
+		Live.initFingerprintsFromWalk()
+		for inst, _ in pairs(instanceIdByRef) do
+			Live.parentByInst[inst] = inst.Parent
+			Live.registerInstance(inst)
+		end
+		for _, root in ipairs(Capture.getRootEntries()) do
+			if root.includeDescendants then
+				local rootInst = root.instance
+				table.insert(
+					Live.rootConns,
+					rootInst.DescendantAdded:Connect(function(child)
+						Live.onDescendantAdded(child)
+					end)
+				)
+				table.insert(
+					Live.rootConns,
+					rootInst.DescendantRemoving:Connect(function(child)
+						Live.onDescendantRemoving(child)
+					end)
+				)
+			end
+		end
+		local selOk, selConn = pcall(function()
+			local Selection = game:GetService("Selection")
+			return Selection.SelectionChanged:Connect(function()
+				local okSel, selected = pcall(function()
+					return Selection:Get()
+				end)
+				if okSel then
+					for _, inst in ipairs(selected) do
+						if instanceIdByRef[inst] then
+							Live.markDirtyUpsert(inst)
+						end
 					end
 				end
-				if shouldVerify and not Live.syncInFlight then
-					debugLog("verify: triggered (verifyNeeded=", Live.verifyNeeded, "elapsed=", elapsed, "s)")
-					Live.sendVerify()
-					elapsed = 0
+			end)
+		end)
+		if selOk then
+			table.insert(Live.globalConns, selConn)
+		end
+		local undoOk, undoConn = pcall(function()
+			return ChangeHistoryService.OnUndo:Connect(function()
+				Live.historyDirty = true
+			end)
+		end)
+		if undoOk then
+			table.insert(Live.globalConns, undoConn)
+		end
+		local redoOk, redoConn = pcall(function()
+			return ChangeHistoryService.OnRedo:Connect(function()
+				Live.historyDirty = true
+			end)
+		end)
+		if redoOk then
+			table.insert(Live.globalConns, redoConn)
+		end
+		ctx.setStatus("connected", "Live — tick sync active")
+		ctx.setStats(("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount))
+		return true
+	end
+
+	function Live.startTickLoop(pausedBaselineRef, onReturnToEditFn)
+		Live.tickGeneration += 1
+		local myTickGen = Live.tickGeneration
+		local lastSessionMode = Session.mode()
+		task.spawn(function()
+			while Live.liveRunning and Live.tickGeneration == myTickGen and running do
+				local intervalSeconds = Settings.getDebounceMs() / 1000
+				task.wait(intervalSeconds)
+				if not Live.liveRunning or Live.tickGeneration ~= myTickGen or not running then
+					break
+				end
+				local mode = Session.mode()
+				if mode ~= lastSessionMode then
+					lastSessionMode = mode
+					if mode == "play" then
+						if pausedBaselineRef then
+							pausedBaselineRef.revision = Live.currentRevision
+							pausedBaselineRef.instanceCount = Live.liveInstanceCount
+						end
+						Live.teardown()
+						ctx.setStatus("idle", "Paused — Studio in play session")
+						ctx.setStats("")
+						debugLog("session: entered play — live paused")
+					else
+						debugLog("session: returned to edit — scheduling catch-up")
+						if onReturnToEditFn then
+							task.defer(onReturnToEditFn)
+						end
+					end
+				end
+				if mode ~= "edit" or not Live.liveRunning then
+					if mode == "play" then
+						local okTick, errTick = pcall(function()
+							Live.runTick("play")
+						end)
+						if not okTick then
+							warn("[StudioStud] play keepalive error:", errTick)
+						end
+					end
+					continue
+				end
+				local pending = 0
+				for _ in pairs(Live.dirtyUpsert) do
+					pending += 1
+				end
+				for _ in pairs(Live.dirtyRemoved) do
+					pending += 1
+				end
+				local statsText = ("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount)
+				if pending > 0 then
+					statsText = statsText .. (" · %d pending"):format(pending)
+				end
+				ctx.setStats(statsText)
+				local okTick, errTick = pcall(function()
+					Live.runTick("edit")
+				end)
+				if not okTick then
+					warn("[StudioStud] runTick error:", errTick)
 				end
 			end
 		end)
@@ -2985,230 +3268,54 @@ function CapturePanel.build(parent, ctx)
 		Live.currentRevision = 0
 		Live.liveInstanceCount = 0
 		Live.verifyNeeded = false
+		Live.resetFingerprints()
+		Live.pendingBulkRef = nil
+		Live.upsertStamp = {}
+		Live.removedStamp = {}
+		Live.tickGeneration += 1
 	end
 
-	-- Activate live mode after a successful baseline capture
 	function Live.setupAfterBaseline(materialized)
-		if not Settings.getBool(SETTINGS.liveCaptureEnabled, true) then
+		if Live.connectLiveMode() then
+			Live.currentRevision = (materialized and materialized.revision) or 0
+			Live.liveInstanceCount = (materialized and (materialized.instances or materialized.totalItems)) or 0
+		end
+	end
+
+	local pausedBaseline = { revision = 0, instanceCount = 0 }
+	local function onReturnToEdit()
+		task.wait(1.5)
+		if not Session.isEdit() then
 			return
 		end
-		Live.teardown()
-		Live.liveRunning = true
-		Live.currentRevision = (materialized and materialized.revision) or 0
-		Live.liveInstanceCount = (materialized and (materialized.instances or materialized.totalItems)) or 0
-
-		-- Register all instances from the just-completed baseline walk
-		for inst, _ in pairs(instanceIdByRef) do
-			Live.parentByInst[inst] = inst.Parent
-			Live.registerInstance(inst)
+		if Live.connectLiveMode() then
+			Live.currentRevision = pausedBaseline.revision or 0
+			Live.liveInstanceCount = pausedBaseline.instanceCount or 0
+			Live.startTickLoop(pausedBaseline, onReturnToEdit)
+			ctx.setConnected(true)
+			sessionHasBaseline = true
+			setConnectButtonState()
+			ctx.setStatus("connected", "Live resumed — tick sync active")
+			debugLog("session: resumed live after play (rev ", Live.currentRevision, ")")
+		else
+			Live.triggerRebaseline("return-to-edit")
 		end
-
-		-- Connect DescendantAdded/Removing on each captured root service
-		for _, root in ipairs(Capture.getRootEntries()) do
-			if root.includeDescendants then
-				local rootInst = root.instance
-				table.insert(
-					Live.rootConns,
-					rootInst.DescendantAdded:Connect(function(child)
-						Live.onDescendantAdded(child)
-					end)
-				)
-				table.insert(
-					Live.rootConns,
-					rootInst.DescendantRemoving:Connect(function(child)
-						Live.onDescendantRemoving(child)
-					end)
-				)
-			end
-		end
-
-		-- Selection changes → dirty selected instances (selection metadata in future)
-		local selOk, selConn = pcall(function()
-			local Selection = game:GetService("Selection")
-			return Selection.SelectionChanged:Connect(function()
-				local ok, selected = pcall(function()
-					return Selection:Get()
-				end)
-				if ok then
-					for _, inst in ipairs(selected) do
-						if instanceIdByRef[inst] then
-							Live.dirtyUpsert[inst] = true
-						end
-					end
-				end
-			end)
-		end)
-		if selOk then
-			table.insert(Live.globalConns, selConn)
-		end
-
-		-- ChangeHistoryService: undo/redo → trigger a full verify on next cycle
-		local undoOk, undoConn = pcall(function()
-			return ChangeHistoryService.OnUndo:Connect(function()
-				Live.verifyNeeded = true
-			end)
-		end)
-		if undoOk then
-			table.insert(Live.globalConns, undoConn)
-		end
-		local redoOk, redoConn = pcall(function()
-			return ChangeHistoryService.OnRedo:Connect(function()
-				Live.verifyNeeded = true
-			end)
-		end)
-		if redoOk then
-			table.insert(Live.globalConns, redoConn)
-		end
-
-		ctx.setStatus("connected", "Live — delta streaming active")
-		ctx.setStats(("rev %d · %d instances"):format(Live.currentRevision, Live.liveInstanceCount))
-		Live.startDebounceLoop()
-		Live.startVerifyLoop()
 	end
 
 	local connectConnection = connectButton.MouseButton1Click:Connect(function()
 		if ctx.isConnected() then
-			syncFn({ reason = "manual" })
+			if Live and Live.liveRunning then
+				Live.triggerFullBaseline("manual")
+			else
+				startupConnectAndCapture()
+			end
 		else
 			startupConnectAndCapture()
 		end
 	end)
 
-	-- Smart catch-up when returning from a play session to edit. Cheap fingerprint
-	-- short-circuit when the daemon still holds our pre-play baseline (the common case,
-	-- since Stop restores the edit tree); otherwise a full re-baseline.
-	local pausedBaseline = nil
-	local function onReturnToEdit()
-		task.wait(1.5) -- let the edit DataModel settle after Stop
-		if not Session.isEdit() then
-			return -- bounced back into a play session; the poll loop will re-handle
-		end
-		local baseline = pausedBaseline
-		pausedBaseline = nil
-		local resumed = false
-		if baseline then
-			local ok, result = ctx.transport.requestJson(
-				"GET",
-				"/studio-stud/live/fingerprint?placeId=" .. HttpService:UrlEncode(tostring(game.PlaceId)),
-				nil
-			)
-			if
-				ok
-				and result
-				and result.ok
-				and result.revision == baseline.revision
-				and result.instanceCount == baseline.instanceCount
-			then
-				-- Daemon still holds our baseline → re-arm live without a full re-walk.
-				-- Defer one verify to reconcile any F8 run-persisted edit-tree drift.
-				Live.setupAfterBaseline({ revision = result.revision, instances = result.instanceCount })
-				Live.verifyNeeded = true
-				ctx.setConnected(true)
-				sessionHasBaseline = true
-				setConnectButtonState()
-				ctx.setStatus(
-					"connected",
-					("Live resumed — rev %d · %d instances · ready"):format(
-						tonumber(result.revision) or 0,
-						tonumber(result.instanceCount) or 0
-					)
-				)
-				ctx.setStats(
-					("rev %d · %d instances"):format(
-						tonumber(result.revision) or 0,
-						tonumber(result.instanceCount) or 0
-					)
-				)
-				debugLog("session: resumed live via fingerprint short-circuit (rev ", result.revision, ")")
-				resumed = true
-			end
-		end
-		if not resumed then
-			debugLog("session: return-to-edit needs full re-baseline")
-			Live.triggerRebaseline("return-to-edit")
-		end
-	end
-
 	pollGeneration += 1
 	local myGeneration = pollGeneration
-	local lastSessionMode = Session.mode()
-	task.spawn(function()
-		while running do
-			task.wait(3)
-			if not running then
-				break
-			end
-
-			-- Edit/play session state machine: detect transitions each tick.
-			local mode = Session.mode()
-			if mode ~= lastSessionMode then
-				lastSessionMode = mode
-				if mode == "play" then
-					-- edit → play: snapshot the baseline, drop live connections so no dirty
-					-- accumulates, and pause all daemon comms (heartbeat continues below).
-					pausedBaseline = {
-						revision = (Live and Live.currentRevision) or 0,
-						instanceCount = (Live and Live.liveInstanceCount) or 0,
-					}
-					if Live and Live.liveRunning then
-						Live.teardown()
-					end
-					ctx.setStatus("idle", "Paused — Studio in play session")
-					ctx.setStats("")
-					debugLog("session: entered play — live paused, baseline rev ", pausedBaseline.revision)
-				else
-					-- play → edit: smart catch-up (debounced) then resume.
-					debugLog("session: returned to edit — scheduling catch-up")
-					task.defer(onReturnToEdit)
-				end
-			end
-
-			-- Heartbeat every tick so the daemon learns our session mode (carried as a
-			-- query param). This is the only daemon traffic during a play session.
-			local ok, result = ctx.transport.requestJson(
-				"GET",
-				"/studio-stud/capture/request?sessionMode=" .. HttpService:UrlEncode(mode),
-				nil
-			)
-
-			-- During a play session: heartbeat only — no captures, no reconnects.
-			if mode ~= "edit" then
-				continue
-			end
-
-			if ok then
-				-- Daemon reachable
-				if result and result.request and not syncing then
-					syncFn(result.request.options or { reason = result.request.reason or "daemon-request" })
-				end
-				-- Auto-reconnect: if live went down (daemon restart or network hiccup), re-baseline
-				if not (Live and Live.liveRunning) and not syncing and not ctx.isConnected() then
-					debugLog("poll: daemon is back — reconnecting")
-					ctx.setConnected(true)
-					sessionHasBaseline = false
-					setConnectButtonState()
-					ctx.setStatus("syncing", "Daemon back — reconnecting...")
-					task.defer(startupConnectAndCapture)
-				end
-			else
-				-- Daemon unreachable — update UI if live was running
-				if Live and Live.liveRunning then
-					warn("[StudioStud] poll: daemon unreachable — pausing live")
-					Live.teardown()
-					ctx.setConnected(false)
-					sessionHasBaseline = false
-					setConnectButtonState()
-					ctx.setStatus("error", "Daemon offline — reconnecting automatically")
-					ctx.setStats("")
-				elseif ctx.isConnected() then
-					ctx.setConnected(false)
-					setConnectButtonState()
-					ctx.setStatus("error", "Daemon offline — reconnecting automatically")
-					ctx.setStats("")
-				end
-			end
-		end
-	end)
 
 	GlobalApi.wireCapture(statusFn, syncFn)
 
@@ -4095,13 +4202,126 @@ function SelfTest.run()
 
 			local mod = Instance.new("ModuleScript")
 			mod.Source = "return 42"
-			SelfTest.assert("readSource ModuleScript", capture.readSource(mod) == "return 42", failures)
+			local srcUtf8, encUtf8 = capture.readSource(mod)
+			SelfTest.assert("readSource ModuleScript utf8", srcUtf8 == "return 42" and encUtf8 == "utf8", failures)
 			local part = Instance.new("Part")
-			SelfTest.assert("readSource non-script nil", capture.readSource(part) == nil, failures)
+			local srcNil, encNil = capture.readSource(part)
+			SelfTest.assert("readSource non-script nil", srcNil == nil and encNil == nil, failures)
+			local binary = string.char(0xFF, 0x00, 0xAB)
+			local encB64 = capture.base64encode(binary)
+			local roundTrip = capture.base64decode(encB64)
+			SelfTest.assert("base64 round-trip", roundTrip == binary, failures)
+			SelfTest.assert("base64 alphabet valid", string.match(encB64, "^[A-Za-z0-9+/=]+$") ~= nil, failures)
 			mod:Destroy()
 			part:Destroy()
 		else
 			print("[Studio Stud SelfTest] SKIP: capture handle not available (phase 4)")
+		end
+	end
+
+	-- == Phase 5C: hashInstance + incremental serviceFp ==
+	if live then
+		do
+			local sample = {
+				id = "a1",
+				className = "Part",
+				name = "P",
+				parentId = "ws",
+				path = "Workspace/P[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = { Transparency = 0.5, Size = { type = "Vector3", x = 1, y = 2, z = 3 } },
+				attributes = { foo = "bar" },
+				tags = { "tagA", "tagB" },
+			}
+			local h1 = live.hashInstance(sample)
+			local h2 = live.hashInstance(sample)
+			SelfTest.assert("hashInstance stable", h1 == h2, failures)
+			SelfTest.assert("hashInstance 64 hex", #h1 == 64 and string.match(h1, "^[0-9a-f]+$") ~= nil, failures)
+			local reordered = {
+				id = "a1",
+				className = "Part",
+				name = "P",
+				parentId = "ws",
+				path = "Workspace/P[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = { Size = { type = "Vector3", x = 1, y = 2, z = 3 }, Transparency = 0.5 },
+				attributes = { foo = "bar" },
+				tags = { "tagA", "tagB" },
+			}
+			SelfTest.assert("hashInstance property order invariant", live.hashInstance(reordered) == h1, failures)
+			sample.properties.Transparency = 0.6
+			SelfTest.assert("hashInstance property change", live.hashInstance(sample) ~= h1, failures)
+
+			live.resetFingerprints()
+			local entryA = {
+				id = "a",
+				className = "Part",
+				name = "A",
+				parentId = "ws",
+				path = "Workspace/A[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = {},
+				attributes = {},
+				tags = {},
+			}
+			local entryB = {
+				id = "b",
+				className = "Part",
+				name = "B",
+				parentId = "ws",
+				path = "Workspace/B[1]",
+				depth = 1,
+				siblingIndex = 2,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = {},
+				attributes = {},
+				tags = {},
+			}
+			live.applyFpUpsert("a", entryA, nil)
+			live.applyFpUpsert("b", entryB, nil)
+			local fpA = live.hashInstance(entryA)
+			local fpB = live.hashInstance(entryB)
+			local wsXor = live.serviceFpHex("Workspace")
+			live.applyFpRemove("a", entryA.path)
+			SelfTest.assert("serviceFp remove A leaves B", live.serviceFpHex("Workspace") == fpB, failures)
+			live.applyFpUpsert("a", entryA, nil)
+			SelfTest.assert("serviceFp re-add A restores XOR", live.serviceFpHex("Workspace") == wsXor, failures)
+
+			local body = live.buildTickBody("123", "edit", 2, { Workspace = string.rep("a", 64) }, {
+				upserted = { { id = "x" } },
+				removed = { "y" },
+			}, nil)
+			SelfTest.assert(
+				"buildTickBody shape",
+				body.placeId == "123"
+					and body.sessionMode == "edit"
+					and body.baseRevision == 2
+					and body.ops.upserted[1].id == "x"
+					and body.bulkRef == nil,
+				failures
+			)
+			SelfTest.assert("classifyPayload inline", live.classifyPayload(1024) == "inline", failures)
+			SelfTest.assert("classifyPayload bulk", live.classifyPayload(300000) == "bulk", failures)
+			local dirtyUpsert = { [game:GetService("Workspace")] = true }
+			local dirtyRemoved = { z = true }
+			local recovery = live.scheduleDriftRecovery({ "Workspace" }, dirtyUpsert, dirtyRemoved)
+			SelfTest.assert(
+				"drift recovery preserves dirty",
+				recovery.services[1] == "Workspace"
+					and recovery.dirtyUpsert[game:GetService("Workspace")]
+					and recovery.dirtyRemoved.z,
+				failures
+			)
 		end
 	end
 
