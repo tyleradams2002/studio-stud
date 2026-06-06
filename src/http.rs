@@ -156,6 +156,10 @@ pub(crate) fn handle_daemon_request(
     let path_label = path.clone();
     let result = (|| -> Result<Value> {
         Ok(match (method, path.as_str()) {
+            (tiny_http::Method::Get, "/studio-stud/allowlist") => {
+                let al = crate::reflection::generate_allowlist();
+                json!({ "ok": true, "version": al.version, "classes": al.classes })
+            }
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
                 let mut manifest = manifest_json_with_update(config);
                 let (mode, stale_since) = {
@@ -944,7 +948,8 @@ pub(crate) fn respond_json(
         .respond(
             tiny_http::Response::from_string(body)
                 .with_status_code(tiny_http::StatusCode(status))
-                .with_header(header),
+                .with_header(header)
+                .with_chunked_threshold(usize::MAX),
         )
         .map_err(|err| anyhow!("{err}"))
 }

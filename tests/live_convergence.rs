@@ -362,3 +362,24 @@ fn malformed_delta_rolls_back() {
         after.get("fingerprint").and_then(Value::as_str)
     );
 }
+
+#[test]
+fn ingest_stamps_reflection_version() {
+    let storage = temp_storage("refl_ver");
+    let out = run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let v = out
+        .get("reflectionVersion")
+        .and_then(Value::as_str)
+        .expect("reflectionVersion");
+    assert!(!v.is_empty());
+    // version must be persisted into meta
+    let dump = run_cli(&["live-services", "999001"], &storage);
+    assert_eq!(dump.get("ok").and_then(Value::as_bool), Some(true)); // place db exists
+}
