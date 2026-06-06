@@ -17,8 +17,8 @@
     .\scripts\configure-github.ps1  # will prompt for token
 
   Branch model:
-    development  →  (PR)  →  beta  →  (PR)  →  main
-    ^ push here               ^ beta testers      ^ public release
+    development  →  (PR)  →  main
+    ^ push here               ^ public release
 #>
 param(
     [string]$Token = '',
@@ -70,7 +70,8 @@ function Set-BranchProtection {
         [string]$Branch,
         [bool]$RequirePr     = $false,
         [bool]$RequireChecks = $false,
-        [bool]$EnforceAdmins = $false
+        [bool]$EnforceAdmins = $false,
+        [string[]]$Checks    = @('Build & Test')
     )
 
     $body = @{
@@ -86,7 +87,7 @@ function Set-BranchProtection {
     if ($RequireChecks) {
         $body.required_status_checks = @{
             strict   = $true
-            contexts = @('Build & Test')
+            contexts = $Checks
         }
     }
 
@@ -103,8 +104,7 @@ function Set-BranchProtection {
 }
 
 Write-Host "=== Branch protection ==="
-Set-BranchProtection -Branch 'main'        -RequirePr $true  -RequireChecks $true  -EnforceAdmins $true
-Set-BranchProtection -Branch 'beta'        -RequirePr $true  -RequireChecks $true  -EnforceAdmins $false
+Set-BranchProtection -Branch 'main'        -RequirePr $true  -RequireChecks $true  -EnforceAdmins $true -Checks @('Build & Test', 'Version bump gate')
 Set-BranchProtection -Branch 'development' -RequirePr $false -RequireChecks $false -EnforceAdmins $false
 Write-Host ""
 
@@ -140,12 +140,11 @@ $branches | ForEach-Object {
 }
 Write-Host ""
 Write-Host "Setup complete. Your workflow:"
-Write-Host "  1. Push work to  : development"
-Write-Host "  2. Promote       : Actions → Promote → 'development → beta'"
-Write-Host "  3. Promote       : Actions → Promote → 'beta → main'"
-Write-Host "  4. Tag a release : git tag vX.Y.Z && git push origin vX.Y.Z"
+Write-Host "  1. Push work to  : development   (dev channel auto-updates on each push)"
+Write-Host "  2. Bump version  : .\scripts\bump-version.ps1 X.Y.Z   (on development)"
+Write-Host "  3. Promote       : Actions → Promote   (opens the development → main PR)"
+Write-Host "  4. Merge the PR  : CI gates the version; merging auto-tags + publishes the release"
 Write-Host ""
 Write-Host "Actions secrets (Settings → Secrets → Actions):"
 Write-Host "  CHANNEL_SIGNING_KEY   — ed25519 private key hex (scripts/keygen.ps1)"
 Write-Host "  DEV_CHANNEL_PASSWORD  — dev channel install/update password"
-Write-Host "  BETA_CHANNEL_PASSWORD — beta channel install/update password"
