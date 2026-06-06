@@ -77,6 +77,8 @@ fn curated_for(class: &ClassDescriptor) -> Vec<PropEntry> {
 }
 
 /// Whether the stored reflection version is missing or differs from the current one.
+/// Wired into the on-connect version-check in a later (plugin) phase.
+#[allow(dead_code)]
 pub(crate) fn needs_update(stored: Option<&str>, current: &str) -> bool {
     stored != Some(current)
 }
@@ -95,6 +97,8 @@ pub(crate) fn generate_allowlist() -> AllowList {
 
 /// Fetch a dump for a target version; on ANY error, fall back to the bundled allow-list.
 /// `fetch` returns the raw API-dump JSON bytes for a version, or an error.
+/// Wired to the plugin's reported Studio version in a later phase.
+#[allow(dead_code)]
 pub(crate) fn generate_allowlist_for<F>(fetch: F) -> AllowList
 where
     F: FnOnce(&str) -> anyhow::Result<String>,
