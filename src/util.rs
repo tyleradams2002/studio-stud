@@ -148,7 +148,10 @@ pub(crate) fn open_db(path: &Path) -> Result<Connection> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = NORMAL;
-         PRAGMA foreign_keys = ON;",
+         PRAGMA foreign_keys = ON;
+         PRAGMA cache_size = -65536;
+         PRAGMA mmap_size = 268435456;
+         PRAGMA temp_store = MEMORY;",
     )?;
     ensure_incremental_auto_vacuum(&conn)?;
     Ok(conn)
@@ -392,5 +395,29 @@ mod tests {
             .unwrap();
         assert_eq!(mode, 2);
         let _ = std::fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod pragma_tests {
+    use super::*;
+
+    #[test]
+    fn open_db_sets_performance_pragmas() {
+        let dir = std::env::temp_dir().join(format!("ss_pragma_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        let conn = open_db(&db).expect("open");
+
+        let journal: String = conn
+            .query_row("PRAGMA journal_mode", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(journal.to_lowercase(), "wal");
+
+        let cache: i64 = conn.query_row("PRAGMA cache_size", [], |r| r.get(0)).unwrap();
+        assert!(cache <= -16000, "expected >=16MB page cache, got {cache}");
+
+        let mmap: i64 = conn.query_row("PRAGMA mmap_size", [], |r| r.get(0)).unwrap();
+        assert!(mmap >= 268_435_456, "expected mmap >=256MB, got {mmap}");
     }
 }
