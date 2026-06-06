@@ -2077,6 +2077,9 @@ function CapturePanel.build(parent, ctx)
 		if not (ping and ping.ok) then
 			return ping
 		end
+		if not AllowList.loaded then -- Phase 3: load once per connect (best-effort; static fallback on failure)
+			AllowList.fetch()
+		end
 		if sessionHasBaseline or (Live and Live.liveRunning) then
 			return ping
 		end
