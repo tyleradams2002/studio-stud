@@ -88,7 +88,7 @@ fn download_extract_bundle_paths(
 
 fn channel_password(cfg: &StudioStudConfig) -> Result<String> {
     let dpapi = cfg.channel_key_dpapi.as_deref().ok_or_else(|| {
-        anyhow!("channel password not stored — reinstall via install-beta.ps1 / install-dev.ps1")
+        anyhow!("channel password not stored — reinstall via install-dev.ps1")
     })?;
     String::from_utf8(dpapi_unprotect(dpapi)?)
         .map_err(|_| anyhow!("stored channel password is invalid"))

@@ -60,9 +60,7 @@ local MIN_DAEMON_PROTOCOL_VERSION = 1
 -- switches the user onto release.
 local function updateInstallHint(channel: any): string
 	local script = "install.ps1"
-	if channel == "beta" then
-		script = "install-beta.ps1"
-	elseif channel == "dev" then
+	if channel == "dev" then
 		script = "install-dev.ps1"
 	end
 	return ("irm https://tyleradams2002.github.io/studio-stud/%s | iex"):format(script)
