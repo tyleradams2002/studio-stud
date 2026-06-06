@@ -127,6 +127,20 @@ fn verify_complete_unknown_sync_id_returns_soft_rebaseline() {
 }
 
 #[test]
+fn allowlist_endpoint_serves_curated_classes() {
+    let storage = temp_storage("allowlist");
+    let serve = start_serve(&storage);
+    let (status, body) = http_request("GET", serve.port, "/studio-stud/allowlist", None);
+    assert_eq!(status, 200);
+    let v = parse_json(&body);
+    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(v.get("version").and_then(Value::as_str).is_some());
+    let classes = v.get("classes").and_then(Value::as_object).expect("classes map");
+    let bp = classes.get("BasePart").and_then(Value::as_array).expect("BasePart");
+    assert!(bp.iter().any(|p| p.get("name").and_then(Value::as_str) == Some("Transparency")));
+}
+
+#[test]
 fn concurrent_pings_while_serve_is_running() {
     let storage = temp_storage("concurrent_ping");
     let serve = start_serve(&storage);
