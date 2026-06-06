@@ -1191,6 +1191,75 @@ function Transport.requestBody(path, body)
 	return true, decoded
 end
 
+-- == Property allow-list (fetched from daemon /allowlist; static CLASS_PROPERTIES is the fallback) ==
+local AllowList = {}
+AllowList.loaded = false
+AllowList.version = nil
+AllowList.sets = {} -- [className] = { [propName] = readOnly(boolean) }   (O(1) membership)
+AllowList.lists = {} -- [className] = { propName, ... }                    (ordered, for capture)
+
+-- Pure: turn a decoded /allowlist response into per-class sets + ordered lists. Returns nil on bad input.
+function AllowList.parse(decoded)
+	if type(decoded) ~= "table" or type(decoded.classes) ~= "table" then
+		return nil
+	end
+	local sets, lists = {}, {}
+	for className, props in pairs(decoded.classes) do
+		if type(props) == "table" then
+			local set, list = {}, {}
+			for _, entry in ipairs(props) do
+				if type(entry) == "table" and type(entry.name) == "string" then
+					set[entry.name] = entry.readOnly == true
+					table.insert(list, entry.name)
+				end
+			end
+			sets[className] = set
+			lists[className] = list
+		end
+	end
+	return { version = decoded.version, sets = sets, lists = lists }
+end
+
+-- Fetch from the daemon and cache. Returns true on success; leaves the static fallback in place on failure.
+function AllowList.fetch()
+	local ok, decoded = Transport.requestJson("GET", "/studio-stud/allowlist", nil, 15)
+	if not ok then
+		debugLog("allowlist: fetch failed (static fallback):", decoded and decoded.error)
+		return false
+	end
+	local parsed = AllowList.parse(decoded)
+	if not parsed then
+		debugLog("allowlist: bad response (static fallback)")
+		return false
+	end
+	AllowList.sets = parsed.sets
+	AllowList.lists = parsed.lists
+	AllowList.version = parsed.version
+	AllowList.loaded = true
+	local count = 0
+	for _ in pairs(parsed.sets) do
+		count += 1
+	end
+	debugLog("allowlist: loaded version", tostring(parsed.version), "classes", count)
+	return true
+end
+
+-- Ordered property names for an exact class (nil if not loaded / class unknown).
+function AllowList.namesFor(className)
+	if AllowList.loaded then
+		return AllowList.lists[className]
+	end
+	return nil
+end
+
+-- Membership set {propName = readOnly} for an exact class (nil if not loaded / class unknown).
+function AllowList.setFor(className)
+	if AllowList.loaded then
+		return AllowList.sets[className]
+	end
+	return nil
+end
+
 -- == Global API (_G.StudioStud wiring) ==
 
 local GlobalApi = {}
@@ -3775,6 +3844,24 @@ function SelfTest.run()
 	else
 		-- Live handle not available: skip but don't fail
 		print("[Studio Stud SelfTest] SKIP: live handle not available (live tests skipped)")
+	end
+
+	-- == Phase 3: allow-list parse (pure) ==
+	do
+		local parsed = AllowList.parse({
+			version = "1.2.3.4",
+			classes = {
+				Part = {
+					{ name = "Transparency", readOnly = false },
+					{ name = "AbsoluteSize", readOnly = true },
+				},
+			},
+		})
+		SelfTest.assert("allowlist parse version", parsed ~= nil and parsed.version == "1.2.3.4", failures)
+		SelfTest.assert("allowlist parse membership", parsed ~= nil and parsed.sets.Part.Transparency == false, failures)
+		SelfTest.assert("allowlist parse readOnly flag", parsed ~= nil and parsed.sets.Part.AbsoluteSize == true, failures)
+		SelfTest.assert("allowlist parse ordered list", parsed ~= nil and #parsed.lists.Part == 2, failures)
+		SelfTest.assert("allowlist parse rejects bad input", AllowList.parse({}) == nil, failures)
 	end
 
 	-- == Edit-session gate self-tests ==
