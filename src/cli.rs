@@ -842,6 +842,7 @@ fn cmd_serve(
         let _ = cu.ping_fields();
     });
     let registry_conns = ConnRegistry::new();
+    let allowlist = Arc::new(std::sync::RwLock::new(crate::reflection::generate_allowlist()));
     {
         // Background idle-eviction: close per-place connections left unused past
         // the registry's idle timeout so a long session over many places doesn't
@@ -858,6 +859,27 @@ fn cmd_serve(
             }
         });
     }
+    {
+        let refresh_allowlist = Arc::clone(&allowlist);
+        let refresh_root = Some(storage.root.clone());
+        std::thread::spawn(move || {
+            crate::reflection::refresh(&refresh_allowlist, refresh_root.as_deref());
+        });
+    }
+    {
+        let refresh_allowlist = Arc::clone(&allowlist);
+        let refresh_root = Some(storage.root.clone());
+        let refresh_shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+                if refresh_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                crate::reflection::refresh(&refresh_allowlist, refresh_root.as_deref());
+            }
+        });
+    }
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
@@ -869,6 +891,7 @@ fn cmd_serve(
         shutdown: Arc::clone(&shutdown),
         channel_update,
         registry_conns,
+        allowlist,
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
