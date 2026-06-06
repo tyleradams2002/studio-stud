@@ -12,6 +12,7 @@ pub mod policy;
 pub mod project;
 pub mod query;
 pub mod reflection;
+pub mod serve_workers;
 pub mod repomap;
 pub mod setup_core;
 pub mod stage3_cli;

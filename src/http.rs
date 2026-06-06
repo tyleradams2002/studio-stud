@@ -145,6 +145,22 @@ fn is_in_play(state: &Arc<Mutex<DaemonState>>) -> Result<bool> {
         .in_play_session())
 }
 
+/// Test-only delay hook (`STUDIO_STUD_TEST_TICK_DELAY_MS` + `_PLACE`).
+fn apply_test_tick_delay(place_id: &str) {
+    let Ok(ms) = std::env::var("STUDIO_STUD_TEST_TICK_DELAY_MS") else {
+        return;
+    };
+    let Ok(delay_ms) = ms.parse::<u64>() else {
+        return;
+    };
+    let Ok(delay_place) = std::env::var("STUDIO_STUD_TEST_TICK_DELAY_PLACE") else {
+        return;
+    };
+    if delay_place == place_id {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
 pub(crate) fn handle_daemon_request(
     mut request: tiny_http::Request,
     state: Arc<Mutex<DaemonState>>,
@@ -339,6 +355,7 @@ pub(crate) fn handle_daemon_request(
             (tiny_http::Method::Post, "/studio-stud/tick") => {
                 let payload = read_request_json(&mut request)?;
                 let tick = parse_tick_request(&payload)?;
+                apply_test_tick_delay(&tick.place_id);
                 let mut guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;

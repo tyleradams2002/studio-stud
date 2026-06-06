@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -14,7 +14,8 @@ use crate::analyze::cmd_analyze;
 use crate::bench::cmd_bench;
 use crate::capture::{decode_raw_snapshot, materialize_snapshot};
 use crate::conn_registry::ConnRegistry;
-use crate::http::{DaemonState, ServeConfig, daemon_json, handle_daemon_request};
+use crate::http::{DaemonState, ServeConfig, daemon_json};
+use crate::serve_workers::{ServeDispatcher, read_pool_size};
 use crate::live::{
     apply_delta, live_dump, live_services, parse_delta_request, script_source, script_sources,
     verify_drift,
@@ -149,6 +150,9 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+        /// Shared read-pool worker count (default 3; also `STUDIO_STUD_READ_POOL_SIZE`).
+        #[arg(long)]
+        read_pool_size: Option<usize>,
         /// Emit timing spans for daemon operations (also logs per-request latency).
         #[arg(long)]
         profile: bool,
@@ -417,17 +421,26 @@ fn dispatch(cli: Cli) -> Result<()> {
         Some(Commands::Serve {
             host,
             port,
+            read_pool_size,
             profile,
             verbose,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, profile, verbose),
+        }) => cmd_serve(
+            &host,
+            port,
+            read_pool_size,
+            &common,
+            no_update,
+            profile,
+            verbose,
+        ),
         Some(Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, false, false),
+        }) => cmd_serve(&host, port, None, &common, no_update, false, false),
         Some(Commands::Bench {
             raw,
             baseline,
@@ -790,6 +803,7 @@ fn cmd_update(check: bool) -> Result<()> {
 fn cmd_serve(
     host: &str,
     port: u16,
+    read_pool_size_flag: Option<usize>,
     common: &CommonArgs,
     _no_update: bool,
     profile: bool,
@@ -937,44 +951,14 @@ fn cmd_serve(
     );
     println!("Install root: {}", install_root.display());
     println!("Write token issued");
-    const SERVE_WORKERS: usize = 4;
-    let (request_tx, request_rx) = mpsc::channel();
-    let acceptor = thread::spawn(move || {
-        for request in server.incoming_requests() {
-            if request_tx.send(request).is_err() {
-                break;
-            }
-        }
-    });
-    let request_rx = Arc::new(Mutex::new(request_rx));
-    let mut handles = Vec::with_capacity(SERVE_WORKERS);
-    for _ in 0..SERVE_WORKERS {
-        let request_rx = Arc::clone(&request_rx);
-        let state = Arc::clone(&state);
-        let config = config.clone();
-        handles.push(thread::spawn(move || {
-            loop {
-                let request = match request_rx.lock() {
-                    Ok(rx) => match rx.recv() {
-                        Ok(request) => request,
-                        Err(_) => break,
-                    },
-                    Err(_) => break,
-                };
-                if let Err(err) = handle_daemon_request(request, Arc::clone(&state), &config) {
-                    crate::obs::event("http-error", &format!("request failed: {err:#}"));
-                }
-            }
-        }));
+    let pool_size = read_pool_size_flag
+        .filter(|&n| n > 0)
+        .unwrap_or_else(read_pool_size);
+    let dispatcher = ServeDispatcher::start(Arc::clone(&state), config, pool_size);
+    for request in server.incoming_requests() {
+        dispatcher.route(request);
     }
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| anyhow!("daemon worker thread panicked"))?;
-    }
-    acceptor
-        .join()
-        .map_err(|_| anyhow!("daemon acceptor thread panicked"))?;
+    dispatcher.shutdown();
     Ok(())
 }
 
