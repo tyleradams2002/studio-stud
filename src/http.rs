@@ -14,6 +14,7 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
 use crate::capture::{decode_raw_snapshot, inject_sync_metadata, materialize_snapshot};
+use crate::conn_registry::ConnRegistry;
 use crate::live::{apply_delta, live_fingerprint, parse_delta_request, verify_drift};
 use crate::stage3_cli::{run_write, write_outcome_to_json};
 use crate::storage::set_active_place;
@@ -37,6 +38,7 @@ pub struct ServeConfig {
     pub port: u16,
     pub shutdown: Arc<AtomicBool>,
     pub channel_update: Arc<crate::setup_core::channel_update::ChannelUpdateCache>,
+    pub registry_conns: Arc<ConnRegistry>,
 }
 
 fn parse_place_id_query(query: &HashMap<String, String>) -> Option<i64> {
@@ -319,6 +321,7 @@ pub(crate) fn handle_daemon_request(
                     state,
                     storage_root.clone(),
                     project_key,
+                    Arc::clone(&config.registry_conns),
                 )?
             }
             (tiny_http::Method::Post, "/studio-stud/live/delta") => {
@@ -343,6 +346,7 @@ pub(crate) fn handle_daemon_request(
                         project_key,
                         Some(delta.place_id.as_str()),
                         &delta,
+                        &config.registry_conns,
                     )?
                 }
             }
@@ -758,6 +762,7 @@ fn materialize_capture_upload(
     active_request_id: Option<String>,
     storage_root: Option<PathBuf>,
     project_key: &str,
+    registry: Arc<ConnRegistry>,
 ) -> Result<Value> {
     let raw_json = decode_raw_snapshot(bytes)?;
     let mut snapshot: Value = serde_json::from_str(&raw_json)?;
@@ -769,7 +774,7 @@ fn materialize_capture_upload(
         .or(active_request_id);
     inject_sync_metadata(&mut snapshot, sync_id, request_id.as_deref());
     let _span = crate::obs::span("capture", "materialize_snapshot");
-    let result = materialize_snapshot(&snapshot, storage_root.clone(), project_key)?;
+    let result = materialize_snapshot(&snapshot, storage_root.clone(), project_key, &registry)?;
     if let Ok(storage) = crate::storage::Storage::new(storage_root.clone(), project_key)
         && let Some(place_id) = result.get("placeId").and_then(Value::as_str)
     {
@@ -808,6 +813,7 @@ pub(crate) fn complete_daemon_upload(
     state: Arc<Mutex<DaemonState>>,
     storage_root: Option<PathBuf>,
     project_key: &str,
+    registry: Arc<ConnRegistry>,
 ) -> Result<Value> {
     let (upload, active_request_id) = {
         let mut guard = state
@@ -837,6 +843,7 @@ pub(crate) fn complete_daemon_upload(
             active_request_id,
             storage_root,
             &project_key_owned,
+            registry,
         );
         let Ok(mut guard) = state_worker.lock() else {
             return;

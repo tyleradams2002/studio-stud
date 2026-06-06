@@ -1,6 +1,7 @@
 use std::collections::BTreeSet;
 
 use std::path::PathBuf;
+use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 
@@ -8,10 +9,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use serde_json::{Value, json};
 
+use crate::conn_registry::ConnRegistry;
 use crate::capture::{
     canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_instance,
     fingerprint_state, ingest_rows, recompute_critical_presence_from_db, recompute_findings,
-    upsert_instance,
+    service_of, upsert_instance,
 };
 
 use crate::storage::{
@@ -105,99 +107,108 @@ pub(crate) fn apply_delta(
     place: Option<&str>,
 
     request: &DeltaRequest,
+
+    registry: &ConnRegistry,
 ) -> Result<Value> {
     let storage = Storage::new(storage_root, project_key)?;
 
     let place_storage = resolve_place(&storage, place)?;
 
-    let mut conn = open_db(&place_storage.db_path)?;
+    registry.with_writer(&place_storage.db_path, |conn| {
+        let live = read_live_state(conn)?;
 
-    init_schema(&conn)?;
+        let Some(live) = live else {
+            return Ok(json!({ "ok": false, "error": "no_baseline" }));
+        };
 
-    let live = read_live_state(&conn)?;
+        if request.base_revision != live.revision {
+            crate::obs::event(
+                "live-delta",
+                &format!(
+                    "REJECT revision_mismatch place={} base={} live={}",
+                    request.place_id, request.base_revision, live.revision
+                ),
+            );
 
-    let Some(live) = live else {
-        return Ok(json!({ "ok": false, "error": "no_baseline" }));
-    };
+            return Ok(json!({
 
-    if request.base_revision != live.revision {
-        crate::obs::event(
-            "live-delta",
-            &format!(
-                "REJECT revision_mismatch place={} base={} live={}",
-                request.place_id, request.base_revision, live.revision
-            ),
-        );
+                "ok": false,
 
-        return Ok(json!({
+                "error": "revision_mismatch",
 
-            "ok": false,
+                "revision": live.revision,
 
-            "error": "revision_mismatch",
-
-            "revision": live.revision,
-
-        }));
-    }
-
-    let capture_id = live.capture_id.clone();
-
-    let mut acc = parse_fingerprint_hex(&live.fingerprint)?;
-
-    let tx = conn.transaction()?;
-
-    apply_delta_tx(&tx, &capture_id, request, &mut acc)?;
-
-    if !request.removed.is_empty() || !request.upserted.is_empty() {
-        crate::obs::event(
-            "live-delta",
-            &format!(
-                "APPLY place={} rev {}->{} removed={} upserted={}",
-                request.place_id,
-                live.revision,
-                live.revision + 1,
-                request.removed.len(),
-                request.upserted.len()
-            ),
-        );
-        for id in &request.removed {
-            crate::obs::event("live-delta", &format!("removed id={id}"));
+            }));
         }
-    }
 
-    let instance_count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM instances WHERE capture_id = ?",
-        [&capture_id],
-        |row| row.get(0),
-    )?;
+        let capture_id = live.capture_id.clone();
 
-    let new_revision = live.revision + 1;
+        let mut acc = parse_fingerprint_hex(&live.fingerprint)?;
 
-    let updated_at = now_utc();
+        let tx = conn.transaction()?;
 
-    let fingerprint = fingerprint_hex(acc);
+        let delta_started = Instant::now();
+        apply_delta_tx(&tx, &capture_id, request, &mut acc)?;
+        crate::obs::event(
+            "telemetry",
+            &crate::telemetry::format_delta(
+                request.upserted.len(),
+                request.removed.len(),
+                delta_started.elapsed().as_millis(),
+            ),
+        );
 
-    tx.execute(
+        if !request.removed.is_empty() || !request.upserted.is_empty() {
+            crate::obs::event(
+                "live-delta",
+                &format!(
+                    "APPLY place={} rev {}->{} removed={} upserted={}",
+                    request.place_id,
+                    live.revision,
+                    live.revision + 1,
+                    request.removed.len(),
+                    request.upserted.len()
+                ),
+            );
+            for id in &request.removed {
+                crate::obs::event("live-delta", &format!("removed id={id}"));
+            }
+        }
 
-        "UPDATE live_state SET revision = ?, updated_at_utc = ?, fingerprint = ?, instance_count = ? WHERE id = 1",
+        let instance_count: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM instances WHERE capture_id = ?",
+            [&capture_id],
+            |row| row.get(0),
+        )?;
 
-        params![new_revision, updated_at, fingerprint, instance_count],
+        let new_revision = live.revision + 1;
 
-    )?;
+        let updated_at = now_utc();
 
-    tx.commit()?;
+        let fingerprint = fingerprint_hex(acc);
 
-    Ok(json!({
+        tx.execute(
 
-        "ok": true,
+            "UPDATE live_state SET revision = ?, updated_at_utc = ?, fingerprint = ?, instance_count = ? WHERE id = 1",
 
-        "revision": new_revision,
+            params![new_revision, updated_at, fingerprint, instance_count],
 
-        "fingerprint": fingerprint,
+        )?;
 
-        "instanceCount": instance_count,
+        tx.commit()?;
 
-    }))
+        Ok(json!({
+
+            "ok": true,
+
+            "revision": new_revision,
+
+            "fingerprint": fingerprint,
+
+            "instanceCount": instance_count,
+
+        }))
+    })
 }
 
 fn apply_delta_tx(
@@ -210,9 +221,20 @@ fn apply_delta_tx(
     acc: &mut [u8; 32],
 ) -> Result<()> {
     for removed_id in &request.removed {
+        let old_path: Option<String> = tx
+            .query_row(
+                "SELECT path FROM instances WHERE capture_id = ? AND instance_id = ?",
+                params![capture_id, removed_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
         if let Ok(digest) = fingerprint_instance(tx, capture_id, removed_id) {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
+            }
+            if let Some(ref path) = old_path {
+                xor_service(tx, capture_id, service_of(path), &digest, -1)?;
             }
         }
 
@@ -236,6 +258,16 @@ fn apply_delta_tx(
 
         let new_class = str_field(inst, "className");
 
+        let new_path = str_field(inst, "path");
+
+        let old_path: Option<String> = tx
+            .query_row(
+                "SELECT path FROM instances WHERE capture_id = ? AND instance_id = ?",
+                params![capture_id, id],
+                |row| row.get(0),
+            )
+            .optional()?;
+
         let old_class: Option<String> = tx
             .query_row(
                 "SELECT class_name FROM instances WHERE capture_id = ? AND instance_id = ?",
@@ -247,6 +279,9 @@ fn apply_delta_tx(
         if let Ok(digest) = fingerprint_instance(tx, capture_id, &id) {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
+            }
+            if let Some(ref path) = old_path {
+                xor_service_fp(tx, capture_id, service_of(path), &digest)?;
             }
         }
 
@@ -267,6 +302,22 @@ fn apply_delta_tx(
         for (i, byte) in digest.iter().enumerate() {
             acc[i] ^= byte;
         }
+
+        xor_service_fp(tx, capture_id, service_of(&new_path), &digest)?;
+
+        match old_path.as_deref() {
+            None => {
+                xor_service_count(tx, capture_id, service_of(&new_path), 1)?;
+            }
+            Some(old) => {
+                let old_svc = service_of(old);
+                let new_svc = service_of(&new_path);
+                if old_svc != new_svc {
+                    xor_service_count(tx, capture_id, old_svc, -1)?;
+                    xor_service_count(tx, capture_id, new_svc, 1)?;
+                }
+            }
+        }
     }
 
     recompute_critical_presence_from_db(tx, capture_id)?;
@@ -274,6 +325,91 @@ fn apply_delta_tx(
     recompute_findings(tx, capture_id)?;
 
     Ok(())
+}
+
+fn xor_service_fp(
+    tx: &Transaction<'_>,
+    capture_id: &str,
+    service: &str,
+    digest: &[u8; 32],
+) -> Result<()> {
+    let row: Option<String> = tx
+        .query_row(
+            "SELECT fingerprint FROM service_fingerprints WHERE capture_id = ? AND service_name = ?",
+            params![capture_id, service],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(fp_hex) = row else {
+        tx.prepare_cached(
+            "INSERT INTO service_fingerprints (capture_id, service_name, fingerprint, instance_count) VALUES (?, ?, ?, ?)",
+        )?
+        .execute(params![capture_id, service, hex_bytes(digest), 0i64])?;
+        return Ok(());
+    };
+
+    let mut acc = parse_fingerprint_hex(&fp_hex)?;
+    for (i, byte) in digest.iter().enumerate() {
+        acc[i] ^= byte;
+    }
+
+    tx.prepare_cached(
+        "UPDATE service_fingerprints SET fingerprint = ? WHERE capture_id = ? AND service_name = ?",
+    )?
+    .execute(params![hex_bytes(&acc), capture_id, service])?;
+
+    Ok(())
+}
+
+fn xor_service_count(
+    tx: &Transaction<'_>,
+    capture_id: &str,
+    service: &str,
+    count_delta: i64,
+) -> Result<()> {
+    let row: Option<i64> = tx
+        .query_row(
+            "SELECT instance_count FROM service_fingerprints WHERE capture_id = ? AND service_name = ?",
+            params![capture_id, service],
+            |row| row.get(0),
+        )
+        .optional()?;
+
+    let Some(count) = row else {
+        if count_delta > 0 {
+            tx.prepare_cached(
+                "INSERT INTO service_fingerprints (capture_id, service_name, fingerprint, instance_count) VALUES (?, ?, ?, ?)",
+            )?
+            .execute(params![capture_id, service, hex_bytes(&[0u8; 32]), count_delta])?;
+        }
+        return Ok(());
+    };
+
+    let next = count + count_delta;
+    if next <= 0 {
+        tx.prepare_cached(
+            "DELETE FROM service_fingerprints WHERE capture_id = ? AND service_name = ?",
+        )?
+        .execute(params![capture_id, service])?;
+    } else {
+        tx.prepare_cached(
+            "UPDATE service_fingerprints SET instance_count = ? WHERE capture_id = ? AND service_name = ?",
+        )?
+        .execute(params![next, capture_id, service])?;
+    }
+    Ok(())
+}
+
+fn xor_service(
+    tx: &Transaction<'_>,
+    capture_id: &str,
+    service: &str,
+    digest: &[u8; 32],
+    count_delta: i64,
+) -> Result<()> {
+    xor_service_fp(tx, capture_id, service, digest)?;
+    xor_service_count(tx, capture_id, service, count_delta)
 }
 
 fn adjust_class_count(
@@ -545,6 +681,55 @@ pub(crate) fn live_dump(
 
         "fingerprint": live.fingerprint,
 
+    }))
+}
+
+pub(crate) fn live_services(
+    storage_root: Option<PathBuf>,
+    project_key: &str,
+    place: Option<&str>,
+) -> Result<Value> {
+    let storage = Storage::new(storage_root, project_key)?;
+    let place_storage = resolve_place(&storage, place)?;
+    let conn = open_db(&place_storage.db_path)?;
+    init_schema(&conn)?;
+
+    let live = current_state(&conn)?;
+    let capture_id = live.capture_id.clone();
+    let global = live.fingerprint.clone();
+
+    let mut stmt = conn.prepare(
+        "SELECT service_name, fingerprint, instance_count FROM service_fingerprints WHERE capture_id = ? ORDER BY service_name",
+    )?;
+    let rows = stmt.query_map([&capture_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+
+    let mut services = serde_json::Map::new();
+    let mut xor_acc = [0u8; 32];
+    for row in rows {
+        let (name, fp_hex, count) = row?;
+        for (i, chunk) in fp_hex.as_bytes().chunks(2).enumerate() {
+            if i < 32 {
+                let s = std::str::from_utf8(chunk)?;
+                xor_acc[i] ^= u8::from_str_radix(s, 16)?;
+            }
+        }
+        services.insert(
+            name,
+            json!({ "fingerprint": fp_hex, "count": count }),
+        );
+    }
+
+    Ok(json!({
+        "ok": true,
+        "global": global,
+        "services": services,
+        "xorOfServices": hex_bytes(&xor_acc),
     }))
 }
 

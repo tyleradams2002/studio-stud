@@ -105,6 +105,77 @@ fn structural_convergence_without_verify() {
 }
 
 #[test]
+fn ingest_baseline_is_deterministic_and_complete() {
+    let storage = temp_storage("ingest_det");
+    let out = run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    assert_eq!(out.get("ok").and_then(Value::as_bool), Some(true));
+    let count = out.get("instances").and_then(Value::as_i64).expect("instances");
+    assert!(count > 0);
+    let fp1 = out
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    assert!(fp1.is_some(), "ingest must surface fingerprint (Step 0)");
+
+    let out2 = run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let fp2 = out2
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    assert_eq!(fp1, fp2, "fingerprint must be stable across identical ingests");
+}
+
+#[test]
+fn service_fingerprints_xor_to_global() {
+    let storage = temp_storage("svc_fp");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let dump = run_cli(&["live-services", "999001"], &storage);
+    let global = dump.get("global").and_then(Value::as_str).unwrap();
+    let xored = dump.get("xorOfServices").and_then(Value::as_str).unwrap();
+    assert_eq!(
+        global, xored,
+        "XOR of per-service fingerprints must equal the global fingerprint"
+    );
+
+    run_cli(
+        &[
+            "live-delta",
+            "--raw",
+            fixture("delta_struct.json").to_str().unwrap(),
+            "--place",
+            "999001",
+        ],
+        &storage,
+    );
+    let dump2 = run_cli(&["live-services", "999001"], &storage);
+    assert_eq!(
+        dump2.get("global").and_then(Value::as_str),
+        dump2.get("xorOfServices").and_then(Value::as_str)
+    );
+}
+
+#[test]
 fn revision_guard_rejects_stale_base_revision() {
     let storage = temp_storage("revision");
     run_cli(
