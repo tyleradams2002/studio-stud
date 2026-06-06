@@ -5,6 +5,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use super::channels::Channel;
+use super::crypto::dpapi_protect;
 use super::install::default_install_root;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -118,6 +120,22 @@ pub fn populate_install_fields(
     cfg.versions.daemon = daemon_version.to_string();
     cfg.versions.plugin = plugin_version.to_string();
     cfg.versions.protocol = crate::util::PROTOCOL_VERSION.to_string();
+}
+
+/// Store the channel decryption password (DPAPI-protected) so self-update can decrypt the
+/// bundle later. No-op for the unencrypted `release` channel or when no password is supplied
+/// (so reinstall/repair without a password preserves any previously stored key).
+pub fn store_channel_key_if_encrypted(
+    cfg: &mut StudioStudConfig,
+    channel: &str,
+    password: Option<&str>,
+) -> Result<()> {
+    if let Some(pw) = password.filter(|p| !p.is_empty()) {
+        if Channel::from_str(channel).is_encrypted() {
+            cfg.channel_key_dpapi = Some(dpapi_protect(pw.as_bytes())?);
+        }
+    }
+    Ok(())
 }
 
 /// Infer global install root from a daemon running at `{installRoot}/bin/studio-stud.exe`.
@@ -363,6 +381,34 @@ mod tests {
         assert!(!cfg.versions.daemon.is_empty());
         assert!(!cfg.versions.plugin.is_empty());
         assert!(!cfg.versions.protocol.is_empty());
+    }
+
+    #[test]
+    fn store_channel_key_persists_for_encrypted_channel() {
+        let mut cfg = StudioStudConfig::default();
+        store_channel_key_if_encrypted(&mut cfg, "dev", Some("hunter2")).unwrap();
+        let stored = cfg
+            .channel_key_dpapi
+            .expect("key should be stored for an encrypted channel");
+        let plain = crate::setup_core::crypto::dpapi_unprotect(&stored).unwrap();
+        assert_eq!(plain, b"hunter2");
+    }
+
+    #[test]
+    fn store_channel_key_skips_release_channel() {
+        let mut cfg = StudioStudConfig::default();
+        store_channel_key_if_encrypted(&mut cfg, "release", Some("hunter2")).unwrap();
+        assert!(cfg.channel_key_dpapi.is_none());
+    }
+
+    #[test]
+    fn store_channel_key_preserves_existing_when_no_password() {
+        let mut cfg = StudioStudConfig {
+            channel_key_dpapi: Some("existing".into()),
+            ..Default::default()
+        };
+        store_channel_key_if_encrypted(&mut cfg, "dev", None).unwrap();
+        assert_eq!(cfg.channel_key_dpapi.as_deref(), Some("existing"));
     }
 
     #[test]
