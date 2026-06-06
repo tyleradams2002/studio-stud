@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use rbx_reflection::{
-    ClassDescriptor, PropertyDescriptor, PropertyKind, PropertySerialization, PropertyTag,
-    Scriptability,
+    ClassDescriptor, DataType, PropertyDescriptor, PropertyKind, PropertySerialization,
+    PropertyTag, Scriptability,
 };
 use rbx_reflection_database::get;
 
@@ -16,6 +16,11 @@ pub(crate) struct PropEntry {
     pub name: String,
     #[serde(rename = "readOnly")]
     pub read_only: bool,
+    /// Roblox type, e.g. "float", "CFrame", "Color3", "Enum.Material", "Instance".
+    /// Empty when unknown (e.g. an older cache entry before this field existed).
+    /// Reserved for the write path (value validation/coercion) + AI reasoning.
+    #[serde(rename = "valueType", default)]
+    pub value_type: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -54,6 +59,16 @@ struct RawMember {
     serialization: Option<RawSerialization>,
     #[serde(rename = "Tags", default)]
     tags: Vec<serde_json::Value>,
+    #[serde(rename = "ValueType")]
+    value_type: Option<RawValueType>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawValueType {
+    #[serde(rename = "Category")]
+    category: String,
+    #[serde(rename = "Name")]
+    name: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -124,6 +139,17 @@ fn read_only(p: &PropertyDescriptor) -> bool {
     matches!(p.scriptability, Scriptability::Read) || p.tags.contains(&PropertyTag::ReadOnly)
 }
 
+/// Type string for the bundled (rbx_reflection) source. Naming follows rbx_types' Debug
+/// (e.g. "Float32", "CFrame"); slightly different from the raw dump's lowercase ("float"),
+/// but the bundled path is only the offline fallback.
+fn bundled_value_type(p: &PropertyDescriptor) -> String {
+    match &p.data_type {
+        DataType::Value(vt) => format!("{vt:?}"),
+        DataType::Enum(name) => format!("Enum.{name}"),
+        _ => String::new(),
+    }
+}
+
 fn member_tag(m: &RawMember, name: &str) -> bool {
     m.tags
         .iter()
@@ -145,6 +171,16 @@ fn raw_read_only(m: &RawMember) -> bool {
     member_tag(m, "ReadOnly") || !security_writes_none(&m.security)
 }
 
+/// Type string from the raw dump's ValueType {Category, Name}, e.g. "float", "CFrame",
+/// "Enum.Material", "Instance". Empty when the member has no ValueType.
+fn raw_value_type(m: &RawMember) -> String {
+    match &m.value_type {
+        Some(vt) if vt.category == "Enum" => format!("Enum.{}", vt.name),
+        Some(vt) => vt.name.clone(),
+        None => String::new(),
+    }
+}
+
 fn curated_for(class: &ClassDescriptor) -> Vec<PropEntry> {
     let database = db();
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -160,6 +196,7 @@ fn curated_for(class: &ClassDescriptor) -> Vec<PropEntry> {
                 out.push(PropEntry {
                     name: name.to_string(),
                     read_only: read_only(prop),
+                    value_type: bundled_value_type(prop),
                 });
             } else {
                 // still mark as seen so a deprecated ancestor copy doesn't get re-added
@@ -208,6 +245,7 @@ pub(crate) fn generate_allowlist_from_dump(json: &str, version: &str) -> Result<
                     out.push(PropEntry {
                         name: m.name.clone(),
                         read_only: raw_read_only(m),
+                        value_type: raw_value_type(m),
                     });
                 }
             }
@@ -339,6 +377,7 @@ mod tests {
         // own, writable, serializing
         let t = by_name("Transparency").expect("Transparency curated");
         assert!(!t.read_only, "Transparency is writable");
+        assert!(!t.value_type.is_empty(), "bundled value_type populated");
         assert!(by_name("Size").is_some(), "Size curated");
 
         // inherited from Instance
@@ -365,7 +404,11 @@ mod tests {
             ]},
             {"Name":"BasePart","Superclass":"Instance","Members":[
               {"MemberType":"Property","Name":"Transparency",
-               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true}},
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true},
+               "ValueType":{"Category":"Primitive","Name":"float"}},
+              {"MemberType":"Property","Name":"Material",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true},
+               "ValueType":{"Category":"Enum","Name":"Material"}},
               {"MemberType":"Property","Name":"AssemblyMass",
                "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":false,"CanSave":false},
                "Tags":["ReadOnly"]},
@@ -396,6 +439,8 @@ mod tests {
         assert!(by("LegacyThing").is_none(), "Deprecated excluded");
         assert!(by("SecretProp").is_none(), "non-None Read security excluded");
         assert!(by("Resize").is_none(), "functions excluded");
+        assert_eq!(by("Transparency").unwrap().value_type, "float", "primitive value_type from dump");
+        assert_eq!(by("Material").unwrap().value_type, "Enum.Material", "enum value_type prefixed");
     }
 
     #[test]
