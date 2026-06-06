@@ -122,11 +122,15 @@ impl WriterLaneRegistry {
         (tx, handle)
     }
 
-    fn dispatch(&mut self, key: String, request: tiny_http::Request) {
-        if !self.lanes.contains_key(&key) {
+    /// Register/refresh the lane for `key` and return a CLONE of its sender. The caller sends on the
+    /// clone AFTER releasing the registry lock, so a full bounded lane channel can never stall the
+    /// registry (cross-place dispatch + eviction stay live). The registry keeps its own sender, so
+    /// an outstanding clone does not keep the lane alive past eviction (the lane drains then exits).
+    fn acquire_sender(&mut self, key: &str) -> SyncSender<tiny_http::Request> {
+        if !self.lanes.contains_key(key) {
             let (sender, thread) = self.spawn_lane();
             self.lanes.insert(
-                key.clone(),
+                key.to_string(),
                 WriterLane {
                     sender,
                     thread,
@@ -135,13 +139,10 @@ impl WriterLaneRegistry {
             );
             write_test_lane_stats(self.lanes.len());
         }
-        self.touch_lru(&key);
-        if let Some(lane) = self.lanes.get_mut(&key) {
-            lane.last_used = Instant::now();
-            if lane.sender.send(request).is_err() {
-                self.remove_lane(&key);
-            }
-        }
+        self.touch_lru(key);
+        let lane = self.lanes.get_mut(key).expect("lane present after insert");
+        lane.last_used = Instant::now();
+        lane.sender.clone()
     }
 
     fn remove_lane(&mut self, key: &str) {
@@ -284,8 +285,17 @@ impl ServeDispatcher {
 
         if routes_to_writer_lane(&method, &path) {
             let key = writer_lane_key(&query, &self.default_project_key);
-            if let Ok(mut reg) = self.writer_registry.lock() {
-                reg.dispatch(key, request);
+            // Take a sender clone under the lock, then RELEASE the lock before sending: a full
+            // bounded lane buffer must not stall cross-place dispatch or eviction.
+            let sender = match self.writer_registry.lock() {
+                Ok(mut reg) => reg.acquire_sender(&key),
+                Err(_) => return,
+            };
+            if sender.send(request).is_err() {
+                // Lane thread is gone — reap the dead lane.
+                if let Ok(mut reg) = self.writer_registry.lock() {
+                    reg.remove_lane(&key);
+                }
             }
         } else if self.pool_tx.send(request).is_err() {
             // pool shut down
