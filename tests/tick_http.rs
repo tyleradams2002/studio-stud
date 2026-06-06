@@ -323,7 +323,7 @@ fn tick_bulk_round_trip() {
     let port = serve.port;
     let baseline = fs::read_to_string(fixture("baseline.json")).expect("read baseline");
 
-    let start_body = r#"{"protocolVersion":1,"place":{"placeId":"999001","placeKey":"LiveTest"}}"#;
+    let start_body = r#"{"protocolVersion":2,"place":{"placeId":"999001","placeKey":"LiveTest"}}"#;
     let (status, response) = http_request(
         "POST",
         port,

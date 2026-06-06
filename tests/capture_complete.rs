@@ -1,12 +1,15 @@
+// Legacy capture/* HTTP flow removed at protocol v2; baseline commit is via /tick/bulk + /tick.
+// This file keeps a smoke test that the tick bulk path materializes a fixture capture.
+
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -101,95 +104,91 @@ fn parse_json(body: &str) -> Value {
     serde_json::from_str(body.trim()).expect("response json")
 }
 
-fn upload_fixture_capture(port: u16) -> String {
-    let fixture = fs::read_to_string(repo_root().join("tests/fixtures/baseline_capture.json"))
-        .expect("read baseline_capture.json");
-    let start_body = r#"{"protocolVersion":1,"place":{"placeId":"100000000000001","placeKey":"Place100000000000001"}}"#;
-    let (status, response) = http_request(
-        "POST",
-        port,
-        "/studio-stud/capture/start",
-        Some(start_body),
+fn run_cli(args: &[&str], storage_root: &Path) -> Value {
+    let exe = env!("CARGO_BIN_EXE_studio-stud");
+    let output = Command::new(exe)
+        .args(args)
+        .arg("--storage-root")
+        .arg(storage_root)
+        .output()
+        .expect("studio-stud should run");
+    assert!(
+        output.status.success(),
+        "command failed: {:?}\nstderr={}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(status, 200, "capture/start failed: {response}");
-    let start_json = parse_json(&response);
-    let sync_id = start_json
-        .get("syncId")
-        .and_then(Value::as_str)
-        .expect("syncId in start response")
-        .to_string();
-
-    let path = format!("/studio-stud/capture/body?syncId={sync_id}");
-    let (status, response) = http_request("POST", port, &path, Some(&fixture));
-    assert_eq!(status, 200, "capture/body failed: {response}");
-    sync_id
+    serde_json::from_slice(&output.stdout).expect("stdout json")
 }
 
 #[test]
-fn capture_complete_returns_finalizing_then_status_done() {
-    let storage = temp_storage("async_complete");
+fn tick_bulk_baseline_materializes_fixture_capture() {
+    let storage = temp_storage("tick_baseline");
     let serve = start_serve(&storage);
     let port = serve.port;
-    let sync_id = upload_fixture_capture(port);
+    let fixture =
+        fs::read_to_string(repo_root().join("tests/fixtures/baseline_capture.json")).expect("read");
 
-    let complete_body = format!(r#"{{"syncId":"{sync_id}"}}"#);
-    let started = Instant::now();
+    let start_body = r#"{"protocolVersion":2,"place":{"placeId":"100000000000001","placeKey":"Place100000000000001"}}"#;
     let (status, response) = http_request(
         "POST",
         port,
-        "/studio-stud/capture/complete",
+        "/studio-stud/tick/bulk/start?placeId=100000000000001",
+        Some(start_body),
+    );
+    assert_eq!(status, 200, "bulk start failed: {response}");
+    let sync_id = parse_json(&response)
+        .get("syncId")
+        .and_then(Value::as_str)
+        .expect("syncId")
+        .to_string();
+
+    let path = format!(
+        "/studio-stud/tick/bulk/chunk?placeId=100000000000001&syncId={sync_id}&index=0"
+    );
+    let (status, response) = http_request("POST", port, &path, Some(&fixture));
+    assert_eq!(status, 200, "bulk chunk failed: {response}");
+
+    let complete_body = format!(r#"{{"syncId":"{sync_id}","expectedChunks":1}}"#);
+    let (status, response) = http_request(
+        "POST",
+        port,
+        "/studio-stud/tick/bulk/complete?placeId=100000000000001",
         Some(&complete_body),
     );
-    let ack_ms = started.elapsed().as_millis();
-    assert_eq!(status, 200, "capture/complete failed: {response}");
+    assert_eq!(status, 200, "bulk complete failed: {response}");
+
+    let tick_body = json!({
+        "placeId": "100000000000001",
+        "sessionMode": "edit",
+        "baseRevision": 0,
+        "serviceFingerprints": {},
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": sync_id
+    });
+    let (status, response) = http_request(
+        "POST",
+        port,
+        "/studio-stud/tick?placeId=100000000000001",
+        Some(&tick_body.to_string()),
+    );
+    assert_eq!(status, 200, "tick commit failed: {response}");
+    let committed = parse_json(&response);
+    assert_eq!(committed.get("ok").and_then(Value::as_bool), Some(true));
     assert!(
-        ack_ms < 3000,
-        "capture/complete should ack quickly, took {ack_ms} ms"
-    );
-    let ack = parse_json(&response);
-    assert_eq!(ack.get("ok").and_then(Value::as_bool), Some(true));
-    assert_eq!(
-        ack.get("status").and_then(Value::as_str),
-        Some("finalizing"),
-        "expected async ack: {ack}"
-    );
-    assert_eq!(
-        ack.get("syncId").and_then(Value::as_str),
-        Some(sync_id.as_str())
+        committed
+            .get("instanceCount")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            > 0
     );
 
-    let status_path = format!("/studio-stud/capture/status?syncId={sync_id}");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let mut saw_finalizing = false;
-    let mut final_value = None;
-    while Instant::now() < deadline {
-        let (status, response) = http_request("GET", port, &status_path, None);
-        assert_eq!(status, 200);
-        let value = parse_json(&response);
-        match value.get("status").and_then(Value::as_str) {
-            Some("finalizing") => saw_finalizing = true,
-            Some("done") | Some("completed") => {
-                assert_eq!(value.get("ok").and_then(Value::as_bool), Some(true));
-                assert!(value.get("result").is_some(), "done payload needs result: {value}");
-                final_value = Some(value);
-                break;
-            }
-            Some("error") => panic!("finalize error: {value}"),
-            _ => {}
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let done = final_value.expect("timed out waiting for capture finalize");
-    assert!(
-        saw_finalizing
-            || ack.get("status").and_then(Value::as_str) == Some("finalizing"),
-        "expected finalizing status at least once"
-    );
-    assert!(
-        done.get("result")
-            .and_then(|r| r.get("captureId"))
+    let dump = run_cli(&["live-dump", "100000000000001"], &storage);
+    assert_eq!(
+        dump.get("meta")
+            .and_then(|m| m.get("captureId"))
             .and_then(Value::as_str)
             .is_some(),
-        "materialized capture should include captureId: {done}"
+        true
     );
 }

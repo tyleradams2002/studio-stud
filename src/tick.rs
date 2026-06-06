@@ -181,6 +181,12 @@ pub(crate) fn handle_tick(
     let place_storage = resolve_place(&storage, place)?;
 
     if ops_empty(tick) && tick.bulk_ref.is_none() {
+        if ignore_ops {
+            return Ok(tick_response(0, 0, vec![], pending_request));
+        }
+        if !place_storage.db_path.exists() {
+            return Ok(json!({ "ok": false, "error": "no_baseline" }));
+        }
         let quick = registry.with_reader(&place_storage.db_path, |conn| {
             let Some(live) = read_live_state(conn)? else {
                 return Ok(json!({ "ok": false, "error": "no_baseline" }));

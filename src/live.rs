@@ -11,8 +11,8 @@ use serde_json::{Value, json};
 
 use crate::conn_registry::ConnRegistry;
 use crate::capture::{
-    canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_instance,
-    fingerprint_state, fp_digest_from_entry, ingest_rows, parse_fp_hex, read_stored_fp,
+    canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_state,
+    fp_digest_from_entry, ingest_rows, parse_fp_hex, read_stored_fp,
     recompute_critical_presence_from_db, recompute_findings, service_of, upsert_instance,
 };
 
@@ -217,9 +217,7 @@ pub(crate) fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Some(digest) = read_stored_fp(tx, capture_id, removed_id)?
-            .or_else(|| fingerprint_instance(tx, capture_id, removed_id).ok())
-        {
+        if let Some(digest) = read_stored_fp(tx, capture_id, removed_id)? {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -266,9 +264,7 @@ pub(crate) fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Some(digest) = read_stored_fp(tx, capture_id, &id)?
-            .or_else(|| fingerprint_instance(tx, capture_id, &id).ok())
-        {
+        if let Some(digest) = read_stored_fp(tx, capture_id, &id)? {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -813,6 +809,7 @@ pub(crate) fn script_sources(
     }))
 }
 
+#[allow(dead_code)]
 pub(crate) fn live_fingerprint(
     storage_root: Option<PathBuf>,
 

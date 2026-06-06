@@ -14,8 +14,8 @@ pub(crate) const DEFAULT_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_PORT: u16 = 31878;
 pub(crate) const MAX_CHUNK_BYTES: usize = 900_000;
 pub(crate) const SCHEMA_VERSION: i64 = 2;
-pub(crate) const PROTOCOL_VERSION: i64 = 1;
-pub(crate) const MIN_PLUGIN_PROTOCOL_VERSION: i64 = 1;
+pub(crate) const PROTOCOL_VERSION: i64 = 2;
+pub(crate) const MIN_PLUGIN_PROTOCOL_VERSION: i64 = 2;
 pub(crate) const KEYWORDS: &[&str] = &[
     "Spawn",
     "Prompt",
