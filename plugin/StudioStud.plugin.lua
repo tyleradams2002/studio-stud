@@ -48,7 +48,7 @@ end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.13"
+local PLUGIN_VERSION = "0.4.14"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 1
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -2195,10 +2195,12 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	-- Pure: classify a Changed property for an instance. Returns "name" | "dirty" | "gap".
+	-- NOTE: curatedSet maps propName -> readOnly(boolean); a writable curated prop is `false`,
+	-- so membership MUST be tested with `~= nil`, not truthiness (else writable props are missed).
 	function Live.classifyChangedProp(prop, curatedSet)
 		if prop == "Name" then
 			return "name"
-		elseif curatedSet[prop] then
+		elseif curatedSet[prop] ~= nil then
 			return "dirty"
 		else
 			return "gap"
