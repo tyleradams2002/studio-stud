@@ -1647,6 +1647,12 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	function Capture.getPropertyNames(inst)
+		-- Phase 3: prefer the daemon allow-list (per exact ClassName, includes inherited props).
+		local fromAllow = AllowList.namesFor(inst.ClassName)
+		if fromAllow then
+			return fromAllow
+		end
+		-- Fallback: static CLASS_PROPERTIES (IsA-based accumulation).
 		local names = {}
 		if inst:IsA("BasePart") then
 			for _, name in ipairs(CLASS_PROPERTIES.BasePart) do
@@ -1661,6 +1667,19 @@ function CapturePanel.build(parent, ctx)
 			end
 		end
 		return names
+	end
+
+	-- Membership set for the inst's class (allow-list when loaded, else built from the static names).
+	function Capture.curatedSet(inst)
+		local fromAllow = AllowList.setFor(inst.ClassName)
+		if fromAllow then
+			return fromAllow
+		end
+		local set = {}
+		for _, name in ipairs(Capture.getPropertyNames(inst)) do
+			set[name] = false
+		end
+		return set
 	end
 
 	function Capture.readProperties(inst)
@@ -3029,6 +3048,7 @@ function CapturePanel.build(parent, ctx)
 		onConnectRequested = startupConnectAndCapture,
 		destroy = destroy,
 		live = Live, -- exposed for self-tests and _G.StudioStud.Live
+		capture = Capture, -- Phase 3: exposed for self-tests
 	}
 end
 
@@ -3811,6 +3831,44 @@ function SelfTest.run()
 	-- Live sub-table state after teardown
 	local captureHandleLive = Registry.getHandle("capture")
 	local live = captureHandleLive and captureHandleLive.live
+
+	-- == Phase 3: getPropertyNames + curatedSet routing ==
+	do
+		local captureExports = Registry.getHandle("capture")
+		local capture = captureExports and captureExports.capture
+		if capture then
+			local part = Instance.new("Part")
+			-- not loaded -> static fallback includes CFrame (BasePart)
+			AllowList.loaded = false
+			local fallbackNames = capture.getPropertyNames(part)
+			local hasCFrame = false
+			for _, n in ipairs(fallbackNames) do
+				if n == "CFrame" then
+					hasCFrame = true
+				end
+			end
+			SelfTest.assert("getPropertyNames fallback includes CFrame", hasCFrame, failures)
+			-- loaded -> uses the allow-list
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency" } }
+			AllowList.sets = { Part = { Transparency = false } }
+			local allowNames = capture.getPropertyNames(part)
+			SelfTest.assert(
+				"getPropertyNames uses allow-list when loaded",
+				#allowNames == 1 and allowNames[1] == "Transparency",
+				failures
+			)
+			SelfTest.assert("curatedSet membership from allow-list", capture.curatedSet(part).Transparency == false, failures)
+			-- restore
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available")
+		end
+	end
+
 	if live then
 		live.teardown()
 		SelfTest.assert("live.teardown clears liveRunning", not live.liveRunning, failures)
