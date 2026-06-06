@@ -93,6 +93,29 @@ pub(crate) fn generate_allowlist() -> AllowList {
     }
 }
 
+/// Fetch a dump for a target version; on ANY error, fall back to the bundled allow-list.
+/// `fetch` returns the raw API-dump JSON bytes for a version, or an error.
+pub(crate) fn generate_allowlist_for<F>(fetch: F) -> AllowList
+where
+    F: FnOnce(&str) -> anyhow::Result<String>,
+{
+    match fetch(&current_version()) {
+        Ok(_dump_json) => {
+            // TODO(verify URL/parse): parse the fetched dump into a ReflectionDatabase and
+            // generate from it. Until verified, fall through to bundled.
+            generate_allowlist()
+        }
+        Err(_) => generate_allowlist(),
+    }
+}
+
+#[allow(dead_code)]
+fn fetch_dump(_target_version: &str) -> anyhow::Result<String> {
+    // Model on src/update.rs::agent(); resolve the Roblox API-dump URL for the version.
+    // Left unwired until the URL resolution is verified against a real Studio version.
+    anyhow::bail!("runtime reflection fetch not yet enabled")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +144,13 @@ mod tests {
         assert!(needs_update(None, "0.659.0.1")); // fresh db
         assert!(!needs_update(Some("0.659.0.1"), "0.659.0.1")); // match
         assert!(needs_update(Some("0.658.0.9"), "0.659.0.1")); // differs
+    }
+
+    #[test]
+    fn fetch_falls_back_to_bundled_on_error() {
+        // A fetcher that always fails must yield the bundled version, never panic.
+        let al = generate_allowlist_for(|_url| Err(anyhow::anyhow!("network down")));
+        assert_eq!(al.version, current_version());
+        assert!(al.classes.contains_key("BasePart"));
     }
 }
