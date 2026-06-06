@@ -18,6 +18,7 @@ pub mod stage3_cli;
 pub mod stage4_cli;
 pub mod storage;
 pub mod telemetry;
+pub mod tick;
 pub mod update;
 pub mod util;
 pub mod write;

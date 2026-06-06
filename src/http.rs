@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 use crate::capture::{decode_raw_snapshot, inject_sync_metadata, materialize_snapshot};
 use crate::conn_registry::ConnRegistry;
 use crate::live::{apply_delta, live_fingerprint, parse_delta_request, verify_drift};
+use crate::tick::{handle_tick, parse_tick_request};
 use crate::stage3_cli::{run_write, write_outcome_to_json};
 use crate::storage::set_active_place;
 use crate::util::{
@@ -79,6 +80,8 @@ pub(crate) struct DaemonState {
     pending_requests: VecDeque<Value>,
     active_request_id: Option<String>,
     uploads: HashMap<String, UploadState>,
+    tick_uploads: HashMap<String, UploadState>,
+    staged_tick_bulks: HashMap<String, Vec<u8>>,
     verify_uploads: HashMap<String, UploadState>,
     completions: HashMap<String, Value>,
     finalize_by_sync: HashMap<String, CaptureFinalizeState>,
@@ -332,6 +335,113 @@ pub(crate) fn handle_daemon_request(
                     project_key,
                     Arc::clone(&config.registry_conns),
                 )?
+            }
+            (tiny_http::Method::Post, "/studio-stud/tick") => {
+                let payload = read_request_json(&mut request)?;
+                let tick = parse_tick_request(&payload)?;
+                let mut guard = state
+                    .lock()
+                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                guard.record_session_mode(&tick.session_mode, now_utc());
+                let ignore_ops = guard.in_play_session();
+                let pending_request = if ignore_ops {
+                    Value::Null
+                } else {
+                    guard.pending_requests.pop_front().unwrap_or(Value::Null)
+                };
+                let bulk_ref = tick.bulk_ref.clone();
+                let staged_bulk = bulk_ref
+                    .as_ref()
+                    .and_then(|id| guard.staged_tick_bulks.get(id).cloned());
+                drop(guard);
+                let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
+                set_active_place(&storage, &tick.place_id);
+                let result = handle_tick(
+                    storage_root.clone(),
+                    project_key,
+                    Some(tick.place_id.as_str()),
+                    &tick,
+                    staged_bulk.as_deref(),
+                    &config.registry_conns,
+                    pending_request,
+                    ignore_ops,
+                )?;
+                if result.get("ok").and_then(Value::as_bool) == Some(true)
+                    && let Some(sync_id) = bulk_ref
+                {
+                    let mut guard = state
+                        .lock()
+                        .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                    guard.staged_tick_bulks.remove(&sync_id);
+                }
+                result
+            }
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/start") => {
+                let metadata = read_request_json(&mut request)?;
+                let plugin_protocol = metadata
+                    .get("protocolVersion")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0);
+                if plugin_protocol < MIN_PLUGIN_PROTOCOL_VERSION {
+                    return Ok(json!({
+                        "ok": false,
+                        "error": "plugin protocol is too old for this daemon",
+                        "protocolVersion": PROTOCOL_VERSION,
+                        "minPluginProtocolVersion": MIN_PLUGIN_PROTOCOL_VERSION,
+                    }));
+                }
+                let sync_id = metadata
+                    .get("syncId")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .unwrap_or_else(|| make_id("tickbulk"));
+                state
+                    .lock()
+                    .map_err(|_| anyhow!("daemon state lock poisoned"))?
+                    .tick_uploads
+                    .insert(sync_id.clone(), UploadState::default());
+                json!({
+                    "ok": true,
+                    "syncId": sync_id,
+                    "maxChunkBytes": MAX_CHUNK_BYTES,
+                    "protocol": "studio-stud-v1",
+                    "protocolVersion": PROTOCOL_VERSION,
+                })
+            }
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/chunk") => {
+                let sync_id = required_query(&query, "syncId")?;
+                let index = required_query(&query, "index")?.parse::<usize>()?;
+                let body = read_request_bytes(&mut request)?;
+                let received = body.len();
+                let mut guard = state
+                    .lock()
+                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                let Some(upload) = guard.tick_uploads.get_mut(&sync_id) else {
+                    return Ok(unknown_sync_id_response());
+                };
+                upload.chunks.insert(index, body);
+                json!({ "ok": true, "syncId": sync_id, "chunkIndex": index, "receivedBytes": received })
+            }
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/complete") => {
+                let payload = read_request_json(&mut request)?;
+                let sync_id = payload
+                    .get("syncId")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| anyhow!("syncId is required"))?
+                    .to_string();
+                let expected_chunks = payload
+                    .get("expectedChunks")
+                    .and_then(Value::as_u64)
+                    .map(|value| value as usize);
+                let mut guard = state
+                    .lock()
+                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                let Some(upload) = guard.tick_uploads.remove(&sync_id) else {
+                    return Ok(unknown_sync_id_response());
+                };
+                let bytes = assemble_upload(upload, expected_chunks)?;
+                guard.staged_tick_bulks.insert(sync_id.clone(), bytes);
+                json!({ "ok": true, "syncId": sync_id, "status": "staged" })
             }
             (tiny_http::Method::Post, "/studio-stud/live/delta") => {
                 if is_in_play(&state)? {
