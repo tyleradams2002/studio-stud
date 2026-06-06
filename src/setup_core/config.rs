@@ -412,6 +412,24 @@ mod tests {
     }
 
     #[test]
+    fn store_channel_key_skips_empty_string_password() {
+        let mut cfg = StudioStudConfig::default();
+        store_channel_key_if_encrypted(&mut cfg, "dev", Some("")).unwrap();
+        assert!(cfg.channel_key_dpapi.is_none());
+    }
+
+    #[test]
+    fn store_channel_key_persists_for_beta_channel() {
+        let mut cfg = StudioStudConfig::default();
+        store_channel_key_if_encrypted(&mut cfg, "beta", Some("s3cret")).unwrap();
+        let stored = cfg
+            .channel_key_dpapi
+            .expect("key should be stored for the beta channel");
+        let plain = crate::setup_core::crypto::dpapi_unprotect(&stored).unwrap();
+        assert_eq!(plain, b"s3cret");
+    }
+
+    #[test]
     fn resolve_update_channel_precedence() {
         let cfg = StudioStudConfig {
             channel: "dev".into(),

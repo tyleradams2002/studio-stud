@@ -5,6 +5,7 @@ use serde_json::{Map, Value, json};
 use studio_stud::setup_core::channels::last_channel_sequence_json;
 use studio_stud::setup_core::config::{
     StudioStudConfig, load_config_or_default, populate_install_fields, register_repo, save_config,
+    store_channel_key_if_encrypted,
 };
 use studio_stud::setup_core::install::{
     copy_addon_payloads_from_repo, install_core_plugin, install_path_shim, lay_tool_payload,
@@ -66,11 +67,7 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
     // captures the password and forwards it via this env var; both the GUI and silent install
     // paths funnel through here, so this is the single seam that needs it.
     let channel_password = std::env::var("STUDIO_STUD_CHANNEL_PASSWORD").ok();
-    studio_stud::setup_core::config::store_channel_key_if_encrypted(
-        &mut cfg,
-        &channel,
-        channel_password.as_deref(),
-    )?;
+    store_channel_key_if_encrypted(&mut cfg, &channel, channel_password.as_deref())?;
     if params.install_repos {
         for r in &params.repo_paths {
             let p = PathBuf::from(r);
