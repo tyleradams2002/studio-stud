@@ -1,22 +1,96 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
+use anyhow::Result;
 use rbx_reflection::{
     ClassDescriptor, PropertyDescriptor, PropertyKind, PropertySerialization, PropertyTag,
     Scriptability,
 };
 use rbx_reflection_database::get;
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PropEntry {
     pub name: String,
     #[serde(rename = "readOnly")]
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AllowList {
     pub version: String,
     pub classes: BTreeMap<String, Vec<PropEntry>>,
+}
+
+pub(crate) type SharedAllowList = Arc<RwLock<AllowList>>;
+
+#[derive(serde::Deserialize)]
+struct RawDump {
+    #[serde(rename = "Classes")]
+    classes: Vec<RawClass>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawClass {
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Superclass")]
+    superclass: Option<String>,
+    #[serde(rename = "Members")]
+    members: Vec<RawMember>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawMember {
+    #[serde(rename = "MemberType")]
+    member_type: String,
+    #[serde(rename = "Name")]
+    name: String,
+    #[serde(rename = "Security")]
+    security: Option<RawSecurityField>,
+    #[serde(rename = "Serialization")]
+    serialization: Option<RawSerialization>,
+    #[serde(rename = "Tags", default)]
+    tags: Vec<serde_json::Value>,
+}
+
+#[derive(serde::Deserialize)]
+struct RawSecurity {
+    #[serde(rename = "Read")]
+    read: String,
+    #[serde(rename = "Write")]
+    write: String,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum RawSecurityField {
+    Shorthand(String),
+    Detail(RawSecurity),
+}
+
+#[derive(serde::Deserialize)]
+struct RawSerialization {
+    #[serde(rename = "CanSave")]
+    can_save: bool,
+}
+
+fn security_reads_none(sec: &Option<RawSecurityField>) -> bool {
+    match sec {
+        None => false,
+        Some(RawSecurityField::Shorthand(s)) => s == "None",
+        Some(RawSecurityField::Detail(d)) => d.read == "None",
+    }
+}
+
+fn security_writes_none(sec: &Option<RawSecurityField>) -> bool {
+    match sec {
+        None => true,
+        Some(RawSecurityField::Shorthand(s)) => s == "None",
+        Some(RawSecurityField::Detail(d)) => d.write == "None",
+    }
 }
 
 fn db() -> &'static rbx_reflection::ReflectionDatabase<'static> {
@@ -48,6 +122,27 @@ fn included(p: &PropertyDescriptor) -> bool {
 
 fn read_only(p: &PropertyDescriptor) -> bool {
     matches!(p.scriptability, Scriptability::Read) || p.tags.contains(&PropertyTag::ReadOnly)
+}
+
+fn member_tag(m: &RawMember, name: &str) -> bool {
+    m.tags
+        .iter()
+        .filter_map(|t| t.as_str())
+        .any(|t| t == name)
+}
+
+fn raw_included(m: &RawMember) -> bool {
+    m.member_type == "Property"
+        && security_reads_none(&m.security)
+        && m.serialization.as_ref().is_some_and(|s| s.can_save)
+        && !member_tag(m, "Deprecated")
+        && !member_tag(m, "Hidden")
+        && !member_tag(m, "NotScriptable")
+        && !member_tag(m, "WriteOnly")
+}
+
+fn raw_read_only(m: &RawMember) -> bool {
+    member_tag(m, "ReadOnly") || !security_writes_none(&m.security)
 }
 
 fn curated_for(class: &ClassDescriptor) -> Vec<PropEntry> {
@@ -95,29 +190,139 @@ pub(crate) fn generate_allowlist() -> AllowList {
     }
 }
 
-/// Fetch a dump for a target version; on ANY error, fall back to the bundled allow-list.
-/// `fetch` returns the raw API-dump JSON bytes for a version, or an error.
-/// Wired to the plugin's reported Studio version in a later phase.
-#[allow(dead_code)]
+pub(crate) fn generate_allowlist_from_dump(json: &str, version: &str) -> Result<AllowList> {
+    let dump: RawDump = serde_json::from_str(json)?;
+    let by_name: HashMap<&str, &RawClass> = dump.classes.iter().map(|c| (c.name.as_str(), c)).collect();
+    let mut classes = BTreeMap::new();
+    for class in &dump.classes {
+        let mut seen = BTreeSet::new();
+        let mut out: Vec<PropEntry> = Vec::new();
+        let mut cur = Some(class);
+        while let Some(c) = cur {
+            for m in &c.members {
+                if m.member_type != "Property" || seen.contains(&m.name) {
+                    continue;
+                }
+                seen.insert(m.name.clone());
+                if raw_included(m) {
+                    out.push(PropEntry {
+                        name: m.name.clone(),
+                        read_only: raw_read_only(m),
+                    });
+                }
+            }
+            cur = match &c.superclass {
+                Some(s) if s != "<<<ROOT>>>" => by_name.get(s.as_str()).copied(),
+                _ => None,
+            };
+        }
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        classes.insert(class.name.clone(), out);
+    }
+    Ok(AllowList {
+        version: version.to_string(),
+        classes,
+    })
+}
+
+fn agent() -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(Duration::from_secs(6)))
+        .build()
+        .into()
+}
+
+pub(crate) fn fetch_current_version() -> Result<String> {
+    let mut resp = agent()
+        .get("https://setup.rbxcdn.com/versionQTStudio")
+        .call()
+        .map_err(|e| anyhow::anyhow!("version fetch failed: {e}"))?;
+    let body = resp
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| anyhow::anyhow!("version body read failed: {e}"))?;
+    Ok(body.trim().to_string())
+}
+
+fn fetch_dump(hash: &str) -> Result<String> {
+    let url = format!("https://setup.rbxcdn.com/{hash}-Full-API-Dump.json");
+    let mut resp = agent()
+        .get(&url)
+        .call()
+        .map_err(|e| anyhow::anyhow!("dump fetch failed {url}: {e}"))?;
+    resp.body_mut()
+        .with_config()
+        .limit(256 * 1024 * 1024)
+        .read_to_string()
+        .map_err(|e| anyhow::anyhow!("dump body read failed {url}: {e}"))
+}
+
+/// Fetcher returns the raw dump JSON for a version hash; on ANY error → bundled allow-list.
 pub(crate) fn generate_allowlist_for<F>(fetch: F) -> AllowList
 where
-    F: FnOnce(&str) -> anyhow::Result<String>,
+    F: FnOnce(&str) -> Result<String>,
 {
-    match fetch(&current_version()) {
-        Ok(_dump_json) => {
-            // TODO(verify URL/parse): parse the fetched dump into a ReflectionDatabase and
-            // generate from it. Until verified, fall through to bundled.
-            generate_allowlist()
+    let result = (|| -> Result<AllowList> {
+        let hash = fetch_current_version()?;
+        let json = fetch(&hash)?;
+        generate_allowlist_from_dump(&json, &hash)
+    })();
+    result.unwrap_or_else(|_| generate_allowlist())
+}
+
+/// Live fetch: returns the fetched allow-list, or the bundled one on failure.
+pub(crate) fn fetch_allowlist() -> AllowList {
+    generate_allowlist_for(fetch_dump)
+}
+
+fn cache_path(root: &Path, hash: &str) -> PathBuf {
+    let safe = hash.replace(['/', '\\'], "_");
+    root.join("reflection").join(format!("{safe}.json"))
+}
+
+pub(crate) fn write_cache(root: &Path, al: &AllowList) {
+    let path = cache_path(root, &al.version);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if let Ok(json) = serde_json::to_string_pretty(al) {
+        let tmp = path.with_extension("json.tmp");
+        if fs::write(&tmp, json).is_ok() {
+            let _ = fs::rename(tmp, path);
         }
-        Err(_) => generate_allowlist(),
     }
 }
 
-#[allow(dead_code)]
-fn fetch_dump(_target_version: &str) -> anyhow::Result<String> {
-    // Model on src/update.rs::agent(); resolve the Roblox API-dump URL for the version.
-    // Left unwired until the URL resolution is verified against a real Studio version.
-    anyhow::bail!("runtime reflection fetch not yet enabled")
+pub(crate) fn read_cache(root: &Path, hash: &str) -> Option<AllowList> {
+    let path = cache_path(root, hash);
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Background refresh: fetch Roblox version hash, load or build allow-list, swap shared state.
+pub(crate) fn refresh(shared: &SharedAllowList, storage_root: Option<&Path>) {
+    let Ok(hash) = fetch_current_version() else {
+        return;
+    };
+    if shared
+        .read()
+        .map(|al| al.version == hash)
+        .unwrap_or(false)
+    {
+        return;
+    }
+    let al = storage_root
+        .and_then(|root| read_cache(root, &hash))
+        .unwrap_or_else(|| {
+            let al = fetch_allowlist();
+            if let Some(root) = storage_root {
+                write_cache(root, &al);
+            }
+            al
+        });
+    if let Ok(mut guard) = shared.write() {
+        *guard = al;
+    }
 }
 
 #[cfg(test)]
@@ -151,10 +356,68 @@ mod tests {
     }
 
     #[test]
-    fn fetch_falls_back_to_bundled_on_error() {
-        // A fetcher that always fails must yield the bundled version, never panic.
-        let al = generate_allowlist_for(|_url| Err(anyhow::anyhow!("network down")));
+    fn allowlist_from_dump_filters_correctly() {
+        let raw = r#"{
+          "Classes": [
+            {"Name":"Instance","Superclass":"<<<ROOT>>>","Members":[
+              {"MemberType":"Property","Name":"Name",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true}}
+            ]},
+            {"Name":"BasePart","Superclass":"Instance","Members":[
+              {"MemberType":"Property","Name":"Transparency",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true}},
+              {"MemberType":"Property","Name":"AssemblyMass",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":false,"CanSave":false},
+               "Tags":["ReadOnly"]},
+              {"MemberType":"Property","Name":"LegacyThing",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":true,"CanSave":true},
+               "Tags":["Deprecated"]},
+              {"MemberType":"Property","Name":"SecretProp",
+               "Security":{"Read":"RobloxScriptSecurity","Write":"RobloxScriptSecurity"},
+               "Serialization":{"CanLoad":true,"CanSave":true}},
+              {"MemberType":"Function","Name":"Resize",
+               "Security":{"Read":"None","Write":"None"},"Serialization":{"CanLoad":false,"CanSave":false}}
+            ]}
+          ], "Enums": [], "Version": [0,1,2,3]
+        }"#;
+        let al = generate_allowlist_from_dump(raw, "version-test").expect("parse");
+        assert_eq!(al.version, "version-test");
+        let bp = al.classes.get("BasePart").expect("BasePart");
+        let by = |n: &str| bp.iter().find(|p| p.name == n);
+        assert!(
+            by("Transparency").is_some_and(|p| !p.read_only),
+            "writable serializing prop"
+        );
+        assert!(by("Name").is_some(), "inherited from Instance");
+        assert!(
+            by("AssemblyMass").is_none(),
+            "ReadOnly + non-serializing excluded (CanSave=false)"
+        );
+        assert!(by("LegacyThing").is_none(), "Deprecated excluded");
+        assert!(by("SecretProp").is_none(), "non-None Read security excluded");
+        assert!(by("Resize").is_none(), "functions excluded");
+    }
+
+    #[test]
+    fn fetch_allowlist_falls_back_to_bundled() {
+        let al = generate_allowlist_for(|_ver| Err(anyhow::anyhow!("offline")));
         assert_eq!(al.version, current_version());
         assert!(al.classes.contains_key("BasePart"));
+    }
+
+    #[test]
+    fn allowlist_cache_round_trip() {
+        let dir = std::env::temp_dir().join(format!(
+            "studio_stud_refl_cache_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("temp dir");
+        let al = generate_allowlist();
+        write_cache(&dir, &al);
+        let loaded = read_cache(&dir, &al.version).expect("read back");
+        assert_eq!(loaded.version, al.version);
+        assert_eq!(loaded.classes.get("BasePart"), al.classes.get("BasePart"));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
