@@ -2191,28 +2191,43 @@ function CapturePanel.build(parent, ctx)
 		end
 	end
 
+	-- Pure: classify a Changed property for an instance. Returns "name" | "dirty" | "gap".
+	function Live.classifyChangedProp(prop, curatedSet)
+		if prop == "Name" then
+			return "name"
+		elseif curatedSet[prop] then
+			return "dirty"
+		else
+			return "gap"
+		end
+	end
+
+	-- Uncurated properties that fired, deduped, for later reporting to the daemon (Phase 5).
+	Live.propGaps = {} -- [className.."/"..prop] = true
+	function Live.recordPropGap(className, prop)
+		local key = (className or "?") .. "/" .. tostring(prop)
+		if not Live.propGaps[key] then
+			Live.propGaps[key] = true
+			debugLog("allowlist gap:", key)
+		end
+	end
+
+	-- Shared name-change cascade (was the body of the old Name signal).
+	function Live.onNameChanged(inst)
+		local oldPath = pathByRef[inst] or ""
+		local oldName = oldPath:match("([^%[/]+)%[%d+%]$") or inst.Name
+		Live.markSubtreeUpsert(inst)
+		local parent = Live.parentByInst[inst] or inst.Parent
+		Live.markSiblingsDirty(parent, oldName)
+		Live.markSiblingsDirty(parent, inst.Name)
+	end
+
 	-- Connect per-instance signals for one instance
 	function Live.registerInstance(inst)
 		if Live.instConns[inst] then
 			return
 		end
 		local conns = {}
-
-		-- Name change: path cascade for inst + subtree, plus sibling-group reorder
-		local okN, cN = pcall(function()
-			return inst:GetPropertyChangedSignal("Name"):Connect(function()
-				-- extract old name from cached path segment (best-effort)
-				local oldPath = pathByRef[inst] or ""
-				local oldName = oldPath:match("([^%[/]+)%[%d+%]$") or inst.Name
-				Live.markSubtreeUpsert(inst)
-				local parent = Live.parentByInst[inst] or inst.Parent
-				Live.markSiblingsDirty(parent, oldName)
-				Live.markSiblingsDirty(parent, inst.Name)
-			end)
-		end)
-		if okN then
-			table.insert(conns, cN)
-		end
 
 		-- AncestryChanged: intra-root reparent (fires on moved node AND each dragged descendant)
 		local okA, cA = pcall(function()
@@ -2221,7 +2236,6 @@ function CapturePanel.build(parent, ctx)
 					Live.dirtyUpsert[inst] = true
 				end
 				if changedChild == inst then
-					-- This instance's own parent changed — handle sibling groups
 					local oldParent = Live.parentByInst[inst]
 					if oldParent ~= newParent then
 						Live.markSiblingsDirty(oldParent, inst.Name)
@@ -2247,17 +2261,45 @@ function CapturePanel.build(parent, ctx)
 			table.insert(conns, cAt)
 		end
 
-		-- Curated property signals
-		for _, propName in ipairs(Capture.getPropertyNames(inst)) do
-			local okP, cP = pcall(function()
-				return inst:GetPropertyChangedSignal(propName):Connect(function()
+		if inst:IsA("ValueBase") then
+			-- ValueBase fires .Changed with the VALUE, not the property name → use explicit signals.
+			local okN, cN = pcall(function()
+				return inst:GetPropertyChangedSignal("Name"):Connect(function()
+					Live.onNameChanged(inst)
+				end)
+			end)
+			if okN then
+				table.insert(conns, cN)
+			end
+			local okV, cV = pcall(function()
+				return inst:GetPropertyChangedSignal("Value"):Connect(function()
 					if instanceIdByRef[inst] then
 						Live.dirtyUpsert[inst] = true
 					end
 				end)
 			end)
-			if okP then
-				table.insert(conns, cP)
+			if okV then
+				table.insert(conns, cV)
+			end
+		else
+			-- One Changed connection replaces ~N per-property signals + the Name signal.
+			local curated = Capture.curatedSet(inst)
+			local okC, cC = pcall(function()
+				return inst.Changed:Connect(function(prop)
+					local kind = Live.classifyChangedProp(prop, curated)
+					if kind == "name" then
+						Live.onNameChanged(inst)
+					elseif kind == "dirty" then
+						if instanceIdByRef[inst] then
+							Live.dirtyUpsert[inst] = true
+						end
+					else
+						Live.recordPropGap(inst.ClassName, prop)
+					end
+				end)
+			end)
+			if okC then
+				table.insert(conns, cC)
 			end
 		end
 
@@ -3899,6 +3941,47 @@ function SelfTest.run()
 		live.dirtyUpsert = {}
 		live.dirtyRemoved = {}
 		dummyInst:Destroy()
+
+		-- == Phase 3: detection collapse ==
+		do
+			local curated = { Transparency = false }
+			SelfTest.assert("classify Name -> name", live.classifyChangedProp("Name", curated) == "name", failures)
+			SelfTest.assert("classify curated -> dirty", live.classifyChangedProp("Transparency", curated) == "dirty", failures)
+			SelfTest.assert("classify uncurated -> gap", live.classifyChangedProp("Archivable", curated) == "gap", failures)
+
+			-- gap-probe dedup
+			live.propGaps = {}
+			live.recordPropGap("Part", "Foo")
+			live.recordPropGap("Part", "Foo")
+			local gapCount = 0
+			for _ in pairs(live.propGaps) do
+				gapCount += 1
+			end
+			SelfTest.assert("recordPropGap dedups", gapCount == 1, failures)
+
+			-- connection-count collapse: a Part should register ~3 connections, not ~20
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency", "Size" } }
+			AllowList.sets = { Part = { Transparency = false, Size = false } }
+			local part = Instance.new("Part")
+			live.registerInstance(part)
+			local partConns = live.instConns[part]
+			SelfTest.assert("registerInstance collapses Part to <=4 conns", partConns ~= nil and #partConns <= 4, failures)
+			live.unregisterInstance(part)
+			part:Destroy()
+
+			-- ValueBase registers explicit signals (Ancestry + Attribute + Name + Value)
+			local iv = Instance.new("IntValue")
+			live.registerInstance(iv)
+			local ivConns = live.instConns[iv]
+			SelfTest.assert("ValueBase registers >=3 conns", ivConns ~= nil and #ivConns >= 3, failures)
+			live.unregisterInstance(iv)
+			iv:Destroy()
+
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+		end
 	else
 		-- Live handle not available: skip but don't fail
 		print("[Studio Stud SelfTest] SKIP: live handle not available (live tests skipped)")
