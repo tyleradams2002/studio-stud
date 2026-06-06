@@ -2,7 +2,7 @@
   Studio Stud bootstrap installer.
 
   Release  (no password):  irm https://tyleradams2002.github.io/studio-stud/install.ps1      | iex
-  Beta     (password req):  irm https://tyleradams2002.github.io/studio-stud/install-beta.ps1 | iex
+  (beta channel retired — dev + release only)
   Dev      (password req):  irm https://tyleradams2002.github.io/studio-stud/install-dev.ps1  | iex
 
   Local dev test:  .\scripts\install-local.ps1
@@ -90,7 +90,11 @@ if ($manifest.bundleEncUrl) {
     Write-Host "Decrypting..."
     Get-Decrypted $enc $zip $password
     Expand-Archive -Path $zip -DestinationPath $work -Force
-    Invoke-Setup $work
+    # Forward the password to setup.exe (inherited by the child process) so it can store the
+    # DPAPI-protected key for self-update. Cleared immediately after the installer returns.
+    $env:STUDIO_STUD_CHANNEL_PASSWORD = $password
+    try { Invoke-Setup $work }
+    finally { Remove-Item Env:\STUDIO_STUD_CHANNEL_PASSWORD -ErrorAction SilentlyContinue }
     exit 0
 }
 if ($manifest.bundleUrl) {
