@@ -113,6 +113,8 @@ pub(crate) fn materialize_snapshot(
             write_live_state(conn, &live_state)?;
         }
 
+        crate::storage::write_reflection_version(conn, &crate::reflection::current_version())?;
+
         {
             let _span = crate::obs::span("capture", "materialize_compact");
             compact_db_after_bulk_write(conn)?;
@@ -140,6 +142,8 @@ pub(crate) fn materialize_snapshot(
         "stored": true,
 
         "fingerprint": live_state.fingerprint,
+
+        "reflectionVersion": crate::reflection::current_version(),
 
     }))
 }
