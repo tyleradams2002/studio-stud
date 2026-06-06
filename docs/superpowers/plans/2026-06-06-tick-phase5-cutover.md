@@ -24,7 +24,9 @@ delete the 5 legacy endpoints, land plugin + daemon together.
   remove dead plugin code.
 - **5F** Gate (folds the deferred "Option A" checks).
 
-Compose for Composer as **two prompts**: Prompt 1 = 5A (+5B), CI-gated; Prompt 2 = 5C–5E, Studio-gated.
+Compose for Composer as **three prompts**: Prompt 1 = 5A (CI-gated); Prompt 2 = 5B (CI-gated, separate);
+Prompt 3 = 5C–5E plugin + cutover (Studio-gated). 5A and 5B are independent daemon steps that each land
+on `development` with legacy kept and protocol still 1.
 
 ---
 
