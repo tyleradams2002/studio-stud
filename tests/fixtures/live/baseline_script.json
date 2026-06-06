@@ -1,0 +1,24 @@
+{
+  "place": { "placeId": "999001", "placeKey": "LiveTest", "name": "LiveTest" },
+  "sync": { "syncId": "live_baseline_script" },
+  "instances": [
+    { "id": "ws", "parentId": null, "path": "Workspace", "name": "Workspace", "className": "Workspace", "depth": 0, "childCount": 2, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "folder", "parentId": "ws", "path": "Workspace/Folder", "name": "Folder", "className": "Folder", "depth": 1, "childCount": 1, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    {
+      "id": "mod1",
+      "parentId": "folder",
+      "path": "Workspace/Folder/MyModule",
+      "name": "MyModule",
+      "className": "ModuleScript",
+      "depth": 2,
+      "childCount": 0,
+      "siblingIndex": 0,
+      "duplicateSiblingName": false,
+      "properties": {},
+      "attributes": {},
+      "tags": [],
+      "source": "local x = 1\r\nreturn x\r\n"
+    },
+    { "id": "part1", "parentId": "ws", "path": "Workspace/Part", "name": "Part", "className": "Part", "depth": 1, "childCount": 0, "siblingIndex": 1, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] }
+  ]
+}

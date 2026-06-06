@@ -364,6 +364,156 @@ fn malformed_delta_rolls_back() {
 }
 
 #[test]
+fn script_source_round_trip() {
+    let storage = temp_storage("script_rt");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline_script.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let raw_crlf = "local x = 1\r\nreturn x\r\n";
+    let expected_text = raw_crlf.replace("\r\n", "\n").replace('\r', "\n");
+    let expected_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(expected_text.as_bytes());
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let row = run_cli(
+        &["script-source", "999001", "Workspace/Folder/MyModule"],
+        &storage,
+    );
+    assert_eq!(row.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        row.get("sourceText").and_then(Value::as_str),
+        Some(expected_text.as_str())
+    );
+    assert_eq!(
+        row.get("sourceHash").and_then(Value::as_str),
+        Some(expected_hash.as_str())
+    );
+}
+
+#[test]
+fn delta_updates_script_source() {
+    let storage = temp_storage("script_delta");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline_script.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    run_cli(
+        &[
+            "live-delta",
+            "--raw",
+            fixture("delta_script_source.json").to_str().unwrap(),
+            "--place",
+            "999001",
+        ],
+        &storage,
+    );
+    let updated = run_cli(
+        &["script-source", "999001", "Workspace/Folder/MyModule"],
+        &storage,
+    );
+    assert_eq!(updated.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        updated.get("sourceText").and_then(Value::as_str),
+        Some("print('updated')\n")
+    );
+    run_cli(
+        &[
+            "live-delta",
+            "--raw",
+            fixture("delta_remove_mod1.json").to_str().unwrap(),
+            "--place",
+            "999001",
+        ],
+        &storage,
+    );
+    let gone = run_cli(
+        &["script-source", "999001", "Workspace/Folder/MyModule"],
+        &storage,
+    );
+    assert_eq!(gone.get("ok").and_then(Value::as_bool), Some(false));
+    assert_eq!(
+        gone.get("error").and_then(Value::as_str),
+        Some("not_found"),
+        "removed instance should be gone from instances and script_sources"
+    );
+    let list = run_cli(&["script-sources", "999001"], &storage);
+    assert_eq!(list.get("count").and_then(Value::as_i64), Some(0));
+}
+
+#[test]
+fn source_excluded_from_fingerprint() {
+    let storage = temp_storage("fp_source");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let before = run_cli(&["live-dump", "999001"], &storage);
+    let fp_before = before
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .expect("fingerprint");
+    run_cli(
+        &[
+            "live-delta",
+            "--raw",
+            fixture("delta_part_with_source.json").to_str().unwrap(),
+            "--place",
+            "999001",
+        ],
+        &storage,
+    );
+    let after = run_cli(&["live-dump", "999001"], &storage);
+    let fp_after = after
+        .get("fingerprint")
+        .and_then(Value::as_str)
+        .expect("fingerprint");
+    assert_eq!(
+        fp_before, fp_after,
+        "source field on upsert must not change global fingerprint"
+    );
+    let services = run_cli(&["live-services", "999001"], &storage);
+    assert_eq!(
+        services.get("global").and_then(Value::as_str),
+        services.get("xorOfServices").and_then(Value::as_str)
+    );
+}
+
+#[test]
+fn non_script_no_source_row() {
+    let storage = temp_storage("no_script_src");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let list = run_cli(&["script-sources", "999001"], &storage);
+    assert_eq!(list.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(list.get("count").and_then(Value::as_i64), Some(0));
+}
+
+#[test]
 fn ingest_stamps_reflection_version() {
     let storage = temp_storage("refl_ver");
     let out = run_cli(
