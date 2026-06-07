@@ -182,7 +182,22 @@ pub(crate) fn handle_tick(
 
     if ops_empty(tick) && tick.bulk_ref.is_none() {
         if ignore_ops {
-            return Ok(tick_response(0, 0, vec![], pending_request));
+            if !place_storage.db_path.exists() {
+                return Ok(tick_response(0, 0, vec![], pending_request));
+            }
+            return registry.with_reader(&place_storage.db_path, |conn| {
+                let Some(live) = read_live_state(conn)? else {
+                    return Ok(json!({ "ok": false, "error": "no_baseline" }));
+                };
+                let drift =
+                    compute_drift_services(conn, &live.capture_id, &tick.service_fingerprints)?;
+                Ok(tick_response(
+                    live.revision,
+                    live.instance_count as i64,
+                    drift,
+                    pending_request,
+                ))
+            });
         }
         if !place_storage.db_path.exists() {
             return Ok(json!({ "ok": false, "error": "no_baseline" }));
