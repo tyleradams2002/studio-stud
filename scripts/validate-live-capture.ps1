@@ -160,7 +160,20 @@ else {
     Write-Host "FAIL delete - wait ~30s for drift verify, then re-run query --count-only" -ForegroundColor Yellow
 }
 
+Write-Section "Post-run log check (tick soak)"
+if (Test-Path $LogPath) {
+    $soakScript = Join-Path $PSScriptRoot "soak-tick.ps1"
+    if (Test-Path $soakScript) {
+        Write-Host "Running soak-tick.ps1 on daemon.log tail..."
+        & $soakScript -LogPath $LogPath -TailLines 2000
+    }
+}
+else {
+    Write-Host "No daemon.log at $LogPath (skip soak analysis)"
+}
+
 Write-Section "Summary"
 Write-Host "Test marker: $TestName"
 Write-Host "Log: $LogPath"
 Write-Host "Full status: studio-stud status"
+Write-Host "Soak analyzer: scripts/soak-tick.ps1"
