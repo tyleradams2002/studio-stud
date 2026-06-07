@@ -2401,6 +2401,34 @@ function CapturePanel.build(parent, ctx)
 		return math.huge
 	end
 
+	function Live.shouldBreakOpsCap(committedCount, trialUpserted, removed)
+		return Live.tickPayloadByteLen(trialUpserted, removed) > TICK_INLINE_THRESHOLD and committedCount > 0
+	end
+
+	function Live.collectOpsFromEntries(entries, removed)
+		removed = removed or {}
+		local upserted = {}
+		for _, entry in ipairs(entries) do
+			entry.fp = entry.fp or Live.hashInstance(entry)
+			local prevFp = Live.instFp[entry.id]
+			Live.applyFpUpsert(entry.id, entry, nil)
+			local trialUpserted = table.create(#upserted + 1)
+			for i = 1, #upserted do
+				trialUpserted[i] = upserted[i]
+			end
+			trialUpserted[#upserted + 1] = entry
+			if Live.shouldBreakOpsCap(#upserted, trialUpserted, removed) then
+				Live.applyFpRemove(entry.id, entry.path)
+				if prevFp then
+					Live.applyFpUpsert(entry.id, { fp = prevFp, path = entry.path }, nil)
+				end
+				break
+			end
+			table.insert(upserted, entry)
+		end
+		return upserted
+	end
+
 	function Live.scheduleDriftRecovery(driftServices, dirtyUpsert, dirtyRemoved)
 		local preservedUpsert = {}
 		for inst, _ in pairs(dirtyUpsert) do
@@ -2810,7 +2838,7 @@ function CapturePanel.build(parent, ctx)
 						trialUpserted[i] = upserted[i]
 					end
 					trialUpserted[#upserted + 1] = entry
-					if Live.tickPayloadByteLen(trialUpserted, removed) > TICK_INLINE_THRESHOLD then
+					if Live.shouldBreakOpsCap(#upserted, trialUpserted, removed) then
 						Live.applyFpRemove(entry.id, entry.path)
 						if prevFp then
 							Live.applyFpUpsert(
@@ -2933,89 +2961,24 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	function Live.buildBaselineSnapshot(reason)
+		Live.resetFingerprints()
 		local snapshot = Capture.buildSnapshot({ reason = reason or "tick-baseline" })
 		for _, entry in ipairs(snapshot.instances) do
-			if not entry.fp then
-				entry.fp = Live.hashInstance(entry)
-				Live.applyFpUpsert(entry.id, entry, nil)
-			end
+			entry.fp = Live.hashInstance(entry)
+			Live.applyFpUpsert(entry.id, entry, nil)
 		end
 		return snapshot
 	end
 
-	function Live.rewalkDriftedServices(serviceNames)
-		if not serviceNames or #serviceNames == 0 then
-			return true
-		end
-		local targetSet = {}
-		for _, name in ipairs(serviceNames) do
-			targetSet[name] = true
-		end
-		local instances = {}
-		local processed = 0
-		for _, root in ipairs(Capture.getRootEntries()) do
-			if targetSet[root.name] then
-				local queue = { root.instance }
-				local qi = 1
-				while qi <= #queue do
-					local inst = queue[qi]
-					qi += 1
-					if instanceIdByRef[inst] then
-						local entry = buildUpsertedEntry(inst)
-						if entry then
-							table.insert(instances, entry)
-						end
-						processed += 1
-						if Capture.shouldYield(processed, BASELINE_YIELD_EVERY) then
-							task.wait()
-						end
-					end
-					if root.includeDescendants then
-						local ok, children = pcall(function()
-							return inst:GetChildren()
-						end)
-						if ok then
-							for _, child in ipairs(children) do
-								table.insert(queue, child)
-							end
-						end
-					end
-				end
-			end
-		end
-		local snapshot = {
-			formatVersion = 1,
-			snapshotKind = "studio-stud-live-snapshot",
-			serviceName = SERVICE_NAME,
-			pluginVersion = PLUGIN_VERSION,
-			place = {
-				placeKey = tostring(game.PlaceId ~= 0 and ("Place" .. tostring(game.PlaceId)) or game.Name),
-				name = game.Name,
-				placeId = game.PlaceId,
-				gameId = game.GameId,
-			},
-			sync = {
-				reason = "drift-recovery",
-				startedAtUtc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-				finishedAtUtc = os.date("!%Y-%m-%dT%H:%M:%SZ"),
-				consistency = "service-rewalk",
-			},
-			instances = instances,
-		}
-		local okEnc, jsonText = Transport.safeEncode(snapshot, "drift-recovery")
-		if not okEnc then
+	function Live.triggerDriftRecovery(_driftServices)
+		if Live.baselineInProgress or Live.pendingBulkRef or not Live.liveRunning then
 			return false
 		end
-		local okBulk, bulkResult = Live.uploadTickBulk(jsonText, "drift-recovery")
-		if okBulk and bulkResult and bulkResult.syncId then
-			Live.pendingBulkRef = bulkResult.syncId
-			return true
-		end
-		return false
+		return Live.triggerFullBaseline("drift-recovery")
 	end
 
 	function Live.triggerFullBaseline(reason)
-		if Live.baselineInProgress or not Live.liveRunning then
+		if Live.baselineInProgress or Live.pendingBulkRef or not Live.liveRunning then
 			return false
 		end
 		if not Session.isEdit() then
@@ -3093,9 +3056,7 @@ function CapturePanel.build(parent, ctx)
 			if type(drift) == "table" and #drift > 0 then
 				debugLog("tick drift services:", table.concat(drift, ", "))
 				Live.recoveryServices = drift
-				task.spawn(function()
-					Live.rewalkDriftedServices(drift)
-				end)
+				Live.triggerDriftRecovery(drift)
 			end
 			if result.request then
 				debugLog("tick request from daemon:", result.request)
@@ -4387,6 +4348,44 @@ function SelfTest.run()
 					and recovery.dirtyRemoved.z,
 				failures
 			)
+
+			local pad = string.rep("x", 280000)
+			local fatEntry = {
+				id = "fat1",
+				parentId = "ws",
+				path = "Workspace/Fat[1]",
+				name = "Fat",
+				className = "Part",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = { pad = pad },
+				attributes = {},
+				tags = {},
+			}
+			fatEntry.fp = live.hashInstance(fatEntry)
+			local smallEntry = {
+				id = "small1",
+				parentId = "ws",
+				path = "Workspace/Small[1]",
+				name = "Small",
+				className = "Part",
+				depth = 1,
+				siblingIndex = 2,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = {},
+				attributes = {},
+				tags = {},
+			}
+			smallEntry.fp = live.hashInstance(smallEntry)
+			live.resetFingerprints()
+			local soloFat = live.collectOpsFromEntries({ fatEntry })
+			SelfTest.assert("solo fat op collects one entry", #soloFat == 1 and soloFat[1].id == "fat1", failures)
+			live.resetFingerprints()
+			local cappedBatch = live.collectOpsFromEntries({ smallEntry, fatEntry })
+			SelfTest.assert("fat batch caps after first op", #cappedBatch == 1 and cappedBatch[1].id == "small1", failures)
 		end
 	end
 

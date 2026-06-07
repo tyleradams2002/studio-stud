@@ -1,0 +1,10 @@
+{
+  "place": { "placeId": "999001", "placeKey": "LiveTest", "name": "LiveTest" },
+  "sync": { "syncId": "two_service_baseline" },
+  "instances": [
+    { "id": "ws", "parentId": null, "path": "Workspace", "name": "Workspace", "className": "Workspace", "depth": 0, "childCount": 1, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "ws_alpha", "parentId": "ws", "path": "Workspace/Alpha", "name": "Alpha", "className": "Part", "depth": 1, "childCount": 0, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "rs", "parentId": null, "path": "ReplicatedStorage", "name": "ReplicatedStorage", "className": "ReplicatedStorage", "depth": 0, "childCount": 1, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] },
+    { "id": "rs_beta", "parentId": "rs", "path": "ReplicatedStorage/Beta", "name": "Beta", "className": "Part", "depth": 1, "childCount": 0, "siblingIndex": 0, "duplicateSiblingName": false, "properties": {}, "attributes": {}, "tags": [] }
+  ]
+}

@@ -137,14 +137,48 @@ fn service_fps_from_cli(storage: &Path) -> serde_json::Map<String, Value> {
 }
 
 fn ingest_baseline(storage: &Path) -> Value {
+    ingest_fixture("baseline.json", storage)
+}
+
+fn ingest_fixture(name: &str, storage: &Path) -> Value {
     run_cli(
         &[
             "ingest",
             "--raw",
-            fixture("baseline.json").to_str().unwrap(),
+            fixture(name).to_str().unwrap(),
         ],
         storage,
     )
+}
+
+fn stage_tick_bulk(port: u16, snapshot_json: &str) -> String {
+    let start_body = r#"{"protocolVersion":2,"place":{"placeId":"999001","placeKey":"LiveTest"}}"#;
+    let (status, response) = http_request(
+        "POST",
+        port,
+        "/studio-stud/tick/bulk/start",
+        Some(start_body),
+    );
+    assert_eq!(status, 200, "bulk start failed: {response}");
+    let sync_id = parse_json(&response)
+        .get("syncId")
+        .and_then(Value::as_str)
+        .expect("syncId")
+        .to_string();
+
+    let path = format!("/studio-stud/tick/bulk/chunk?syncId={sync_id}&index=0");
+    let (status, response) = http_request("POST", port, &path, Some(snapshot_json));
+    assert_eq!(status, 200, "bulk chunk failed: {response}");
+
+    let complete_body = format!(r#"{{"syncId":"{sync_id}","expectedChunks":1}}"#);
+    let (status, response) = http_request(
+        "POST",
+        port,
+        "/studio-stud/tick/bulk/complete",
+        Some(&complete_body),
+    );
+    assert_eq!(status, 200, "bulk complete failed: {response}");
+    sync_id
 }
 
 fn post_tick(port: u16, body: &Value) -> Value {
@@ -583,5 +617,124 @@ fn tick_large_inline_delta_preserves_baseline() {
                 .is_some_and(|id| id == "dup_a")
         }),
         "baseline instance dup_a must survive large inline delta batches"
+    );
+}
+
+#[test]
+fn drift_recovery_full_baseline_preserves_other_services() {
+    let storage = temp_storage("drift_recovery");
+    ingest_fixture("two_service_baseline.json", &storage);
+    let serve = start_serve(&storage);
+
+    let services_before = run_cli(&["live-services", "999001"], &storage);
+    let rs_fp_before = services_before
+        .get("services")
+        .and_then(|s| s.get("ReplicatedStorage"))
+        .and_then(|e| e.get("fingerprint"))
+        .and_then(Value::as_str)
+        .expect("ReplicatedStorage fingerprint")
+        .to_string();
+    let ws_fp_before = services_before
+        .get("services")
+        .and_then(|s| s.get("Workspace"))
+        .and_then(|e| e.get("fingerprint"))
+        .and_then(Value::as_str)
+        .expect("Workspace fingerprint")
+        .to_string();
+
+    let mut drift_fps = service_fps_from_cli(&storage);
+    drift_fps.insert("Workspace".to_string(), json!("0".repeat(64)));
+    let drift_body = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": 0,
+        "serviceFingerprints": drift_fps,
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": null
+    });
+    let drift_resp = post_tick(serve.port, &drift_body);
+    let drift = drift_resp
+        .get("driftServices")
+        .and_then(Value::as_array)
+        .expect("driftServices");
+    assert!(drift.iter().any(|v| v.as_str() == Some("Workspace")));
+    assert!(!drift.iter().any(|v| v.as_str() == Some("ReplicatedStorage")));
+
+    let full_snapshot =
+        fs::read_to_string(fixture("two_service_baseline.json")).expect("read two-service baseline");
+    let sync_id = stage_tick_bulk(serve.port, &full_snapshot);
+    let recovery_tick = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": current_revision(&storage),
+        "serviceFingerprints": {},
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": sync_id
+    });
+    let recovery_resp = post_tick(serve.port, &recovery_tick);
+    assert_eq!(recovery_resp.get("ok").and_then(Value::as_bool), Some(true));
+
+    let dump = run_cli(&["live-dump", "999001"], &storage);
+    let state = dump
+        .get("state")
+        .and_then(Value::as_array)
+        .expect("state rows");
+    assert_eq!(state.len(), 4, "full recovery must keep all four instances");
+    assert!(
+        state.iter().any(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == "rs_beta")
+        }),
+        "ReplicatedStorage/Beta must survive drift recovery"
+    );
+    assert!(
+        state.iter().any(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == "ws_alpha")
+        }),
+        "drifted Workspace/Alpha must be re-synced by full recovery"
+    );
+
+    let services_after = run_cli(&["live-services", "999001"], &storage);
+    let rs_fp_after = services_after
+        .get("services")
+        .and_then(|s| s.get("ReplicatedStorage"))
+        .and_then(|e| e.get("fingerprint"))
+        .and_then(Value::as_str)
+        .expect("ReplicatedStorage fingerprint after recovery");
+    let ws_fp_after = services_after
+        .get("services")
+        .and_then(|s| s.get("Workspace"))
+        .and_then(|e| e.get("fingerprint"))
+        .and_then(Value::as_str)
+        .expect("Workspace fingerprint after recovery");
+    assert_eq!(
+        rs_fp_after, rs_fp_before,
+        "non-drifted ReplicatedStorage fingerprint must be unchanged"
+    );
+    assert_eq!(
+        ws_fp_after, ws_fp_before,
+        "drifted Workspace must match full-baseline fingerprint"
+    );
+
+    let fps = service_fps_from_cli(&storage);
+    let keepalive = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": recovery_resp.get("revision").and_then(Value::as_i64).unwrap_or(0),
+        "serviceFingerprints": fps,
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": null
+    });
+    let keepalive_resp = post_tick(serve.port, &keepalive);
+    assert_eq!(
+        keepalive_resp
+            .get("driftServices")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(0),
+        "post-recovery keepalive must not report drift"
     );
 }
