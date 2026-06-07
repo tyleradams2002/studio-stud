@@ -213,7 +213,298 @@ type GlobalApiModule__DARKLUA_TYPE_k = {
 	reclaim: () -> (),
 }
 
-type ThemeModule__DARKLUA_TYPE_l = {
+type Hex64__DARKLUA_TYPE_l = string
+
+type Bytes__DARKLUA_TYPE_m = { number }
+
+type SessionMode__DARKLUA_TYPE_n = "edit" | "play"
+
+type SourceEncoding__DARKLUA_TYPE_o = "utf8" | "base64"
+
+type PropertyMap__DARKLUA_TYPE_p = { [string]: any }
+
+type AttributeMap__DARKLUA_TYPE_q = { [string]: any }
+
+type Tags__DARKLUA_TYPE_r = { string }
+
+type InstanceEntry__DARKLUA_TYPE_s = {
+	id: string,
+	parentId: string?, -- nil at a captured root
+	path: string,
+	displayPath: string, -- inst:GetFullName(); rides the wire (consumed by daemon for display_path/search_text), NOT in the drift hash
+	name: string,
+	className: string,
+	depth: number,
+	siblingIndex: number,
+	childCount: number,
+	duplicateSiblingName: boolean,
+	properties: PropertyMap__DARKLUA_TYPE_p,
+	attributes: AttributeMap__DARKLUA_TYPE_q,
+	tags: Tags__DARKLUA_TYPE_r,
+	fp: Hex64__DARKLUA_TYPE_l,
+	source: string?, -- LuaSourceContainer text; absent for non-script instances
+	sourceEncoding: SourceEncoding__DARKLUA_TYPE_o?, -- present iff `source` is present
+}
+
+type Ops__DARKLUA_TYPE_t = {
+	upserted: { InstanceEntry__DARKLUA_TYPE_s },
+	removed: { string }, -- removed instance ids
+}
+
+type TickPacket__DARKLUA_TYPE_u = {
+	placeId: string,
+	sessionMode: SessionMode__DARKLUA_TYPE_n,
+	baseRevision: number,
+	serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_l }, -- per captured root service
+	ops: Ops__DARKLUA_TYPE_t,
+	bulkRef: string?, -- set instead of fresh ops when payload spilled to chunks
+}
+
+type ApplyScript__DARKLUA_TYPE_v = {
+	studioPath: string,
+	newSource: string,
+	expectedPriorHash: string,
+}
+
+type TickResponse__DARKLUA_TYPE_w = {
+	ok: boolean,
+	revision: number?,
+	instanceCount: number?,
+	driftServices: { string }?, -- services whose fingerprint disagreed (usually nil/[])
+	request: any?, -- AI-queued job, e.g. { reason = "rebaseline" }
+	applyScripts: { ApplyScript__DARKLUA_TYPE_v }?, -- downstream write channel (reserved)
+	error: string?, -- set on a non-ok response (e.g. "no_baseline")
+}
+
+type ClassPropSet__DARKLUA_TYPE_x = { [string]: boolean }
+
+type AllowList__DARKLUA_TYPE_y = {
+	version: any,
+	sets: { [string]: ClassPropSet__DARKLUA_TYPE_x }, -- [className] = { [propName] = readOnly }
+	lists: { [string]: { string } }, -- [className] = { propName, ... }
+}
+
+type LiveState__DARKLUA_TYPE_z = {
+	liveRunning: boolean,
+	currentRevision: number,
+	liveInstanceCount: number,
+	networkErrorCount: number,
+	dirtyStamp: number, -- monotonic edit counter
+	dirtyUpsert: { [Instance]: boolean },
+	dirtyRemoved: { [string]: boolean }, -- [id] = true
+	upsertStamp: { [Instance]: number }, -- stamp at last mark
+	removedStamp: { [string]: number }, -- [id] = stamp at last mark
+	instFp: { [string]: Hex64__DARKLUA_TYPE_l }, -- [id] = current entry fingerprint
+	serviceFpBytes: { [string]: Bytes__DARKLUA_TYPE_m }, -- [service] = 32-byte XOR accumulator
+}
+
+type SessionMode__DARKLUA_TYPE_A = SessionMode__DARKLUA_TYPE_n
+type Signals__DARKLUA_TYPE_B = {
+	isEdit: boolean,
+	isRunning: boolean,
+}
+
+type SessionModule__DARKLUA_TYPE_C = {
+	-- The pure truth table. The ONLY mode that ships traffic is edit, defined as
+	-- "Studio is in edit AND the game is not running". Every other combination is
+	-- a play/run DataModel and gates to "play" (a pure keepalive). Faithful port
+	-- of `(sig.isEdit and not sig.isRunning) and "edit" or "play"`, written as an
+	-- explicit if/else (the old `a and b or c` form was only safe because "edit"
+	-- is truthy; the if/else removes that footgun without changing the result).
+	decide: (isEdit: boolean, isRunning: boolean) -> SessionMode__DARKLUA_TYPE_A,
+
+	-- Signal accessor: the single point that reads live RunService state. Impure
+	-- by design; everything downstream consumes the typed table or `decide`.
+	signals: () -> Signals__DARKLUA_TYPE_B,
+
+	-- Current mode = decide(signals()). Convenience composition of the two above.
+	mode: () -> SessionMode__DARKLUA_TYPE_A,
+
+	-- True iff the current mode is "edit". The gate every traffic path checks.
+	isEdit: () -> boolean,
+}
+
+type TickResponse__DARKLUA_TYPE_D = TickResponse__DARKLUA_TYPE_w
+type ApplyScript__DARKLUA_TYPE_E = ApplyScript__DARKLUA_TYPE_v
+-- == Internal HTTP request/response shapes ==
+
+-- The request table we hand to HttpService:RequestAsync. The engine's typed
+-- HttpRequestOptions requires a non-optional Compress field; the monolith never
+-- set it (it defaults to None on the engine). We build a plain typed table and
+-- cast at the single RequestAsync boundary so the rest of the module stays
+-- strict without scattering `any`.
+type RequestTable__DARKLUA_TYPE_F = {
+	Url: string,
+	Method: string,
+	Headers: { [string]: string },
+	Timeout: number,
+	Body: string?,
+}
+
+-- Structural mirror of the engine's HttpResponseData (a non-exported local type
+-- in globalTypes.d.luau, so we cannot name it). Pinned here for the RequestAsync
+-- result and the shared decoder.
+type HttpResponse__DARKLUA_TYPE_G = {
+	Success: boolean,
+	StatusCode: number,
+	StatusMessage: string,
+	Headers: { [string]: string },
+	Body: string?,
+}
+type ResponseTable__DARKLUA_TYPE_H = {
+	error: string?,
+	statusCode: number?,
+	body: string?,
+	blockedReason: string?,
+	token: string?,
+	[string]: any,
+}
+type TransportModule__DARKLUA_TYPE_I = {
+	-- Daemon-URL plumbing (verbatim port).
+	parseDaemonUrl: (url: string?) -> (string, string),
+	buildDaemonUrl: (host: string?, port: string?) -> string,
+	currentUrl: () -> string,
+
+	-- S1 loopback guard. `isLoopbackHost` is the pure predicate; the *Loopback
+	-- helpers operate on the configured daemon URL. `assertCaptureAllowed` is the
+	-- gate the capture/source-upload paths call before any data leaves the box:
+	-- returns (true) when loopback, else (false, reason) — never sends.
+	isLoopbackHost: (host: string?) -> boolean,
+	currentUrlIsLoopback: () -> boolean,
+	assertCaptureAllowed: () -> (boolean, string?),
+
+	-- JSON safety net (PORTED VERBATIM — proven).
+	sanitizeJsonValue: (value: any, path: string, report: { string }, seen: { [any]: boolean }?) -> any,
+	safeEncode: (value: any, label: string?) -> (boolean, string),
+
+	-- Request primitives. Each returns (ok, ResponseTable): decoded body on
+	-- success, a `{ error = ... }` shape on failure.
+	requestJson: (method: string, path: string, body: any?, timeoutSeconds: number?) -> (boolean, ResponseTable__DARKLUA_TYPE_H),
+	requestJsonAuthed: (method: string, path: string, body: any?, timeoutSeconds: number?) -> (boolean, ResponseTable__DARKLUA_TYPE_H),
+	requestBody: (path: string, body: string) -> (boolean, ResponseTable__DARKLUA_TYPE_H),
+
+	-- Write-token plumbing. buildAuthedHeaders is exposed for the SelfTest; the
+	-- E5 token cache itself lives in Settings.
+	buildAuthedHeaders: (token: string) -> { [string]: string },
+	fetchWriteToken: () -> string,
+
+	-- Trust boundary: coerce a decoded tick body into the typed TickResponse the
+	-- live engine consumes. Harden-once for the daemon wire.
+	hardenTickResponse: (decoded: any) -> TickResponse__DARKLUA_TYPE_D,
+
+	-- SelfTest seam: the last request table built by requestJsonAuthed, so the
+	-- gate can assert the write-token header was attached.
+	_selfTestLastRequest: RequestTable__DARKLUA_TYPE_F?,
+}
+
+type ClassPropSet__DARKLUA_TYPE_J = ClassPropSet__DARKLUA_TYPE_x type ParsedAllowList__DARKLUA_TYPE_K = AllowList__DARKLUA_TYPE_y type AllowListModule__DARKLUA_TYPE_L = {
+	-- Loaded-from-daemon flag. When false, namesFor/setFor return nil and capture
+	-- uses the static Config.CLASS_PROPERTIES fallback.
+	loaded: boolean,
+	-- Daemon-supplied, opaque version tag (any: the daemon may use a string, a
+	-- number, or omit it). Stored as-is for diagnostics/logging.
+	version: any,
+	-- [className] = { [propName] = readOnly } — O(1) membership, the in-handler
+	-- curated filter.
+	sets: { [string]: ClassPropSet__DARKLUA_TYPE_J },
+	-- [className] = { propName, ... } — ordered, the order capture reads in.
+	lists: { [string]: { string } },
+
+	-- PURE: decode a /allowlist response into per-class sets + ordered lists.
+	-- Returns nil on bad input (non-table, or no `classes` table). Malformed
+	-- per-class / per-entry pieces are dropped, not rejected.
+	parse: (decoded: any) -> ParsedAllowList__DARKLUA_TYPE_K?,
+
+	-- Fetch from the daemon and cache. Returns true on success; on failure logs
+	-- (debug) and leaves the static fallback in place (returns false). Never throws.
+	fetch: () -> boolean,
+
+	-- Ordered property names for an EXACT class (nil if not loaded / class unknown).
+	namesFor: (className: string) -> { string }?,
+	-- Membership set { propName = readOnly } for an EXACT class (nil if not loaded /
+	-- class unknown).
+	setFor: (className: string) -> ClassPropSet__DARKLUA_TYPE_J?,
+}
+
+type Hex64__DARKLUA_TYPE_M = Hex64__DARKLUA_TYPE_l type Bytes__DARKLUA_TYPE_N = Bytes__DARKLUA_TYPE_m type InstanceEntry__DARKLUA_TYPE_O = InstanceEntry__DARKLUA_TYPE_s type HashModule__DARKLUA_TYPE_P = {
+	-- The drift fingerprint of an instance entry: a 64-char lowercase-hex string
+	-- (4 lanes × 16 hex). VERBATIM 4-lane FNV-32 over the canonical pipe string
+	-- (source EXCLUDED). Byte-identical to the monolith's Live.hashInstance.
+	hashInstance: (entry: InstanceEntry__DARKLUA_TYPE_O) -> Hex64__DARKLUA_TYPE_M,
+
+	-- The service (root) name of a path: the leading segment before the first "/"
+	-- (the whole path when there is no "/"). Empty string for a nil/"" path. Used
+	-- to bucket fingerprints into per-service XOR accumulators.
+	serviceOf: (path: string?) -> string,
+
+	-- A fresh 32-zero byte array (one service's empty XOR accumulator).
+	fpZero: () -> Bytes__DARKLUA_TYPE_N,
+	-- Unpack a 64-hex fingerprint into its 32 bytes (0..255). Out-of-range / bad
+	-- hex pairs become 0 (tonumber fallback), matching the monolith.
+	fpHexToBytes: (hex: string) -> Bytes__DARKLUA_TYPE_N,
+	-- Pack a 32-byte array back into 64 lowercase hex (nil bytes → "00").
+	fpBytesToHex: (bytes: Bytes__DARKLUA_TYPE_N) -> Hex64__DARKLUA_TYPE_M,
+	-- In-place XOR of `source` into `target` over 32 bytes (the accumulator op).
+	-- nil entries on either side are treated as 0. Mutates and returns `target`.
+	fpXor: (target: Bytes__DARKLUA_TYPE_N, source: Bytes__DARKLUA_TYPE_N) -> Bytes__DARKLUA_TYPE_N,
+}
+
+type Hex64__DARKLUA_TYPE_Q = Hex64__DARKLUA_TYPE_l type Bytes__DARKLUA_TYPE_R = Bytes__DARKLUA_TYPE_m type FpEntry__DARKLUA_TYPE_S = {
+	fp: Hex64__DARKLUA_TYPE_Q?,
+	path: string,
+	-- The remaining InstanceEntry fields are read ONLY when fp is nil (Hash widens to
+	-- any internally and applies the same `x or default` fallbacks the monolith used),
+	-- so they are optional here.
+	className: string?,
+	name: string?,
+	parentId: string?,
+	depth: number?,
+	siblingIndex: number?,
+	childCount: number?,
+	duplicateSiblingName: boolean?,
+	properties: { [string]: any }?,
+	attributes: { [string]: any }?,
+	tags: { string }?,
+}
+type FingerprintsModule__DARKLUA_TYPE_T = {
+	-- [id] = the instance's current 64-hex fingerprint (the value last XOR'd into a
+	-- service accumulator for that id). Read by the Live engine for removal bookkeeping;
+	-- mutated only through applyFpUpsert / applyFpRemove / reset.
+	instFp: { [string]: Hex64__DARKLUA_TYPE_Q },
+	-- [service] = the 32-byte XOR accumulator of every live instance's fingerprint in
+	-- that service. serviceFingerprintsWire emits these as 64-hex on each tick.
+	serviceFpBytes: { [string]: Bytes__DARKLUA_TYPE_R },
+
+	-- The 64-hex fingerprint of one service: 64 zeros when the service has no
+	-- accumulator yet, else its bytes packed to hex. (Monolith Live.serviceFpHex.)
+	serviceFpHex: (self: FingerprintsModule__DARKLUA_TYPE_T, service: string) -> Hex64__DARKLUA_TYPE_Q,
+
+	-- The serviceFingerprints wire map: { [service] = 64-hex } over every service that
+	-- has an accumulator. This is the TickPacket.serviceFingerprints field.
+	-- (Monolith Live.serviceFingerprintsWire.)
+	serviceFingerprintsWire: (self: FingerprintsModule__DARKLUA_TYPE_T) -> { [string]: Hex64__DARKLUA_TYPE_Q },
+
+	-- Add / update / REPARENT one instance's fingerprint. newFp = entry.fp or
+	-- Hash.hashInstance(entry); MUTATES entry.fp to that value (the monolith did, and
+	-- callers rely on the entry carrying its fp onto the wire). XORs the previously
+	-- stored fingerprint (if any) out of serviceOf(oldPath or entry.path), XORs newFp
+	-- into serviceOf(entry.path), and records instFp[id] = newFp. Pass oldPath when the
+	-- instance moved services (reparent) so the old fingerprint leaves the OLD service.
+	-- (Monolith Live.applyFpUpsert(id, entry, oldPath).)
+	applyFpUpsert: (self: FingerprintsModule__DARKLUA_TYPE_T, id: string, entry: FpEntry__DARKLUA_TYPE_S, oldPath: string?) -> (),
+
+	-- Remove one instance's fingerprint: XOR its stored fingerprint out of
+	-- serviceOf(path) and clear instFp[id]. No-op on the accumulator if the id was
+	-- never recorded. (Monolith Live.applyFpRemove(id, path).)
+	applyFpRemove: (self: FingerprintsModule__DARKLUA_TYPE_T, id: string, path: string?) -> (),
+
+	-- Drop ALL fingerprint state (instFp + serviceFpBytes) — used on full rebaseline /
+	-- drift recovery / teardown so the next baseline rebuilds accumulators from scratch.
+	-- (Monolith Live.resetFingerprints.)
+	reset: (self: FingerprintsModule__DARKLUA_TYPE_T) -> (),
+}
+
+type ThemeModule__DARKLUA_TYPE_U = {
 	-- Palette (Color3, identical RGB to the monolith).
 	panel: Color3,
 	surface: Color3,
@@ -237,19 +528,19 @@ type ThemeModule__DARKLUA_TYPE_l = {
 	PAD: number,
 }
 
-type MsSlider__DARKLUA_TYPE_m = {
+type MsSlider__DARKLUA_TYPE_V = {
 	setValue: (ms: number) -> (),
 	getValue: () -> number,
 	disconnect: () -> (),
 }
 
-type StatusCard__DARKLUA_TYPE_n = {
+type StatusCard__DARKLUA_TYPE_W = {
 	frame: Frame,
 	setState: (state: string, message: string) -> (),
 	setStats: (text: string?) -> (),
 }
 
-type UiModule__DARKLUA_TYPE_o = {
+type UiModule__DARKLUA_TYPE_X = {
 	makeCorner: (parent: Instance, radius: number?) -> UICorner,
 	makeStroke: (parent: Instance, color: Color3, thickness: number?) -> UIStroke,
 	makeLabel: (parent: Instance, text: string, y: number, height: number?, textColor: Color3?) -> TextLabel,
@@ -263,171 +554,14 @@ type UiModule__DARKLUA_TYPE_o = {
 		maxMs: number,
 		initialMs: number,
 		onChanged: ((ms: number) -> ())?
-	) -> MsSlider__DARKLUA_TYPE_m,
-	makeStatusCard: (parent: Instance, y: number) -> StatusCard__DARKLUA_TYPE_n,
+	) -> MsSlider__DARKLUA_TYPE_V,
+	makeStatusCard: (parent: Instance, y: number) -> StatusCard__DARKLUA_TYPE_W,
 	makeVectorLogo: (parent: Instance, size: number) -> Frame,
 	makeBrandBadge: (parent: Instance) -> Frame,
 }
 
-type Hex64__DARKLUA_TYPE_p = string
-
-type Bytes__DARKLUA_TYPE_q = { number }
-
-type SessionMode__DARKLUA_TYPE_r = "edit" | "play"
-
-type SourceEncoding__DARKLUA_TYPE_s = "utf8" | "base64"
-
-type PropertyMap__DARKLUA_TYPE_t = { [string]: any }
-
-type AttributeMap__DARKLUA_TYPE_u = { [string]: any }
-
-type Tags__DARKLUA_TYPE_v = { string }
-
-type InstanceEntry__DARKLUA_TYPE_w = {
-	id: string,
-	parentId: string?, -- nil at a captured root
-	path: string,
-	displayPath: string, -- inst:GetFullName(); rides the wire (consumed by daemon for display_path/search_text), NOT in the drift hash
-	name: string,
-	className: string,
-	depth: number,
-	siblingIndex: number,
-	childCount: number,
-	duplicateSiblingName: boolean,
-	properties: PropertyMap__DARKLUA_TYPE_t,
-	attributes: AttributeMap__DARKLUA_TYPE_u,
-	tags: Tags__DARKLUA_TYPE_v,
-	fp: Hex64__DARKLUA_TYPE_p,
-	source: string?, -- LuaSourceContainer text; absent for non-script instances
-	sourceEncoding: SourceEncoding__DARKLUA_TYPE_s?, -- present iff `source` is present
-}
-
-type Ops__DARKLUA_TYPE_x = {
-	upserted: { InstanceEntry__DARKLUA_TYPE_w },
-	removed: { string }, -- removed instance ids
-}
-
-type TickPacket__DARKLUA_TYPE_y = {
-	placeId: string,
-	sessionMode: SessionMode__DARKLUA_TYPE_r,
-	baseRevision: number,
-	serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_p }, -- per captured root service
-	ops: Ops__DARKLUA_TYPE_x,
-	bulkRef: string?, -- set instead of fresh ops when payload spilled to chunks
-}
-
-type ApplyScript__DARKLUA_TYPE_z = {
-	studioPath: string,
-	newSource: string,
-	expectedPriorHash: string,
-}
-
-type TickResponse__DARKLUA_TYPE_A = {
-	ok: boolean,
-	revision: number?,
-	instanceCount: number?,
-	driftServices: { string }?, -- services whose fingerprint disagreed (usually nil/[])
-	request: any?, -- AI-queued job, e.g. { reason = "rebaseline" }
-	applyScripts: { ApplyScript__DARKLUA_TYPE_z }?, -- downstream write channel (reserved)
-	error: string?, -- set on a non-ok response (e.g. "no_baseline")
-}
-
-type ClassPropSet__DARKLUA_TYPE_B = { [string]: boolean }
-
-type AllowList__DARKLUA_TYPE_C = {
-	version: any,
-	sets: { [string]: ClassPropSet__DARKLUA_TYPE_B }, -- [className] = { [propName] = readOnly }
-	lists: { [string]: { string } }, -- [className] = { propName, ... }
-}
-
-type LiveState__DARKLUA_TYPE_D = {
-	liveRunning: boolean,
-	currentRevision: number,
-	liveInstanceCount: number,
-	networkErrorCount: number,
-	dirtyStamp: number, -- monotonic edit counter
-	dirtyUpsert: { [Instance]: boolean },
-	dirtyRemoved: { [string]: boolean }, -- [id] = true
-	upsertStamp: { [Instance]: number }, -- stamp at last mark
-	removedStamp: { [string]: number }, -- [id] = stamp at last mark
-	instFp: { [string]: Hex64__DARKLUA_TYPE_p }, -- [id] = current entry fingerprint
-	serviceFpBytes: { [string]: Bytes__DARKLUA_TYPE_q }, -- [service] = 32-byte XOR accumulator
-}
-
-type TickResponse__DARKLUA_TYPE_E = TickResponse__DARKLUA_TYPE_A
-type ApplyScript__DARKLUA_TYPE_F = ApplyScript__DARKLUA_TYPE_z
--- == Internal HTTP request/response shapes ==
-
--- The request table we hand to HttpService:RequestAsync. The engine's typed
--- HttpRequestOptions requires a non-optional Compress field; the monolith never
--- set it (it defaults to None on the engine). We build a plain typed table and
--- cast at the single RequestAsync boundary so the rest of the module stays
--- strict without scattering `any`.
-type RequestTable__DARKLUA_TYPE_G = {
-	Url: string,
-	Method: string,
-	Headers: { [string]: string },
-	Timeout: number,
-	Body: string?,
-}
-
--- Structural mirror of the engine's HttpResponseData (a non-exported local type
--- in globalTypes.d.luau, so we cannot name it). Pinned here for the RequestAsync
--- result and the shared decoder.
-type HttpResponse__DARKLUA_TYPE_H = {
-	Success: boolean,
-	StatusCode: number,
-	StatusMessage: string,
-	Headers: { [string]: string },
-	Body: string?,
-}
-type ResponseTable__DARKLUA_TYPE_I = {
-	error: string?,
-	statusCode: number?,
-	body: string?,
-	blockedReason: string?,
-	token: string?,
-	[string]: any,
-}
-type TransportModule__DARKLUA_TYPE_J = {
-	-- Daemon-URL plumbing (verbatim port).
-	parseDaemonUrl: (url: string?) -> (string, string),
-	buildDaemonUrl: (host: string?, port: string?) -> string,
-	currentUrl: () -> string,
-
-	-- S1 loopback guard. `isLoopbackHost` is the pure predicate; the *Loopback
-	-- helpers operate on the configured daemon URL. `assertCaptureAllowed` is the
-	-- gate the capture/source-upload paths call before any data leaves the box:
-	-- returns (true) when loopback, else (false, reason) — never sends.
-	isLoopbackHost: (host: string?) -> boolean,
-	currentUrlIsLoopback: () -> boolean,
-	assertCaptureAllowed: () -> (boolean, string?),
-
-	-- JSON safety net (PORTED VERBATIM — proven).
-	sanitizeJsonValue: (value: any, path: string, report: { string }, seen: { [any]: boolean }?) -> any,
-	safeEncode: (value: any, label: string?) -> (boolean, string),
-
-	-- Request primitives. Each returns (ok, ResponseTable): decoded body on
-	-- success, a `{ error = ... }` shape on failure.
-	requestJson: (method: string, path: string, body: any?, timeoutSeconds: number?) -> (boolean, ResponseTable__DARKLUA_TYPE_I),
-	requestJsonAuthed: (method: string, path: string, body: any?, timeoutSeconds: number?) -> (boolean, ResponseTable__DARKLUA_TYPE_I),
-	requestBody: (path: string, body: string) -> (boolean, ResponseTable__DARKLUA_TYPE_I),
-
-	-- Write-token plumbing. buildAuthedHeaders is exposed for the SelfTest; the
-	-- E5 token cache itself lives in Settings.
-	buildAuthedHeaders: (token: string) -> { [string]: string },
-	fetchWriteToken: () -> string,
-
-	-- Trust boundary: coerce a decoded tick body into the typed TickResponse the
-	-- live engine consumes. Harden-once for the daemon wire.
-	hardenTickResponse: (decoded: any) -> TickResponse__DARKLUA_TYPE_E,
-
-	-- SelfTest seam: the last request table built by requestJsonAuthed, so the
-	-- gate can assert the write-token header was attached.
-	_selfTestLastRequest: RequestTable__DARKLUA_TYPE_G?,
-}
-
-type StatusCard__DARKLUA_TYPE_K = StatusCard__DARKLUA_TYPE_n type ShellContext__DARKLUA_TYPE_L = {
+type StatusCard__DARKLUA_TYPE_Y = StatusCard__DARKLUA_TYPE_W
+type ShellContext__DARKLUA_TYPE_Z = {
 	theme: typeof(Theme),
 	ui: typeof(Ui),
 	transport: typeof(Transport),
@@ -439,7 +573,8 @@ type StatusCard__DARKLUA_TYPE_K = StatusCard__DARKLUA_TYPE_n type ShellContext__
 	isConnected: () -> boolean,
 	setConnected: (value: boolean) -> (),
 }
-type ShellModule__DARKLUA_TYPE_M = {
+
+type ShellModule__DARKLUA_TYPE__ = {
 	-- Mutable view state (held on the table, not a closure — see header).
 	widget: DockWidgetPluginGui,
 	toolbarButton: PluginToolbarButton,
@@ -448,11 +583,12 @@ type ShellModule__DARKLUA_TYPE_M = {
 	panelHost: Frame?,
 	tabStrip: Frame?,
 	settingsFrame: Frame?,
-	statusCard: StatusCard__DARKLUA_TYPE_K?,
+	statusCard: StatusCard__DARKLUA_TYPE_Y?,
 	connected: boolean,
+	autoConnectGeneration: number,
 
 	-- Build the panel context every panel's build receives.
-	makeCtx: () -> ShellContext__DARKLUA_TYPE_L,
+	makeCtx: () -> ShellContext__DARKLUA_TYPE_Z,
 
 	-- Re-render the tab strip from the Registry's enabled list + selection.
 	renderTabStrip: () -> (),
@@ -472,101 +608,35 @@ type ShellModule__DARKLUA_TYPE_M = {
 	onWidgetEnabled: () -> (),
 }
 
-type SessionMode__DARKLUA_TYPE_N = SessionMode__DARKLUA_TYPE_r type Signals__DARKLUA_TYPE_O = {
-	isEdit: boolean,
-	isRunning: boolean,
-}
-type SessionModule__DARKLUA_TYPE_P = {
-	-- The pure truth table. The ONLY mode that ships traffic is edit, defined as
-	-- "Studio is in edit AND the game is not running". Every other combination is
-	-- a play/run DataModel and gates to "play" (a pure keepalive). Faithful port
-	-- of `(sig.isEdit and not sig.isRunning) and "edit" or "play"`, written as an
-	-- explicit if/else (the old `a and b or c` form was only safe because "edit"
-	-- is truthy; the if/else removes that footgun without changing the result).
-	decide: (isEdit: boolean, isRunning: boolean) -> SessionMode__DARKLUA_TYPE_N,
+type SelfTestModule__DARKLUA_TYPE_0 = {
+	-- One assertion: print PASS, or record `name` in `failures` and warn FAIL.
+	-- Faithful to the monolith's SelfTest.assert(name, condition, failures).
+	assert: (name: string, condition: any, failures: { string }) -> (),
 
-	-- Signal accessor: the single point that reads live RunService state. Impure
-	-- by design; everything downstream consumes the typed table or `decide`.
-	signals: () -> Signals__DARKLUA_TYPE_O,
-
-	-- Current mode = decide(signals()). Convenience composition of the two above.
-	mode: () -> SessionMode__DARKLUA_TYPE_N,
-
-	-- True iff the current mode is "edit". The gate every traffic path checks.
-	isEdit: () -> boolean,
+	-- Run the whole suite in the live edit DataModel. Returns true iff every check
+	-- passed (the bare boolean the monolith returned and GlobalApi.RunSelfTest
+	-- publishes). Restores all settings/registry it touched before returning.
+	run: () -> boolean,
 }
 
-type ClassPropSet__DARKLUA_TYPE_Q = ClassPropSet__DARKLUA_TYPE_B type ParsedAllowList__DARKLUA_TYPE_R = AllowList__DARKLUA_TYPE_C type AllowListModule__DARKLUA_TYPE_S = {
-	-- Loaded-from-daemon flag. When false, namesFor/setFor return nil and capture
-	-- uses the static Config.CLASS_PROPERTIES fallback.
-	loaded: boolean,
-	-- Daemon-supplied, opaque version tag (any: the daemon may use a string, a
-	-- number, or omit it). Stored as-is for diagnostics/logging.
-	version: any,
-	-- [className] = { [propName] = readOnly } — O(1) membership, the in-handler
-	-- curated filter.
-	sets: { [string]: ClassPropSet__DARKLUA_TYPE_Q },
-	-- [className] = { propName, ... } — ordered, the order capture reads in.
-	lists: { [string]: { string } },
-
-	-- PURE: decode a /allowlist response into per-class sets + ordered lists.
-	-- Returns nil on bad input (non-table, or no `classes` table). Malformed
-	-- per-class / per-entry pieces are dropped, not rejected.
-	parse: (decoded: any) -> ParsedAllowList__DARKLUA_TYPE_R?,
-
-	-- Fetch from the daemon and cache. Returns true on success; on failure logs
-	-- (debug) and leaves the static fallback in place (returns false). Never throws.
-	fetch: () -> boolean,
-
-	-- Ordered property names for an EXACT class (nil if not loaded / class unknown).
-	namesFor: (className: string) -> { string }?,
-	-- Membership set { propName = readOnly } for an EXACT class (nil if not loaded /
-	-- class unknown).
-	setFor: (className: string) -> ClassPropSet__DARKLUA_TYPE_Q?,
-}
-
-type Hex64__DARKLUA_TYPE_T = Hex64__DARKLUA_TYPE_p type Bytes__DARKLUA_TYPE_U = Bytes__DARKLUA_TYPE_q type InstanceEntry__DARKLUA_TYPE_V = InstanceEntry__DARKLUA_TYPE_w
-type HashModule__DARKLUA_TYPE_W = {
-	-- The drift fingerprint of an instance entry: a 64-char lowercase-hex string
-	-- (4 lanes × 16 hex). VERBATIM 4-lane FNV-32 over the canonical pipe string
-	-- (source EXCLUDED). Byte-identical to the monolith's Live.hashInstance.
-	hashInstance: (entry: InstanceEntry__DARKLUA_TYPE_V) -> Hex64__DARKLUA_TYPE_T,
-
-	-- The service (root) name of a path: the leading segment before the first "/"
-	-- (the whole path when there is no "/"). Empty string for a nil/"" path. Used
-	-- to bucket fingerprints into per-service XOR accumulators.
-	serviceOf: (path: string?) -> string,
-
-	-- A fresh 32-zero byte array (one service's empty XOR accumulator).
-	fpZero: () -> Bytes__DARKLUA_TYPE_U,
-	-- Unpack a 64-hex fingerprint into its 32 bytes (0..255). Out-of-range / bad
-	-- hex pairs become 0 (tonumber fallback), matching the monolith.
-	fpHexToBytes: (hex: string) -> Bytes__DARKLUA_TYPE_U,
-	-- Pack a 32-byte array back into 64 lowercase hex (nil bytes → "00").
-	fpBytesToHex: (bytes: Bytes__DARKLUA_TYPE_U) -> Hex64__DARKLUA_TYPE_T,
-	-- In-place XOR of `source` into `target` over 32 bytes (the accumulator op).
-	-- nil entries on either side are treated as 0. Mutates and returns `target`.
-	fpXor: (target: Bytes__DARKLUA_TYPE_U, source: Bytes__DARKLUA_TYPE_U) -> Bytes__DARKLUA_TYPE_U,
-}
-
-type InstanceEntry__DARKLUA_TYPE_X = InstanceEntry__DARKLUA_TYPE_w
-type PropertyMap__DARKLUA_TYPE_Y = PropertyMap__DARKLUA_TYPE_t
-type AttributeMap__DARKLUA_TYPE_Z = AttributeMap__DARKLUA_TYPE_u
-type Tags__DARKLUA_TYPE__ = Tags__DARKLUA_TYPE_v
-type ClassPropSet__DARKLUA_TYPE_0 = ClassPropSet__DARKLUA_TYPE_B
-type SourceEncoding__DARKLUA_TYPE_1 = SourceEncoding__DARKLUA_TYPE_s
-type PropertyError__DARKLUA_TYPE_2 = {
+type InstanceEntry__DARKLUA_TYPE_1 = InstanceEntry__DARKLUA_TYPE_s
+type PropertyMap__DARKLUA_TYPE_2 = PropertyMap__DARKLUA_TYPE_p
+type AttributeMap__DARKLUA_TYPE_3 = AttributeMap__DARKLUA_TYPE_q
+type Tags__DARKLUA_TYPE_4 = Tags__DARKLUA_TYPE_r
+type ClassPropSet__DARKLUA_TYPE_5 = ClassPropSet__DARKLUA_TYPE_x
+type SourceEncoding__DARKLUA_TYPE_6 = SourceEncoding__DARKLUA_TYPE_o
+type PropertyError__DARKLUA_TYPE_7 = {
 	property: string,
 	error: string,
 }
 
-type RootEntry__DARKLUA_TYPE_3 = {
+type RootEntry__DARKLUA_TYPE_8 = {
 	name: string,
 	instance: Instance,
 	includeDescendants: boolean,
 }
 
-type Snapshot__DARKLUA_TYPE_4 = {
+type Snapshot__DARKLUA_TYPE_9 = {
 	formatVersion: number,
 	snapshotKind: string,
 	serviceName: string,
@@ -588,19 +658,19 @@ type Snapshot__DARKLUA_TYPE_4 = {
 	instances: { any },
 }
 
-type SnapshotOptions__DARKLUA_TYPE_5 = {
+type SnapshotOptions__DARKLUA_TYPE_aa = {
 	reason: string?,
 	requestId: any?,
 }
 
-type SiblingMemo__DARKLUA_TYPE_6 = {
+type SiblingMemo__DARKLUA_TYPE_ab = {
 	[Instance]: {
 		counts: { [string]: number },
 		children: { Instance },
 	},
 }
 
-type CaptureModule__DARKLUA_TYPE_7 = {
+type CaptureModule__DARKLUA_TYPE_ac = {
 	-- Per-walk identity maps. Rebuilt by collectBaseInstances; read by serializeValue
 	-- (InstanceRef) and buildUpsertedEntry. Exposed so the Live engine can resolve an
 	-- instance's id/path (e.g. for removal bookkeeping) against the same maps capture
@@ -623,12 +693,12 @@ type CaptureModule__DARKLUA_TYPE_7 = {
 	-- class, else static IsA-accumulation). curatedSet is the membership set for the
 	-- class (AllowList set, else built from the names with readOnly=false).
 	getPropertyNames: (inst: Instance) -> { string },
-	curatedSet: (inst: Instance) -> ClassPropSet__DARKLUA_TYPE_0,
+	curatedSet: (inst: Instance) -> ClassPropSet__DARKLUA_TYPE_5,
 
 	-- Property reads. readProperties is optimistic batch-pcall with per-property
 	-- fallback (readPropsFrom) + Model bounding-box/pivot. Both return (props, errors).
-	readPropsFrom: (inst: any, names: { string }) -> (PropertyMap__DARKLUA_TYPE_Y, { PropertyError__DARKLUA_TYPE_2 }),
-	readProperties: (inst: Instance) -> (PropertyMap__DARKLUA_TYPE_Y, { PropertyError__DARKLUA_TYPE_2 }),
+	readPropsFrom: (inst: any, names: { string }) -> (PropertyMap__DARKLUA_TYPE_2, { PropertyError__DARKLUA_TYPE_7 }),
+	readProperties: (inst: Instance) -> (PropertyMap__DARKLUA_TYPE_2, { PropertyError__DARKLUA_TYPE_7 }),
 
 	-- base64 codec (the source non-UTF-8 path). Ported verbatim (the daemon decodes
 	-- the same alphabet/padding).
@@ -637,19 +707,19 @@ type CaptureModule__DARKLUA_TYPE_7 = {
 
 	-- LuaSourceContainer source: (text, encoding) as utf8, or (base64, "base64") when
 	-- not valid UTF-8; (nil, nil) for non-script instances or a read failure.
-	readSource: (inst: Instance) -> (string?, SourceEncoding__DARKLUA_TYPE_1?),
+	readSource: (inst: Instance) -> (string?, SourceEncoding__DARKLUA_TYPE_6?),
 	-- All attributes (no whitelist), serialized; second return is errors.
-	readAttributes: (inst: Instance) -> (AttributeMap__DARKLUA_TYPE_Z, { PropertyError__DARKLUA_TYPE_2 }),
+	readAttributes: (inst: Instance) -> (AttributeMap__DARKLUA_TYPE_3, { PropertyError__DARKLUA_TYPE_7 }),
 	-- CollectionService tags in capture order ({} on failure).
-	readTags: (inst: Instance) -> Tags__DARKLUA_TYPE__,
+	readTags: (inst: Instance) -> Tags__DARKLUA_TYPE_4,
 
 	-- The yielding baseline walk. getRootEntries -> ordered captured services;
 	-- collectBaseInstances -> (structural entries, rootNames) + populated id/path
 	-- maps; buildSnapshot -> the full snapshot envelope (props/attrs/tags/source
 	-- filled in a second yielding pass).
-	getRootEntries: () -> { RootEntry__DARKLUA_TYPE_3 },
+	getRootEntries: () -> { RootEntry__DARKLUA_TYPE_8 },
 	collectBaseInstances: () -> ({ any }, { string }),
-	buildSnapshot: (options: SnapshotOptions__DARKLUA_TYPE_5?) -> Snapshot__DARKLUA_TYPE_4,
+	buildSnapshot: (options: SnapshotOptions__DARKLUA_TYPE_aa?) -> Snapshot__DARKLUA_TYPE_9,
 
 	-- The live per-instance entry builder. Returns (entry, oldPath): entry with fp
 	-- set via Hash, oldPath = the path the instance had in pathByRef before this
@@ -658,74 +728,16 @@ type CaptureModule__DARKLUA_TYPE_7 = {
 	-- among its siblings, or its parent's GetChildren throws (mirrors the monolith's
 	-- early-outs). `memo` (optional, E2) collapses per-parent sibling scans within a
 	-- single flush.
-	buildUpsertedEntry: (inst: Instance, memo: SiblingMemo__DARKLUA_TYPE_6?) -> (InstanceEntry__DARKLUA_TYPE_X?, string?),
-}
-
-type Hex64__DARKLUA_TYPE_8 = Hex64__DARKLUA_TYPE_p
-type Bytes__DARKLUA_TYPE_9 = Bytes__DARKLUA_TYPE_q
-type FpEntry__DARKLUA_TYPE_aa = {
-	fp: Hex64__DARKLUA_TYPE_8?,
-	path: string,
-	-- The remaining InstanceEntry fields are read ONLY when fp is nil (Hash widens to
-	-- any internally and applies the same `x or default` fallbacks the monolith used),
-	-- so they are optional here.
-	className: string?,
-	name: string?,
-	parentId: string?,
-	depth: number?,
-	siblingIndex: number?,
-	childCount: number?,
-	duplicateSiblingName: boolean?,
-	properties: { [string]: any }?,
-	attributes: { [string]: any }?,
-	tags: { string }?,
-}
-
-type FingerprintsModule__DARKLUA_TYPE_ab = {
-	-- [id] = the instance's current 64-hex fingerprint (the value last XOR'd into a
-	-- service accumulator for that id). Read by the Live engine for removal bookkeeping;
-	-- mutated only through applyFpUpsert / applyFpRemove / reset.
-	instFp: { [string]: Hex64__DARKLUA_TYPE_8 },
-	-- [service] = the 32-byte XOR accumulator of every live instance's fingerprint in
-	-- that service. serviceFingerprintsWire emits these as 64-hex on each tick.
-	serviceFpBytes: { [string]: Bytes__DARKLUA_TYPE_9 },
-
-	-- The 64-hex fingerprint of one service: 64 zeros when the service has no
-	-- accumulator yet, else its bytes packed to hex. (Monolith Live.serviceFpHex.)
-	serviceFpHex: (self: FingerprintsModule__DARKLUA_TYPE_ab, service: string) -> Hex64__DARKLUA_TYPE_8,
-
-	-- The serviceFingerprints wire map: { [service] = 64-hex } over every service that
-	-- has an accumulator. This is the TickPacket.serviceFingerprints field.
-	-- (Monolith Live.serviceFingerprintsWire.)
-	serviceFingerprintsWire: (self: FingerprintsModule__DARKLUA_TYPE_ab) -> { [string]: Hex64__DARKLUA_TYPE_8 },
-
-	-- Add / update / REPARENT one instance's fingerprint. newFp = entry.fp or
-	-- Hash.hashInstance(entry); MUTATES entry.fp to that value (the monolith did, and
-	-- callers rely on the entry carrying its fp onto the wire). XORs the previously
-	-- stored fingerprint (if any) out of serviceOf(oldPath or entry.path), XORs newFp
-	-- into serviceOf(entry.path), and records instFp[id] = newFp. Pass oldPath when the
-	-- instance moved services (reparent) so the old fingerprint leaves the OLD service.
-	-- (Monolith Live.applyFpUpsert(id, entry, oldPath).)
-	applyFpUpsert: (self: FingerprintsModule__DARKLUA_TYPE_ab, id: string, entry: FpEntry__DARKLUA_TYPE_aa, oldPath: string?) -> (),
-
-	-- Remove one instance's fingerprint: XOR its stored fingerprint out of
-	-- serviceOf(path) and clear instFp[id]. No-op on the accumulator if the id was
-	-- never recorded. (Monolith Live.applyFpRemove(id, path).)
-	applyFpRemove: (self: FingerprintsModule__DARKLUA_TYPE_ab, id: string, path: string?) -> (),
-
-	-- Drop ALL fingerprint state (instFp + serviceFpBytes) — used on full rebaseline /
-	-- drift recovery / teardown so the next baseline rebuilds accumulators from scratch.
-	-- (Monolith Live.resetFingerprints.)
-	reset: (self: FingerprintsModule__DARKLUA_TYPE_ab) -> (),
+	buildUpsertedEntry: (inst: Instance, memo: SiblingMemo__DARKLUA_TYPE_ab?) -> (InstanceEntry__DARKLUA_TYPE_1?, string?),
 }
 
 	-- Build the depth-sorted upsert work list (parents first).
-	type WorkItem__DARKLUA_TYPE_ai = { inst: Instance, depth: number }
+	type WorkItem__DARKLUA_TYPE_aj = { inst: Instance, depth: number }
 
-type InstanceEntry__DARKLUA_TYPE_ac = InstanceEntry__DARKLUA_TYPE_w type Ops__DARKLUA_TYPE_ad = Ops__DARKLUA_TYPE_x
-type SessionMode__DARKLUA_TYPE_ae = SessionMode__DARKLUA_TYPE_r
-type Hex64__DARKLUA_TYPE_af = Hex64__DARKLUA_TYPE_p
-type LiveHost__DARKLUA_TYPE_ag = {
+type InstanceEntry__DARKLUA_TYPE_ad = InstanceEntry__DARKLUA_TYPE_s type Ops__DARKLUA_TYPE_ae = Ops__DARKLUA_TYPE_t
+type SessionMode__DARKLUA_TYPE_af = SessionMode__DARKLUA_TYPE_n
+type Hex64__DARKLUA_TYPE_ag = Hex64__DARKLUA_TYPE_l
+type LiveHost__DARKLUA_TYPE_ah = {
 	transport: {
 		requestJson: (method: string, path: string, body: any?, timeoutSeconds: number?) -> (boolean, any),
 		requestBody: (path: string, body: string) -> (boolean, any),
@@ -740,7 +752,7 @@ type LiveHost__DARKLUA_TYPE_ag = {
 	isRunning: () -> boolean,
 }
 
-type LiveModule__DARKLUA_TYPE_ah = {
+type LiveModule__DARKLUA_TYPE_ai = {
 	-- Live engine state (Types.LiveState fields are mirrored here; the accumulator
 	-- halves instFp/serviceFpBytes live on Fingerprints, reached via the FP methods).
 	liveRunning: boolean,
@@ -766,79 +778,79 @@ type LiveModule__DARKLUA_TYPE_ah = {
 	historyDirty: boolean,
 
 	-- The host seam; a no-op stub until attach() injects the real orchestrator.
-	host: LiveHost__DARKLUA_TYPE_ag,
-	attach: (self: LiveModule__DARKLUA_TYPE_ah, host: LiveHost__DARKLUA_TYPE_ag) -> (),
+	host: LiveHost__DARKLUA_TYPE_ah,
+	attach: (self: LiveModule__DARKLUA_TYPE_ai, host: LiveHost__DARKLUA_TYPE_ah) -> (),
 
 	-- Dirty marking (lazy; handlers set dirty only, values read at tick time).
-	markDirtyUpsert: (self: LiveModule__DARKLUA_TYPE_ah, inst: Instance) -> (),
-	markDirtyRemoved: (self: LiveModule__DARKLUA_TYPE_ah, id: string) -> (),
-	markSubtreeUpsert: (self: LiveModule__DARKLUA_TYPE_ah, root: Instance) -> (),
-	markSiblingsDirty: (self: LiveModule__DARKLUA_TYPE_ah, parent: Instance?, name: string) -> (),
+	markDirtyUpsert: (self: LiveModule__DARKLUA_TYPE_ai, inst: Instance) -> (),
+	markDirtyRemoved: (self: LiveModule__DARKLUA_TYPE_ai, id: string) -> (),
+	markSubtreeUpsert: (self: LiveModule__DARKLUA_TYPE_ai, root: Instance) -> (),
+	markSiblingsDirty: (self: LiveModule__DARKLUA_TYPE_ai, parent: Instance?, name: string) -> (),
 
 	-- Property classification (pure; O(1) lookup).
-	classifyChangedProp: (self: LiveModule__DARKLUA_TYPE_ah, prop: string, curatedSet: { [string]: boolean }) -> string,
-	recordPropGap: (self: LiveModule__DARKLUA_TYPE_ah, className: string?, prop: any) -> (),
-	onNameChanged: (self: LiveModule__DARKLUA_TYPE_ah, inst: Instance) -> (),
+	classifyChangedProp: (self: LiveModule__DARKLUA_TYPE_ai, prop: string, curatedSet: { [string]: boolean }) -> string,
+	recordPropGap: (self: LiveModule__DARKLUA_TYPE_ai, className: string?, prop: any) -> (),
+	onNameChanged: (self: LiveModule__DARKLUA_TYPE_ai, inst: Instance) -> (),
 
 	-- Per-instance signal wiring.
-	registerInstance: (self: LiveModule__DARKLUA_TYPE_ah, inst: Instance) -> (),
-	unregisterInstance: (self: LiveModule__DARKLUA_TYPE_ah, inst: Instance) -> (),
-	unregisterSubtree: (self: LiveModule__DARKLUA_TYPE_ah, root: Instance) -> (),
-	onDescendantAdded: (self: LiveModule__DARKLUA_TYPE_ah, child: Instance) -> (),
-	onDescendantRemoving: (self: LiveModule__DARKLUA_TYPE_ah, child: Instance) -> (),
+	registerInstance: (self: LiveModule__DARKLUA_TYPE_ai, inst: Instance) -> (),
+	unregisterInstance: (self: LiveModule__DARKLUA_TYPE_ai, inst: Instance) -> (),
+	unregisterSubtree: (self: LiveModule__DARKLUA_TYPE_ai, root: Instance) -> (),
+	onDescendantAdded: (self: LiveModule__DARKLUA_TYPE_ai, child: Instance) -> (),
+	onDescendantRemoving: (self: LiveModule__DARKLUA_TYPE_ai, child: Instance) -> (),
 
 	-- Op collection + stamp clearing (the no-data-loss path).
-	collectOpsFromDirty: (self: LiveModule__DARKLUA_TYPE_ah) -> (
-		{ InstanceEntry__DARKLUA_TYPE_ac },
+	collectOpsFromDirty: (self: LiveModule__DARKLUA_TYPE_ai) -> (
+		{ InstanceEntry__DARKLUA_TYPE_ad },
 		{ string },
 		{ [Instance]: number },
 		{ [string]: number }
 	),
 	clearSentDirty: (
-		self: LiveModule__DARKLUA_TYPE_ah,
+		self: LiveModule__DARKLUA_TYPE_ai,
 		sentUpsertStamps: { [Instance]: number },
 		sentRemovedStamps: { [string]: number }
 	) -> (),
 
 	-- Tick body + payload sizing.
-	tickQuerySuffix: (self: LiveModule__DARKLUA_TYPE_ah) -> string,
+	tickQuerySuffix: (self: LiveModule__DARKLUA_TYPE_ai) -> string,
 	buildTickBody: (
-		self: LiveModule__DARKLUA_TYPE_ah,
+		self: LiveModule__DARKLUA_TYPE_ai,
 		placeId: any,
-		sessionMode: SessionMode__DARKLUA_TYPE_ae,
+		sessionMode: SessionMode__DARKLUA_TYPE_af,
 		baseRevision: number,
-		serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_af },
-		ops: Ops__DARKLUA_TYPE_ad,
+		serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_ag },
+		ops: Ops__DARKLUA_TYPE_ae,
 		bulkRef: string?
 	) -> any,
 
 	-- Baseline + bulk upload.
-	initFingerprintsFromWalk: (self: LiveModule__DARKLUA_TYPE_ah) -> (),
-	buildBaselineSnapshot: (self: LiveModule__DARKLUA_TYPE_ah, reason: string?) -> any,
-	uploadTickBulk: (self: LiveModule__DARKLUA_TYPE_ah, jsonText: string, reason: string?) -> (boolean, any),
-	triggerFullBaseline: (self: LiveModule__DARKLUA_TYPE_ah, reason: string?) -> boolean,
-	triggerDriftRecovery: (self: LiveModule__DARKLUA_TYPE_ah, driftServices: { string }?) -> boolean,
-	triggerRebaseline: (self: LiveModule__DARKLUA_TYPE_ah, reason: string?) -> (),
+	initFingerprintsFromWalk: (self: LiveModule__DARKLUA_TYPE_ai) -> (),
+	buildBaselineSnapshot: (self: LiveModule__DARKLUA_TYPE_ai, reason: string?) -> any,
+	uploadTickBulk: (self: LiveModule__DARKLUA_TYPE_ai, jsonText: string, reason: string?) -> (boolean, any),
+	triggerFullBaseline: (self: LiveModule__DARKLUA_TYPE_ai, reason: string?) -> boolean,
+	triggerDriftRecovery: (self: LiveModule__DARKLUA_TYPE_ai, driftServices: { string }?) -> boolean,
+	triggerRebaseline: (self: LiveModule__DARKLUA_TYPE_ai, reason: string?) -> (),
 
 	-- The tick + loop.
-	runTick: (self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMode__DARKLUA_TYPE_ae?) -> (),
+	runTick: (self: LiveModule__DARKLUA_TYPE_ai, sessionMode: SessionMode__DARKLUA_TYPE_af?) -> (),
 	startTickLoop: (
-		self: LiveModule__DARKLUA_TYPE_ah,
+		self: LiveModule__DARKLUA_TYPE_ai,
 		pausedBaselineRef: { revision: number, instanceCount: number }?,
 		onReturnToEditFn: (() -> ())?
 	) -> (),
 
 	-- Connect / teardown / session transitions.
-	connectLiveMode: (self: LiveModule__DARKLUA_TYPE_ah) -> boolean,
-	setupAfterBaseline: (self: LiveModule__DARKLUA_TYPE_ah, materialized: any?) -> (),
-	teardown: (self: LiveModule__DARKLUA_TYPE_ah) -> (),
+	connectLiveMode: (self: LiveModule__DARKLUA_TYPE_ai) -> boolean,
+	setupAfterBaseline: (self: LiveModule__DARKLUA_TYPE_ai, materialized: any?) -> (),
+	teardown: (self: LiveModule__DARKLUA_TYPE_ai) -> (),
 }
 
-type ShellContext__DARKLUA_TYPE_aj = ShellContext__DARKLUA_TYPE_L
-type LiveHost__DARKLUA_TYPE_ak = LiveHost__DARKLUA_TYPE_ag
-type LiveModule__DARKLUA_TYPE_al = LiveModule__DARKLUA_TYPE_ah
-type CaptureModule__DARKLUA_TYPE_am = CaptureModule__DARKLUA_TYPE_7
-type SyncResult__DARKLUA_TYPE_an = {
+type ShellContext__DARKLUA_TYPE_ak = ShellContext__DARKLUA_TYPE_Z
+type LiveHost__DARKLUA_TYPE_al = LiveHost__DARKLUA_TYPE_ah
+type LiveModule__DARKLUA_TYPE_am = LiveModule__DARKLUA_TYPE_ai
+type CaptureModule__DARKLUA_TYPE_an = CaptureModule__DARKLUA_TYPE_ac
+type SyncResult__DARKLUA_TYPE_ao = {
 	ok: boolean,
 	error: string?,
 	status: string?,
@@ -848,26 +860,26 @@ type SyncResult__DARKLUA_TYPE_an = {
 	[string]: any,
 }
 
-type PanelHandle__DARKLUA_TYPE_ao = {
+type PanelHandle__DARKLUA_TYPE_ap = {
 	frame: Frame,
-	sync: (options: any?) -> SyncResult__DARKLUA_TYPE_an,
-	status: () -> SyncResult__DARKLUA_TYPE_an,
+	sync: (options: any?) -> SyncResult__DARKLUA_TYPE_ao,
+	status: () -> SyncResult__DARKLUA_TYPE_ao,
 	isRunning: () -> boolean,
 	pollGeneration: number,
-	onConnectRequested: () -> SyncResult__DARKLUA_TYPE_an,
+	onConnectRequested: () -> SyncResult__DARKLUA_TYPE_ao,
 	destroy: () -> (),
-	live: LiveModule__DARKLUA_TYPE_al,
-	capture: CaptureModule__DARKLUA_TYPE_am,
+	live: LiveModule__DARKLUA_TYPE_am,
+	capture: CaptureModule__DARKLUA_TYPE_an,
 	[string]: any,
 }
 
-type CapturePanelModule__DARKLUA_TYPE_ap = {
-	build: (parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj) -> PanelHandle__DARKLUA_TYPE_ao,
+type CapturePanelModule__DARKLUA_TYPE_aq = {
+	build: (parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak) -> PanelHandle__DARKLUA_TYPE_ap,
 	descriptor: {
 		id: string,
 		title: string,
 		defaultEnabled: boolean,
-		build: (parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj) -> PanelHandle__DARKLUA_TYPE_ao,
+		build: (parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak) -> PanelHandle__DARKLUA_TYPE_ap,
 	},
 }
 
@@ -876,8 +888,8 @@ type CapturePanelModule__DARKLUA_TYPE_ap = {
 -- Everything the monolith held as forward-declared build-closure locals lives here
 -- as fields; methods reach siblings through `panel.*` (call-time field reads), never
 -- a read-before-local. One record per build() so each panel instance is isolated.
-type PanelState__DARKLUA_TYPE_aq = {
-	ctx: ShellContext__DARKLUA_TYPE_aj,
+type PanelState__DARKLUA_TYPE_ar = {
+	ctx: ShellContext__DARKLUA_TYPE_ak,
 	parent: Frame,
 	resultLabel: TextLabel,
 	errorLabel: TextLabel,
@@ -889,12 +901,12 @@ type PanelState__DARKLUA_TYPE_aq = {
 	sessionHasBaseline: boolean,
 	pausedBaseline: { revision: number, instanceCount: number },
 
-	formatError: (self: PanelState__DARKLUA_TYPE_aq, prefix: string, result: any) -> string,
-	setConnectButtonState: (self: PanelState__DARKLUA_TYPE_aq) -> (),
-	statusFn: (self: PanelState__DARKLUA_TYPE_aq) -> SyncResult__DARKLUA_TYPE_an,
-	syncFn: (self: PanelState__DARKLUA_TYPE_aq, options: any?) -> SyncResult__DARKLUA_TYPE_an,
-	startupConnectAndCapture: (self: PanelState__DARKLUA_TYPE_aq) -> SyncResult__DARKLUA_TYPE_an,
-	onReturnToEdit: (self: PanelState__DARKLUA_TYPE_aq) -> (),
+	formatError: (self: PanelState__DARKLUA_TYPE_ar, prefix: string, result: any) -> string,
+	setConnectButtonState: (self: PanelState__DARKLUA_TYPE_ar) -> (),
+	statusFn: (self: PanelState__DARKLUA_TYPE_ar) -> SyncResult__DARKLUA_TYPE_ao,
+	syncFn: (self: PanelState__DARKLUA_TYPE_ar, options: any?) -> SyncResult__DARKLUA_TYPE_ao,
+	startupConnectAndCapture: (self: PanelState__DARKLUA_TYPE_ar) -> SyncResult__DARKLUA_TYPE_ao,
+	onReturnToEdit: (self: PanelState__DARKLUA_TYPE_ar) -> (),
 }
 local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 -- == Version / protocol ==
@@ -2261,562 +2273,6 @@ end
 
 return GlobalApi
 end function __DARKLUA_BUNDLE_MODULES.d():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.d if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.d=v end return v.c end end do local function __modImpl()
--- == Module table ==
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local Theme: ThemeModule__DARKLUA_TYPE_l = table.freeze({
-	-- Palette.
-	panel = Color3.fromRGB(10, 20, 30),
-	surface = Color3.fromRGB(18, 34, 48),
-	surfaceBorder = Color3.fromRGB(42, 72, 92),
-	copper = Color3.fromRGB(196, 142, 72),
-	copperDim = Color3.fromRGB(140, 100, 52),
-	teal = Color3.fromRGB(72, 168, 152),
-	tealDim = Color3.fromRGB(48, 110, 100),
-	muted = Color3.fromRGB(118, 142, 158),
-	body = Color3.fromRGB(224, 236, 244),
-	warn = Color3.fromRGB(232, 178, 108),
-	badge = Color3.fromRGB(32, 88, 108),
-
-	-- Fonts.
-	CODE_FONT = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.Regular),
-	UI_FONT = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Regular),
-	UI_FONT_BOLD = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold),
-	TITLE_FONT = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold),
-
-	-- Spacing.
-	PAD = 14,
-})
-
-return Theme
-end function __DARKLUA_BUNDLE_MODULES.e():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.e if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.e=v end return v.c end end do local function __modImpl()--!strict
--- Ui — the plugin's UI primitive factory, ported faithfully from the monolith's
--- Ui block (StudioStud.plugin.lua:526-902). Every widget the panels build
--- (labels, buttons, the ms slider, the status card, the brand badge/logo) is
--- minted here so the construction recipe — sizes, fonts, colours, ZIndex,
--- corners/strokes — lives in exactly one place. Pure view construction: no daemon
--- traffic, no Live/Capture logic; the panels wire behaviour to the handles these
--- factories return.
---
--- Every colour/font/spacing value comes from ./Theme (single source of truth); no
--- factory re-declares a palette entry.
---
--- M4 FIX (the leak this module exists to close): makeMsSlider connects to
--- UserInputService.InputChanged / .InputEnded (process-wide signals, NOT scoped to
--- the slider's own Instances, so they outlive the Frame's destruction). The
--- monolith never disconnected them, so every rebuilt panel leaked two live
--- connections. Here the slider tracks both RBXScriptConnections and the returned
--- handle exposes `disconnect()`; the owning panel calls it on teardown. The
--- slider's own track/knob InputBegan connections die with the Instances (parented
--- under `row`) and need no explicit teardown — only the UIS subscriptions do.
---
--- NB: this module imports no shared aliases from ./Types — it traffics purely in
--- Roblox UI datatypes (Instances, Color3, UDim2), none of which are part of the
--- protocol-v2 wire contract. It depends only on ./Theme for the palette/fonts and
--- on ../Config for the resolved logo asset id. (luau-craft: import what you use.)
-
-
-local Theme = __DARKLUA_BUNDLE_MODULES.e()
-local Config = __DARKLUA_BUNDLE_MODULES.a()
-
--- `game` is a Studio/plugin global the analyzer types via globalTypes.d.luau.
--- UserInputService drives slider dragging; resolved once at module load (it is a
--- process-wide singleton, so there is no per-event GetService on the hot drag path
--- — cache-at-event) and shared by every slider built thereafter.
-local UserInputService = game:GetService("UserInputService") :: UserInputService
-
--- The resolved logo asset id ("" or a valid rbxassetid://… string), from Config —
--- the single source of truth for the icon constant. makeBrandBadge prefers the
--- image when present, else falls back to the drawn vector logo.
-local resolvedLogoAssetId = Config.resolvedLogoAssetId
-
--- == Module table ==
-
--- All factories are fields on this one table; no forward-referenced upvalue is
--- ever read before it is assigned (the C1-C3 bug class). Where one factory calls
--- another (e.g. makePrimaryButton -> makeCorner), it goes through `Ui.*`, which is
--- a field read resolved at call time, never a use-before-local.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local Ui = {} :: UiModule__DARKLUA_TYPE_o
-
-function Ui.makeCorner(parent: Instance, radius: number?): UICorner
-	local corner = Instance.new("UICorner")
-	corner.CornerRadius = UDim.new(0, radius or 8)
-	corner.Parent = parent
-	return corner
-end
-
-function Ui.makeStroke(parent: Instance, color: Color3, thickness: number?): UIStroke
-	local stroke = Instance.new("UIStroke")
-	stroke.Color = color
-	stroke.Thickness = thickness or 1
-	stroke.Parent = parent
-	return stroke
-end
-
-function Ui.makeLabel(parent: Instance, text: string, y: number, height: number?, textColor: Color3?): TextLabel
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Position = UDim2.fromOffset(Theme.PAD, y)
-	label.Size = UDim2.new(1, -Theme.PAD * 2, 0, height or 24)
-	label.FontFace = Theme.UI_FONT
-	label.TextColor3 = textColor or Theme.body
-	label.TextSize = 14
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.TextYAlignment = Enum.TextYAlignment.Top
-	label.TextWrapped = true
-	label.Text = text
-	label.Parent = parent
-	return label
-end
-
-function Ui.makeSectionLabel(parent: Instance, text: string, y: number): TextLabel
-	local label = Instance.new("TextLabel")
-	label.BackgroundTransparency = 1
-	label.Position = UDim2.fromOffset(Theme.PAD, y)
-	label.Size = UDim2.new(1, -Theme.PAD * 2, 0, 14)
-	label.FontFace = Theme.UI_FONT_BOLD
-	label.TextColor3 = Theme.muted
-	label.TextSize = 11
-	label.TextXAlignment = Enum.TextXAlignment.Left
-	label.Text = string.upper(text)
-	label.Parent = parent
-	return label
-end
-
-function Ui.makePrimaryButton(parent: Instance, text: string): TextButton
-	local button = Instance.new("TextButton")
-	button.BackgroundColor3 = Theme.copper
-	button.BorderSizePixel = 0
-	button.FontFace = Theme.UI_FONT_BOLD
-	button.TextColor3 = Theme.panel
-	button.TextSize = 14
-	button.Text = text
-	button.Parent = parent
-	Ui.makeCorner(button, 8)
-	return button
-end
-
-function Ui.makeSecondaryButton(parent: Instance, text: string): TextButton
-	local button = Instance.new("TextButton")
-	button.BackgroundColor3 = Theme.surface
-	button.BorderSizePixel = 0
-	button.AutoButtonColor = true
-	button.FontFace = Theme.UI_FONT
-	button.TextColor3 = Theme.body
-	button.TextSize = 14
-	button.Text = text
-	button.ZIndex = 2
-	button.Parent = parent
-	Ui.makeCorner(button, 8)
-	Ui.makeStroke(button, Theme.surfaceBorder, 1)
-	return button
-end
-
--- Horizontal ms slider (integer steps). Calls onChanged(ms) when the value
--- settles/changes. M4: the two UserInputService subscriptions (drag-move /
--- drag-end) are captured into `connections` and torn down by the returned
--- handle's `disconnect()` — the only connections that outlive the slider's Frame.
-function Ui.makeMsSlider(
-	parent: Instance,
-	y: number,
-	minMs: number,
-	maxMs: number,
-	initialMs: number,
-	onChanged: ((ms: number) -> ())?
-): MsSlider__DARKLUA_TYPE_m
-	local row = Instance.new("Frame")
-	row.Name = "MsSlider"
-	row.BackgroundTransparency = 1
-	row.Position = UDim2.fromOffset(Theme.PAD, y)
-	row.Size = UDim2.new(1, -Theme.PAD * 2, 0, 56)
-	row.Parent = parent
-
-	local valueLabel = Instance.new("TextLabel")
-	valueLabel.BackgroundTransparency = 1
-	valueLabel.Size = UDim2.new(1, 0, 0, 18)
-	valueLabel.FontFace = Theme.UI_FONT_BOLD
-	valueLabel.TextColor3 = Theme.body
-	valueLabel.TextSize = 13
-	valueLabel.TextXAlignment = Enum.TextXAlignment.Right
-	valueLabel.Parent = row
-
-	local track = Instance.new("TextButton")
-	track.Name = "Track"
-	track.AutoButtonColor = false
-	track.Text = ""
-	track.BackgroundColor3 = Theme.surface
-	track.BorderSizePixel = 0
-	track.Position = UDim2.fromOffset(0, 22)
-	track.Size = UDim2.new(1, 0, 0, 24)
-	track.ZIndex = 2
-	track.Parent = row
-	Ui.makeCorner(track, 6)
-	Ui.makeStroke(track, Theme.surfaceBorder, 1)
-
-	local fill = Instance.new("Frame")
-	fill.Name = "Fill"
-	fill.BackgroundColor3 = Theme.copper
-	fill.BorderSizePixel = 0
-	fill.Size = UDim2.fromScale(0, 1)
-	fill.ZIndex = 2
-	fill.Parent = track
-	Ui.makeCorner(fill, 6)
-
-	local knob = Instance.new("TextButton")
-	knob.Name = "Knob"
-	knob.AutoButtonColor = false
-	knob.Text = ""
-	knob.BackgroundColor3 = Theme.body
-	knob.BorderSizePixel = 0
-	knob.Size = UDim2.fromOffset(16, 16)
-	knob.AnchorPoint = Vector2.new(0.5, 0.5)
-	knob.ZIndex = 4
-	knob.Parent = track
-	Ui.makeCorner(knob, 8)
-	Ui.makeStroke(knob, Theme.copperDim, 1)
-
-	local minLabel = Instance.new("TextLabel")
-	minLabel.BackgroundTransparency = 1
-	minLabel.Position = UDim2.fromOffset(0, 48)
-	minLabel.Size = UDim2.fromOffset(48, 14)
-	minLabel.FontFace = Theme.UI_FONT
-	minLabel.TextColor3 = Theme.muted
-	minLabel.TextSize = 10
-	minLabel.TextXAlignment = Enum.TextXAlignment.Left
-	minLabel.Text = tostring(minMs) .. " ms"
-	minLabel.Parent = row
-
-	local maxLabel = Instance.new("TextLabel")
-	maxLabel.BackgroundTransparency = 1
-	maxLabel.AnchorPoint = Vector2.new(1, 0)
-	maxLabel.Position = UDim2.new(1, 0, 0, 48)
-	maxLabel.Size = UDim2.fromOffset(52, 14)
-	maxLabel.FontFace = Theme.UI_FONT
-	maxLabel.TextColor3 = Theme.muted
-	maxLabel.TextSize = 10
-	maxLabel.TextXAlignment = Enum.TextXAlignment.Right
-	maxLabel.Text = tostring(maxMs) .. " ms"
-	maxLabel.Parent = row
-
-	local currentMs = math.clamp(math.floor(initialMs + 0.5), minMs, maxMs)
-	local dragging = false
-
-	local function alphaForMs(ms: number): number
-		return (ms - minMs) / (maxMs - minMs)
-	end
-
-	local function msFromAlpha(alpha: number): number
-		return math.clamp(minMs + math.clamp(alpha, 0, 1) * (maxMs - minMs), minMs, maxMs)
-	end
-
-	local function applyMs(ms: number, persist: boolean)
-		currentMs = math.clamp(math.floor(ms + 0.5), minMs, maxMs)
-		local alpha = alphaForMs(currentMs)
-		fill.Size = UDim2.fromScale(alpha, 1)
-		knob.Position = UDim2.fromScale(alpha, 0.5)
-		valueLabel.Text = tostring(currentMs) .. " ms"
-		if persist and onChanged then
-			onChanged(currentMs)
-		end
-	end
-
-	local function updateFromScreenX(screenX: number)
-		local trackX = track.AbsolutePosition.X
-		local trackWidth = track.AbsoluteSize.X
-		if trackWidth <= 0 then
-			return
-		end
-		applyMs(msFromAlpha((screenX - trackX) / trackWidth), true)
-	end
-
-	local function beginDrag(input: InputObject)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = true
-			updateFromScreenX(input.Position.X)
-		end
-	end
-
-	-- track/knob InputBegan connections are scoped to those Instances (parented
-	-- under `row`); they die when the slider's Frame is destroyed, so they are NOT
-	-- tracked for teardown — only the process-wide UIS subscriptions below are.
-	track.InputBegan:Connect(beginDrag)
-	knob.InputBegan:Connect(beginDrag)
-
-	-- M4: the leaky pair. Track both so disconnect() can release them.
-	local connections: { RBXScriptConnection } = {}
-
-	connections[#connections + 1] = UserInputService.InputChanged:Connect(function(input: InputObject)
-		if not dragging then
-			return
-		end
-		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
-			updateFromScreenX(input.Position.X)
-		end
-	end)
-
-	connections[#connections + 1] = UserInputService.InputEnded:Connect(function(input: InputObject)
-		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-			dragging = false
-		end
-	end)
-
-	applyMs(currentMs, false)
-
-	return {
-		setValue = function(ms: number)
-			applyMs(ms, false)
-		end,
-		getValue = function(): number
-			return currentMs
-		end,
-		disconnect = function()
-			for _, connection in connections do
-				connection:Disconnect()
-			end
-			table.clear(connections)
-		end,
-	}
-end
-
-function Ui.makeStatusCard(parent: Instance, y: number): StatusCard__DARKLUA_TYPE_n
-	local card = Instance.new("Frame")
-	card.Name = "StatusCard"
-	card.Position = UDim2.fromOffset(Theme.PAD, y)
-	card.Size = UDim2.new(1, -Theme.PAD * 2, 0, 54)
-	card.BackgroundColor3 = Theme.surface
-	card.BorderSizePixel = 0
-	card.Parent = parent
-	Ui.makeCorner(card, 8)
-	Ui.makeStroke(card, Theme.surfaceBorder, 1)
-
-	local stripe = Instance.new("Frame")
-	stripe.Name = "StatusStripe"
-	stripe.BackgroundColor3 = Theme.tealDim
-	stripe.BorderSizePixel = 0
-	stripe.Size = UDim2.new(0, 4, 1, 0)
-	stripe.Parent = card
-	local stripeCorner = Instance.new("UICorner")
-	stripeCorner.CornerRadius = UDim.new(0, 8)
-	stripeCorner.Parent = stripe
-
-	local dot = Instance.new("Frame")
-	dot.Name = "StatusDot"
-	dot.BackgroundColor3 = Theme.muted
-	dot.BorderSizePixel = 0
-	dot.Position = UDim2.fromOffset(14, 12)
-	dot.Size = UDim2.fromOffset(10, 10)
-	dot.Parent = card
-	Ui.makeCorner(dot, 5)
-
-	local statusLabel = Instance.new("TextLabel")
-	statusLabel.BackgroundTransparency = 1
-	statusLabel.Position = UDim2.fromOffset(30, 4)
-	statusLabel.Size = UDim2.new(1, -38, 0, 22)
-	statusLabel.FontFace = Theme.UI_FONT
-	statusLabel.TextColor3 = Theme.body
-	statusLabel.TextSize = 13
-	statusLabel.TextXAlignment = Enum.TextXAlignment.Left
-	statusLabel.TextWrapped = false
-	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	statusLabel.Text = "Waiting for daemon"
-	statusLabel.Parent = card
-
-	local statsLabel = Instance.new("TextLabel")
-	statsLabel.BackgroundTransparency = 1
-	statsLabel.Position = UDim2.fromOffset(30, 30)
-	statsLabel.Size = UDim2.new(1, -38, 0, 18)
-	statsLabel.FontFace = Theme.CODE_FONT
-	statsLabel.TextColor3 = Theme.muted
-	statsLabel.TextSize = 11
-	statsLabel.TextXAlignment = Enum.TextXAlignment.Left
-	statsLabel.TextTruncate = Enum.TextTruncate.AtEnd
-	statsLabel.Text = ""
-	statsLabel.Parent = card
-
-	local function setState(state: string, message: string)
-		statusLabel.Text = message
-		if state == "connected" then
-			dot.BackgroundColor3 = Theme.teal
-			stripe.BackgroundColor3 = Theme.teal
-			statusLabel.TextColor3 = Theme.body
-		elseif state == "syncing" then
-			dot.BackgroundColor3 = Theme.copper
-			stripe.BackgroundColor3 = Theme.copper
-			statusLabel.TextColor3 = Theme.body
-		elseif state == "error" then
-			dot.BackgroundColor3 = Theme.warn
-			stripe.BackgroundColor3 = Theme.warn
-			statusLabel.TextColor3 = Theme.warn
-		else
-			dot.BackgroundColor3 = Theme.muted
-			stripe.BackgroundColor3 = Theme.tealDim
-			statusLabel.TextColor3 = Theme.muted
-		end
-	end
-
-	local function setStats(text: string?)
-		statsLabel.Text = text or ""
-	end
-
-	return { frame = card, setState = setState, setStats = setStats }
-end
-
-function Ui.makeVectorLogo(parent: Instance, size: number): Frame
-	local root = Instance.new("Frame")
-	root.Name = "StudioStudLogo"
-	root.BackgroundColor3 = Theme.badge
-	root.BorderSizePixel = 0
-	root.Size = UDim2.fromOffset(size, size)
-	root.Parent = parent
-	Ui.makeCorner(root, math.floor(size * 0.22))
-
-	local ring = Instance.new("Frame")
-	ring.BackgroundColor3 = Theme.tealDim
-	ring.BorderSizePixel = 0
-	ring.AnchorPoint = Vector2.new(0.5, 0.5)
-	ring.Position = UDim2.fromScale(0.5, 0.5)
-	ring.Size = UDim2.fromOffset(math.floor(size * 0.78), math.floor(size * 0.78))
-	ring.Parent = root
-	Ui.makeCorner(ring, 999)
-
-	local ringInner = Instance.new("Frame")
-	ringInner.BackgroundColor3 = Theme.badge
-	ringInner.BorderSizePixel = 0
-	ringInner.AnchorPoint = Vector2.new(0.5, 0.5)
-	ringInner.Position = UDim2.fromScale(0.5, 0.5)
-	ringInner.Size = UDim2.fromOffset(math.floor(size * 0.58), math.floor(size * 0.58))
-	ringInner.Parent = ring
-	Ui.makeCorner(ringInner, 999)
-
-	local pin = Instance.new("Frame")
-	pin.BackgroundColor3 = Theme.copper
-	pin.BorderSizePixel = 0
-	pin.AnchorPoint = Vector2.new(0.5, 0.5)
-	pin.Position = UDim2.fromScale(0.5, 0.52)
-	pin.Size = UDim2.fromOffset(math.max(3, math.floor(size * 0.12)), math.floor(size * 0.42))
-	pin.Parent = root
-	Ui.makeCorner(pin, 2)
-
-	for index = 0, 2 do
-		local tick = Instance.new("Frame")
-		tick.BackgroundColor3 = Theme.copperDim
-		tick.BorderSizePixel = 0
-		tick.Position = UDim2.fromOffset(math.floor(size * 0.16), math.floor(size * 0.28 + index * size * 0.14))
-		tick.Size = UDim2.fromOffset(math.floor(size * 0.18), math.max(2, math.floor(size * 0.06)))
-		tick.Parent = root
-		Ui.makeCorner(tick, 1)
-	end
-
-	return root
-end
-
-function Ui.makeBrandBadge(parent: Instance): Frame
-	local badge = Instance.new("Frame")
-	badge.Name = "BrandBadge"
-	badge.BackgroundTransparency = 1
-	badge.BorderSizePixel = 0
-	badge.Size = UDim2.fromOffset(36, 36)
-	badge.Parent = parent
-
-	if resolvedLogoAssetId ~= "" then
-		local image = Instance.new("ImageLabel")
-		image.Name = "LogoImage"
-		image.BackgroundTransparency = 1
-		image.Size = UDim2.fromScale(1, 1)
-		image.Image = resolvedLogoAssetId
-		image.ScaleType = Enum.ScaleType.Fit
-		image.Parent = badge
-	else
-		Ui.makeVectorLogo(badge, 36)
-	end
-
-	return badge
-end
-
-return Ui
-end function __DARKLUA_BUNDLE_MODULES.f():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.f if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.f=v end return v.c end end do local function __modImpl()
 -- This module is types-only; nothing to instantiate. The empty table keeps it a
 -- valid ModuleScript whose exported types are imported via `require`.
 
@@ -2962,7 +2418,112 @@ end function __DARKLUA_BUNDLE_MODULES.f():typeof(__modImpl())local v=__DARKLUA_B
 
 
 return {}
-end function __DARKLUA_BUNDLE_MODULES.g():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.g if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.g=v end return v.c end end do local function __modImpl()--!strict
+end function __DARKLUA_BUNDLE_MODULES.e():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.e if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.e=v end return v.c end end do local function __modImpl()--!strict
+-- Session — edit-vs-play mode detection. Ported faithfully from the monolith's
+-- Session block (StudioStud.plugin.lua:25-48).
+--
+-- Studio Stud must talk to the daemon ONLY during a genuine edit session. Code
+-- running in a play/run DataModel (Play Solo / F8 Run, or a stray copy embedded
+-- in the place) reports IsRunning()=true / IsEdit()=false and is gated to "play".
+-- The real plugin runs in the edit DataModel; during an F5 playtest (a separate
+-- DataModel) it stays "edit" and never sees the running game, so there is nothing
+-- to capture there.
+--
+-- `decide` is a PURE function (no DataModel reads) so its truth table stays
+-- unit-testable headless. The only impure surface is `signals()`, the single
+-- read point for the live RunService state.
+
+
+local Types = __DARKLUA_BUNDLE_MODULES.e()
+
+-- == Engine handle ==
+
+-- `game` is a plugin/Studio global typed via globalTypes.d.luau under the
+-- analyzer. Resolution is LAZY (and cached) rather than at module load so the
+-- pure `decide` half can be required headlessly (lune has no `game`) for the
+-- truth-table test. The first impure call (`signals`) narrows GetService's
+-- Instance result to RunService exactly once — the single trust point for the
+-- engine handle; every later call reuses the cached handle (cache-at-event).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local runService: RunService? = nil
+local function getRunService(): RunService
+	local cached = runService
+	if cached then
+		return cached
+	end
+	local resolved = game:GetService("RunService") :: RunService
+	runService = resolved
+	return resolved
+end
+
+-- == Implementation ==
+
+local function decide(isEdit: boolean, isRunning: boolean): SessionMode__DARKLUA_TYPE_A
+	if isEdit and not isRunning then
+		return "edit"
+	end
+	return "play"
+end
+
+local function signals(): Signals__DARKLUA_TYPE_B
+	local rs = getRunService()
+	return {
+		isEdit = rs:IsEdit(),
+		isRunning = rs:IsRunning(),
+	}
+end
+
+local function mode(): SessionMode__DARKLUA_TYPE_A
+	local sig = signals()
+	return decide(sig.isEdit, sig.isRunning)
+end
+
+local function isEdit(): boolean
+	return mode() == "edit"
+end
+
+-- == Module table ==
+
+local Session: SessionModule__DARKLUA_TYPE_C = {
+	decide = decide,
+	signals = signals,
+	mode = mode,
+	isEdit = isEdit,
+}
+
+return Session
+end function __DARKLUA_BUNDLE_MODULES.f():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.f if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.f=v end return v.c end end do local function __modImpl()--!strict
 -- Transport — all HTTP to the daemon, plus the JSON-safety net, ported faithfully
 -- from the monolith's Transport block (StudioStud.plugin.lua:1006-1254).
 --
@@ -2993,7 +2554,7 @@ end function __DARKLUA_BUNDLE_MODULES.g():typeof(__modImpl())local v=__DARKLUA_B
 --     interface, not a stray global.
 
 
-local Types = __DARKLUA_BUNDLE_MODULES.g()
+local Types = __DARKLUA_BUNDLE_MODULES.e()
 local Config = __DARKLUA_BUNDLE_MODULES.a()
 local Settings = __DARKLUA_BUNDLE_MODULES.b()
 
@@ -3101,7 +2662,7 @@ end
 -- not-yet-assigned local — the C1/C2/C3 bug class this rewrite exists to kill.
 -- Every cross-call goes through `Transport.*`, which is a real table field by the
 -- time any of these functions run.
-local Transport: TransportModule__DARKLUA_TYPE_J
+local Transport: TransportModule__DARKLUA_TYPE_I
 
 -- == Daemon URL (verbatim port) ==
 
@@ -3269,7 +2830,7 @@ end
 -- exactly as the monolith's three near-identical inline blocks did. Single recipe
 -- (DRY) — on a non-Success response, surface the daemon's JSON error body with
 -- its statusCode attached; on a JSON parse failure, surface a synthetic error.
-local function decodeResponse(response: HttpResponse__DARKLUA_TYPE_H): (boolean, ResponseTable__DARKLUA_TYPE_I)
+local function decodeResponse(response: HttpResponse__DARKLUA_TYPE_G): (boolean, ResponseTable__DARKLUA_TYPE_H)
 	local http = getHttpService()
 	local body = response.Body or ""
 	if not response.Success then
@@ -3277,7 +2838,7 @@ local function decodeResponse(response: HttpResponse__DARKLUA_TYPE_H): (boolean,
 			return http:JSONDecode(body)
 		end)
 		if decodedOk and type(decoded) == "table" then
-			local errTable = decoded :: ResponseTable__DARKLUA_TYPE_I
+			local errTable = decoded :: ResponseTable__DARKLUA_TYPE_H
 			errTable.statusCode = response.StatusCode
 			return false, errTable
 		end
@@ -3289,25 +2850,25 @@ local function decodeResponse(response: HttpResponse__DARKLUA_TYPE_H): (boolean,
 	if not decodedOk then
 		return false, { error = "Bad daemon JSON: " .. tostring(decoded) }
 	end
-	return true, decoded :: ResponseTable__DARKLUA_TYPE_I
+	return true, decoded :: ResponseTable__DARKLUA_TYPE_H
 end
 
 -- Send a fully-built request table, hardening the RequestAsync call itself.
-local function sendRequestTable(request: RequestTable__DARKLUA_TYPE_G): (boolean, ResponseTable__DARKLUA_TYPE_I)
+local function sendRequestTable(request: RequestTable__DARKLUA_TYPE_F): (boolean, ResponseTable__DARKLUA_TYPE_H)
 	local http = getHttpService()
-	local ok, response = pcall(function(): HttpResponse__DARKLUA_TYPE_H
+	local ok, response = pcall(function(): HttpResponse__DARKLUA_TYPE_G
 		-- HttpRequestOptions requires a Compress field the monolith never set;
 		-- cast at this single boundary (the engine defaults Compress to None).
-		return http:RequestAsync(request :: any) :: HttpResponse__DARKLUA_TYPE_H
+		return http:RequestAsync(request :: any) :: HttpResponse__DARKLUA_TYPE_G
 	end)
 	if not ok then
 		return false, { error = tostring(response) }
 	end
-	return decodeResponse(response :: HttpResponse__DARKLUA_TYPE_H)
+	return decodeResponse(response :: HttpResponse__DARKLUA_TYPE_G)
 end
 
-local function requestJson(method: string, path: string, body: any?, timeoutSeconds: number?): (boolean, ResponseTable__DARKLUA_TYPE_I)
-	local request: RequestTable__DARKLUA_TYPE_G = {
+local function requestJson(method: string, path: string, body: any?, timeoutSeconds: number?): (boolean, ResponseTable__DARKLUA_TYPE_H)
+	local request: RequestTable__DARKLUA_TYPE_F = {
 		Url = currentUrl() .. path,
 		Method = method,
 		Headers = { ["Content-Type"] = "application/json" },
@@ -3347,9 +2908,9 @@ local function requestJsonAuthed(
 	path: string,
 	body: any?,
 	timeoutSeconds: number?
-): (boolean, ResponseTable__DARKLUA_TYPE_I)
-	local function sendRequest(token: string): (boolean, ResponseTable__DARKLUA_TYPE_I)
-		local request: RequestTable__DARKLUA_TYPE_G = {
+): (boolean, ResponseTable__DARKLUA_TYPE_H)
+	local function sendRequest(token: string): (boolean, ResponseTable__DARKLUA_TYPE_H)
+		local request: RequestTable__DARKLUA_TYPE_F = {
 			Url = currentUrl() .. path,
 			Method = method,
 			Headers = buildAuthedHeaders(token),
@@ -3390,8 +2951,8 @@ end
 -- Pre-encoded body path (the daemon's chunked /tick/bulk upload sends raw JSON
 -- chunk strings, already encoded by the caller). 60s timeout, no Content-Type
 -- token — verbatim port of the monolith's requestBody.
-local function requestBody(path: string, body: string): (boolean, ResponseTable__DARKLUA_TYPE_I)
-	local request: RequestTable__DARKLUA_TYPE_G = {
+local function requestBody(path: string, body: string): (boolean, ResponseTable__DARKLUA_TYPE_H)
+	local request: RequestTable__DARKLUA_TYPE_F = {
 		Url = currentUrl() .. path,
 		Method = "POST",
 		Headers = { ["Content-Type"] = "application/json" },
@@ -3407,7 +2968,7 @@ end
 -- type-checked and defaulted; a non-table or absent `ok` collapses to
 -- `{ ok = false }`. Downstream (the live engine) trusts the result and never
 -- re-validates the wire.
-local function hardenTickResponse(decoded: any): TickResponse__DARKLUA_TYPE_E
+local function hardenTickResponse(decoded: any): TickResponse__DARKLUA_TYPE_D
 	if type(decoded) ~= "table" then
 		return { ok = false }
 	end
@@ -3424,9 +2985,9 @@ local function hardenTickResponse(decoded: any): TickResponse__DARKLUA_TYPE_E
 		driftServices = cleaned
 	end
 
-	local applyScripts: { ApplyScript__DARKLUA_TYPE_F }? = nil
+	local applyScripts: { ApplyScript__DARKLUA_TYPE_E }? = nil
 	if type(raw.applyScripts) == "table" then
-		local cleaned: { ApplyScript__DARKLUA_TYPE_F } = {}
+		local cleaned: { ApplyScript__DARKLUA_TYPE_E } = {}
 		for _, entry in ipairs(raw.applyScripts) do
 			if type(entry) == "table" then
 				local e = entry :: { [string]: any }
@@ -3497,7 +3058,1248 @@ Transport = {
 }
 
 return Transport
+end function __DARKLUA_BUNDLE_MODULES.g():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.g if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.g=v end return v.c end end do local function __modImpl()--!strict
+-- AllowList — property-curation source of truth, ported faithfully from the
+-- monolith's AllowList block (StudioStud.plugin.lua:1256-1323).
+--
+-- The daemon serves /studio-stud/allowlist: per exact ClassName, the ordered set
+-- of properties capture should read (including inherited props) and whether each
+-- is read-only. When that fetch succeeds, it overrides the static curation; when
+-- it fails (daemon down, bad JSON, malformed body) the plugin keeps the static
+-- Config.CLASS_PROPERTIES fallback and capture proceeds — a fetch failure is
+-- NEVER fatal. This module owns the loaded-vs-fallback decision; capture's
+-- getPropertyNames/curatedSet ask namesFor/setFor and fall back themselves when
+-- those return nil.
+--
+-- Responsibilities (one each):
+--   * parse(decoded) — PURE: a decoded /allowlist body -> { version, sets, lists }
+--       or nil on bad input. The headless-testable surface (AllowList.spec).
+--   * fetch() — GET /allowlist via Transport, parse, and on success swap in the
+--       parsed sets/lists/version + mark loaded. On any failure: log (debug) and
+--       leave the static fallback in place, returning false.
+--   * namesFor(className) / setFor(className) — the per-class lookups capture
+--       consumes. Both return nil unless loaded AND the exact class is present, so
+--       an unknown class (even when loaded) falls through to the static list in
+--       capture. This nil-on-unknown contract is load-bearing — reproduced exactly.
+--
+-- State model: this module carries mutable state (loaded/version/sets/lists). It
+-- lives as fields on the module table (`AllowList.*`), and every method reaches
+-- the state through that table — never through a forward-referenced upvalue. This
+-- is the structural defense against the C1-C3 forward-reference bug class: the
+-- table is a real value before any method runs, so there is no "before-local"
+-- window to read a nil through.
+--
+-- TRUST BOUNDARY (harden once): the decoded /allowlist body is untrusted `any`.
+-- parse is the single place it is validated; it walks every class/entry with
+-- type guards and silently drops anything malformed, so namesFor/setFor only ever
+-- hand capture well-formed ordered lists and boolean membership sets.
+
+-- NB: this module does NOT require ./Config. The static CLASS_PROPERTIES fallback
+-- is owned by Config and consumed by Capture (getPropertyNames/curatedSet) when
+-- namesFor/setFor return nil — AllowList itself never reads it, so requiring
+-- Config here would be a dead dependency (luau-craft: import what you use).
+
+local Types = __DARKLUA_BUNDLE_MODULES.e()
+local Settings = __DARKLUA_BUNDLE_MODULES.b()
+local Transport = __DARKLUA_BUNDLE_MODULES.g()
+
+-- Forward declaration of the module table so methods reference one another and
+-- the mutable state through it (e.g. fetch -> parse, fetch -> AllowList.sets)
+-- WITHOUT forward-referencing a not-yet-assigned local. Every cross-reference
+-- goes through `AllowList.*`, which is a real table field by the time any method
+-- runs — the C1/C2/C3 bug class this rewrite exists to kill.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local AllowList: AllowListModule__DARKLUA_TYPE_L
+
+-- == parse (PURE — the headless-testable surface) ==
+
+-- Turn a decoded /allowlist body into { version, sets, lists }, or nil on bad
+-- input. Verbatim port: a non-table body, or one whose `classes` is not a table,
+-- yields nil (caller keeps the static fallback). Each class's `props` must be a
+-- table; each entry must be a table with a string `name`. readOnly defaults to
+-- false unless the entry says exactly `true` (`entry.readOnly == true`), matching
+-- the monolith. Anything malformed is skipped, never fatal.
+local function parse(decoded: any): ParsedAllowList__DARKLUA_TYPE_K?
+	if type(decoded) ~= "table" or type(decoded.classes) ~= "table" then
+		return nil
+	end
+	local raw = decoded :: { classes: { [string]: any }, version: any }
+	local sets: { [string]: ClassPropSet__DARKLUA_TYPE_J } = {}
+	local lists: { [string]: { string } } = {}
+	for className, props in raw.classes do
+		if type(props) == "table" then
+			local set: ClassPropSet__DARKLUA_TYPE_J = {}
+			local list: { string } = {}
+			for _, entry in ipairs(props :: { any }) do
+				if type(entry) == "table" and type(entry.name) == "string" then
+					local name: string = entry.name
+					set[name] = entry.readOnly == true
+					list[#list + 1] = name
+				end
+			end
+			sets[className] = set
+			lists[className] = list
+		end
+	end
+	return { version = raw.version, sets = sets, lists = lists }
+end
+
+-- == fetch ==
+
+-- GET /allowlist via Transport, parse, and on success swap in the parsed state.
+-- On any failure (request not ok, or parse nil) log via Settings.debugLog and
+-- return false, leaving loaded/sets/lists/version untouched so the static
+-- fallback stays in force. Verbatim behavior of the monolith's AllowList.fetch.
+local function fetch(): boolean
+	local ok, decoded = Transport.requestJson("GET", "/studio-stud/allowlist", nil, 15)
+	if not ok then
+		Settings.debugLog("allowlist: fetch failed (static fallback):", decoded and decoded.error)
+		return false
+	end
+	local parsed = AllowList.parse(decoded)
+	if not parsed then
+		Settings.debugLog("allowlist: bad response (static fallback)")
+		return false
+	end
+	AllowList.sets = parsed.sets
+	AllowList.lists = parsed.lists
+	AllowList.version = parsed.version
+	AllowList.loaded = true
+	local count = 0
+	for _ in parsed.sets do
+		count += 1
+	end
+	Settings.debugLog("allowlist: loaded version", tostring(parsed.version), "classes", count)
+	return true
+end
+
+-- == per-class lookups ==
+
+-- Ordered property names for an exact class. nil unless loaded AND the class is
+-- present in the loaded lists — an unknown class returns nil even when loaded, so
+-- capture falls through to the static CLASS_PROPERTIES. (Indexing a missing class
+-- yields nil; the explicit `loaded` gate matches the monolith's early-out.)
+local function namesFor(className: string): { string }?
+	if AllowList.loaded then
+		return AllowList.lists[className]
+	end
+	return nil
+end
+
+-- Membership set { propName = readOnly } for an exact class. Same nil-on-unknown
+-- contract as namesFor.
+local function setFor(className: string): ClassPropSet__DARKLUA_TYPE_J?
+	if AllowList.loaded then
+		return AllowList.sets[className]
+	end
+	return nil
+end
+
+-- == Module table ==
+
+-- Initial state mirrors the monolith: not loaded, no version, empty sets/lists.
+-- While unloaded, namesFor/setFor return nil and capture uses the static
+-- Config.CLASS_PROPERTIES fallback (owned by Config, applied in Capture).
+AllowList = {
+	loaded = false,
+	version = nil,
+	sets = {},
+	lists = {},
+
+	parse = parse,
+	fetch = fetch,
+	namesFor = namesFor,
+	setFor = setFor,
+}
+
+return AllowList
 end function __DARKLUA_BUNDLE_MODULES.h():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.h if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.h=v end return v.c end end do local function __modImpl()--!strict
+-- Hash — the fingerprint recipe, ported VERBATIM from the monolith's Live
+-- fingerprint block (StudioStud.plugin.lua:2189-2302). This is FP-1, the
+-- plugin-authoritative drift hash: the daemon stores and XORs whatever value the
+-- plugin emits, so the hash bytes MUST be byte-identical to the old plugin or
+-- every tick reports phantom drift. NOTHING here may be "improved" — the canonical
+-- string, the lane offsets, the FNV multiply/mod, and the hex layout are the wire.
+--
+-- This module is the SINGLE SOURCE OF TRUTH for the one fingerprint recipe used by
+-- both the per-op entry hash (Fingerprints.applyFpUpsert) and the per-service XOR
+-- accumulator (Fingerprints byte ops). It owns:
+--   * hashInstance(entry) -> Hex64 — the 4-lane FNV-32 → 64-hex canonical hash.
+--   * serviceOf(path) -> string — the leading path segment (service name).
+--   * the byte helpers fpZero / fpHexToBytes / fpBytesToHex / fpXor used by the
+--     XOR accumulators. (Named fpZero/fpXor here, matching the contract; the
+--     monolith's locals were fpZeroBytes/fpXorBytes.)
+--
+-- M3 (by design): `source` is EXCLUDED from the canonical string. A script's text
+-- edit changes `source` but NOT its fingerprint, so source-only edits do not show
+-- as structural drift; the source rides the entry (Types.InstanceEntry.source) but
+-- is never hashed. The canonical field order is, verbatim:
+--   className | name | parentId | path | depth | siblingIndex | childCount |
+--   duplicateSiblingName(0/1) | properties | attributes | tags
+-- with map keys sorted and tags joined by ",".
+--
+-- PURE: no DataModel reads, no module state, no upvalue forward references. Every
+-- function is a plain local assigned into the module table before return, so there
+-- is no before-local window (the C1-C3 bug class this rewrite exists to kill).
+
+
+local Types = __DARKLUA_BUNDLE_MODULES.e()
+
+-- == FNV constants (the wire — do not touch) ==
+
+-- Four lane offsets (monolith :2189). Lane i hashes the canonical string with
+-- offset[i] for the low word and a derived offset for the high word.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local FNV32_OFFSETS = { 0x811C9DC5, 0x050C5D1F, 0x9E3779B9, 0x7F4A7C15 }
+-- The 32-bit FNV prime (monolith :2190).
+local FNV32_PRIME = 16777619
+-- 2^32, the FNV-32 modulus. Named so the hot multiply reads as a masking step.
+local FNV32_MOD = 4294967296
+-- High-word offset perturbation: lane offset XOR this constant (monolith :2267).
+local HI_OFFSET_XOR = 0xA5A5A5A5
+
+-- == Canonical-string serialization (verbatim) ==
+
+-- Sorted string keys of a table. Every key is tostring'd first so mixed key types
+-- order deterministically, then table.sort'd (monolith :2192). Returns a fresh
+-- ordered array — the canonical map serialization iterates this, never raw pairs,
+-- so the byte order is stable across runs.
+local function fpSortedKeys(tbl: { [any]: any }): { string }
+	local keys: { string } = {}
+	for key in pairs(tbl) do
+		keys[#keys + 1] = tostring(key)
+	end
+	table.sort(keys)
+	return keys
+end
+
+-- Forward declaration so fpSerializeScalar can recurse into nested tables without
+-- referencing a not-yet-assigned local (it calls itself; declaring the type up
+-- front keeps the recursion strict-typed and avoids a before-local read).
+local fpSerializeScalar: (value: any) -> string
+
+-- Serialize one scalar value to its canonical token (monolith :2201). typeof-based
+-- so it matches the engine's runtime type of captured property values:
+--   string  -> "s:" .. value
+--   number  -> "n:" .. tostring(value)
+--   boolean -> "b:1" / "b:0"
+--   nil     -> "z"
+--   table   -> array form "[a,b,...]" when #value > 0, else map form "{k=v;...}"
+--   else    -> "u:" .. tostring(value)  (userdata/datatypes etc.)
+-- Recurses for nested tables (arrays and maps) exactly as the monolith did.
+function fpSerializeScalar(value: any): string
+	local kind = typeof(value)
+	if kind == "string" then
+		return "s:" .. value
+	elseif kind == "number" then
+		return "n:" .. tostring(value)
+	elseif kind == "boolean" then
+		-- Real if/else over the boolean — not the and/or trap (luau-craft).
+		if value then
+			return "b:1"
+		else
+			return "b:0"
+		end
+	elseif kind == "nil" then
+		return "z"
+	elseif kind == "table" then
+		local tbl = value :: { [any]: any }
+		if #tbl > 0 then
+			local parts: { string } = {}
+			for _, item in ipairs(tbl) do
+				parts[#parts + 1] = fpSerializeScalar(item)
+			end
+			return "[" .. table.concat(parts, ",") .. "]"
+		end
+		local parts: { string } = {}
+		for _, key in ipairs(fpSortedKeys(tbl)) do
+			parts[#parts + 1] = key .. "=" .. fpSerializeScalar(tbl[key])
+		end
+		return "{" .. table.concat(parts, ";") .. "}"
+	end
+	return "u:" .. tostring(value)
+end
+
+-- Serialize a property/attribute map to "key=scalar;key=scalar;..." with keys
+-- sorted (monolith :2228). A nil map serializes as the empty string.
+local function fpSerializeMap(map: { [string]: any }?): string
+	local source: { [any]: any } = map or {}
+	local parts: { string } = {}
+	for _, key in ipairs(fpSortedKeys(source)) do
+		parts[#parts + 1] = key .. "=" .. fpSerializeScalar(source[key])
+	end
+	return table.concat(parts, ";")
+end
+
+-- == FNV-32 core (verbatim) ==
+
+-- One lane of FNV-32 over a string from a given offset (monolith :2236).
+-- h := offset; for each byte: h = ((h XOR byte) * PRIME) mod 2^32. Hot path:
+-- one xor + one multiply + one mod per character, no allocation.
+local function fnv32(str: string, offset: number): number
+	local h = offset
+	for i = 1, #str do
+		h = bit32.bxor(h, string.byte(str, i))
+		h = (h * FNV32_PRIME) % FNV32_MOD
+	end
+	return h
+end
+
+-- == hashInstance (the FP-1 recipe — byte-identical to the monolith) ==
+
+-- Build the canonical pipe string and hash it across 4 lanes into 64 hex chars.
+-- VERBATIM port of Live.hashInstance (monolith :2245). Field order and defaults
+-- are the wire: each missing field falls back exactly as the old code did
+-- (className/name/parentId/path -> "", depth/siblingIndex/childCount -> 0,
+-- duplicateSiblingName -> "1"/"0"). `source` is NOT included (M3). For each lane,
+-- the low word hashes the canonical string from the lane offset and the high word
+-- hashes canonical .. "#" .. lane from (offset XOR 0xA5A5A5A5); the lane emits
+-- "%08x%08x" (lo then hi), and the four lanes concatenate to 64 hex.
+local function hashInstance(entry: InstanceEntry__DARKLUA_TYPE_O): Hex64__DARKLUA_TYPE_M
+	-- entry is typed, but the monolith hashed `entry.x or default` on raw capture
+	-- output; widen to `any` for the exact tostring/or fallbacks so the bytes match
+	-- even if a field arrives nil off an untrusted/partial entry.
+	local e = entry :: any
+	local parts: { string } = {
+		tostring(e.className or ""),
+		tostring(e.name or ""),
+		tostring(e.parentId or ""),
+		tostring(e.path or ""),
+		tostring(e.depth or 0),
+		tostring(e.siblingIndex or 0),
+		tostring(e.childCount or 0),
+		(if e.duplicateSiblingName then "1" else "0"),
+		fpSerializeMap(e.properties),
+		fpSerializeMap(e.attributes),
+	}
+	local tagParts: { string } = {}
+	for _, tag in ipairs(e.tags or {}) do
+		tagParts[#tagParts + 1] = tostring(tag)
+	end
+	parts[#parts + 1] = table.concat(tagParts, ",")
+
+	local canonical = table.concat(parts, "|")
+	local hexParts: { string } = {}
+	for lane = 1, 4 do
+		local lo = fnv32(canonical, FNV32_OFFSETS[lane])
+		local hi = fnv32(canonical .. "#" .. tostring(lane), bit32.bxor(FNV32_OFFSETS[lane], HI_OFFSET_XOR))
+		hexParts[#hexParts + 1] = string.format("%08x%08x", lo, hi)
+	end
+	return table.concat(hexParts)
+end
+
+-- == serviceOf ==
+
+-- Leading path segment before the first "/", or the whole path when there is no
+-- "/". A nil path is treated as "" (monolith :2300): match returns nil, so we
+-- fall back to "" — preserving the old `... or (path or "")` chain.
+local function serviceOf(path: string?): string
+	local p = path or ""
+	return string.match(p, "^([^/]+)") or p
+end
+
+-- == Byte helpers (32-byte XOR accumulator primitives) ==
+
+-- A fresh 32-zero byte array (monolith fpZeroBytes :2273).
+local function fpZero(): Bytes__DARKLUA_TYPE_N
+	return table.create(32, 0)
+end
+
+-- Unpack 64 hex chars into 32 bytes. Each byte is the value of a 2-char hex pair;
+-- a bad/short pair yields 0 via the tonumber fallback (monolith fpHexToBytes :2278).
+local function fpHexToBytes(hex: string): Bytes__DARKLUA_TYPE_N
+	local bytes: Bytes__DARKLUA_TYPE_N = table.create(32, 0)
+	for i = 1, 32 do
+		bytes[i] = tonumber(string.sub(hex, (i - 1) * 2 + 1, (i - 1) * 2 + 2), 16) or 0
+	end
+	return bytes
+end
+
+-- Pack 32 bytes into 64 lowercase hex (nil entries → "00"; monolith fpBytesToHex
+-- :2286).
+local function fpBytesToHex(bytes: Bytes__DARKLUA_TYPE_N): Hex64__DARKLUA_TYPE_M
+	local parts: { string } = table.create(32, "")
+	for i = 1, 32 do
+		parts[i] = string.format("%02x", bytes[i] or 0)
+	end
+	return table.concat(parts)
+end
+
+-- In-place 32-byte XOR of `source` into `target` (monolith fpXorBytes :2294).
+-- nil entries on either side count as 0. Returns target for call-site convenience
+-- (the monolith mutated in place; returning it changes nothing for in-place uses).
+local function fpXor(target: Bytes__DARKLUA_TYPE_N, source: Bytes__DARKLUA_TYPE_N): Bytes__DARKLUA_TYPE_N
+	for i = 1, 32 do
+		target[i] = bit32.bxor(target[i] or 0, source[i] or 0)
+	end
+	return target
+end
+
+-- == Module table ==
+
+-- Assembled as a real value before return; every cross-reference above is a plain
+-- local, so there is no forward-reference-before-local read anywhere in the module.
+local Hash: HashModule__DARKLUA_TYPE_P = {
+	hashInstance = hashInstance,
+	serviceOf = serviceOf,
+	fpZero = fpZero,
+	fpHexToBytes = fpHexToBytes,
+	fpBytesToHex = fpBytesToHex,
+	fpXor = fpXor,
+}
+
+return Hash
+end function __DARKLUA_BUNDLE_MODULES.i():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.i if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.i=v end return v.c end end do local function __modImpl()--!strict
+-- Fingerprints — the live per-service XOR accumulators, ported faithfully from the
+-- monolith's Live fingerprint block (StudioStud.plugin.lua: instFp/serviceFpBytes
+-- :2183-2184, serviceFpHex :2304, serviceFingerprintsWire :2312, applyFpUpsert
+-- :2320, applyFpRemove :2337, resetFingerprints :2348). This is the FP-1 live half:
+-- the daemon stores and XORs whatever per-service fingerprint the plugin emits, so
+-- the accumulator math (and the recipe behind it) MUST be byte-identical to the old
+-- plugin or every tick reports phantom drift.
+--
+-- The recipe itself (the 4-lane FNV → 64-hex hash and the 32-byte XOR primitives)
+-- lives in Hash — the single source of truth. This module owns ONLY the per-service
+-- accumulation: which fingerprint belongs to which service, and the add / remove /
+-- REPARENT inverse (XOR the old fingerprint out of the old service, XOR the new
+-- fingerprint into the new service). It never re-derives the hash math.
+--
+-- The accumulator is XOR-based, so it is order-independent and self-inverse:
+--   * add A, add B            -> serviceFp == hash(A) XOR hash(B)
+--   * remove A                -> serviceFp == hash(B)        (A XOR'd back out)
+--   * re-add A                -> serviceFp == hash(A) XOR hash(B)  (restored)
+-- A reparent is just remove-from-old + add-to-new in one call: applyFpUpsert with a
+-- distinct oldPath XORs the stored fingerprint out of serviceOf(oldPath) and the new
+-- fingerprint into serviceOf(entry.path).
+--
+-- STATE: instFp ([id] = current 64-hex fingerprint) and serviceFpBytes ([service] =
+-- 32-byte XOR accumulator) are module fields on the Fingerprints table — every method
+-- reaches them through `Fingerprints.*`, never a forward-referenced upvalue, so there
+-- is no before-local window (the C1-C3 bug class this rewrite exists to kill). The
+-- monolith held the same two tables on its giant Live closure; here they are explicit
+-- typed fields the Live engine can also read (Types.LiveState pins their shape).
+--
+-- M3 (by design): a fingerprint never includes `source` (Hash excludes it), so a
+-- script-only edit does not change the per-service accumulator — no phantom drift.
+
+
+local Types = __DARKLUA_BUNDLE_MODULES.e()
+local Hash = __DARKLUA_BUNDLE_MODULES.i()
+
+-- Forward declaration of the module table so methods reach the shared state through
+-- it (Fingerprints.instFp / Fingerprints.serviceFpBytes) WITHOUT a forward-referenced
+-- upvalue. Fingerprints.* is a real table field by the time any method runs.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local Fingerprints: FingerprintsModule__DARKLUA_TYPE_T
+
+-- == serviceFpHex ==
+
+-- 64-hex of a service's accumulator, or 64 zeros when none exists yet. VERBATIM
+-- port of Live.serviceFpHex (monolith :2304): the bytes-missing branch returns
+-- string.rep("0", 64), NOT fpZero packed (same value, but the monolith short-circuited
+-- before allocating a byte array — preserved here).
+local function serviceFpHex(self: FingerprintsModule__DARKLUA_TYPE_T, service: string): Hex64__DARKLUA_TYPE_Q
+	local bytes = self.serviceFpBytes[service]
+	if not bytes then
+		return string.rep("0", 64)
+	end
+	return Hash.fpBytesToHex(bytes)
+end
+
+-- == serviceFingerprintsWire ==
+
+-- The per-service wire map { [service] = 64-hex } over every service with an
+-- accumulator. VERBATIM port of Live.serviceFingerprintsWire (monolith :2312):
+-- iterate serviceFpBytes keys, emit serviceFpHex for each. Only services that have
+-- ever held a fingerprint appear (a service that was added then fully removed stays
+-- in the map with a 64-zero value — exactly as the monolith left it, because
+-- applyFpRemove never deletes the serviceFpBytes entry).
+local function serviceFingerprintsWire(self: FingerprintsModule__DARKLUA_TYPE_T): { [string]: Hex64__DARKLUA_TYPE_Q }
+	local out: { [string]: Hex64__DARKLUA_TYPE_Q } = {}
+	for service in pairs(self.serviceFpBytes) do
+		out[service] = self:serviceFpHex(service)
+	end
+	return out
+end
+
+-- == applyFpUpsert (add / update / reparent) ==
+
+-- VERBATIM port of Live.applyFpUpsert (monolith :2320). Order matters and is
+-- preserved exactly:
+--   1. newFp = entry.fp or Hash.hashInstance(entry); write it back onto entry.fp.
+--   2. newService = serviceOf(entry.path).
+--   3. If an old fingerprint exists for this id, XOR it OUT of serviceOf(oldPath or
+--      entry.path) — the reparent inverse. (oldPath defaults to entry.path, so a
+--      same-service update XORs the old value out of the same service it goes back in.)
+--   4. XOR newFp INTO newService.
+--   5. instFp[id] = newFp.
+-- A fresh service accumulator is fpZero() (lazily created), matching the monolith's
+-- `Live.serviceFpBytes[...] or fpZeroBytes()`.
+local function applyFpUpsert(self: FingerprintsModule__DARKLUA_TYPE_T, id: string, entry: FpEntry__DARKLUA_TYPE_S, oldPath: string?): ()
+	-- Real if/else over the optional fp (luau-craft: no `a or b` where b can throw /
+	-- allocate unconditionally — though here both are values, the monolith's `or` is
+	-- a cheap fallback so we keep the same single-evaluation semantics).
+	local newFp: Hex64__DARKLUA_TYPE_Q
+	if entry.fp then
+		newFp = entry.fp
+	else
+		newFp = Hash.hashInstance(entry :: any)
+	end
+	entry.fp = newFp
+
+	local newService = Hash.serviceOf(entry.path)
+	local oldFp = self.instFp[id]
+	if oldFp then
+		local oldService = Hash.serviceOf(oldPath or entry.path)
+		local svcBytes = self.serviceFpBytes[oldService]
+		if not svcBytes then
+			svcBytes = Hash.fpZero()
+		end
+		Hash.fpXor(svcBytes, Hash.fpHexToBytes(oldFp))
+		self.serviceFpBytes[oldService] = svcBytes
+	end
+
+	local newBytes = self.serviceFpBytes[newService]
+	if not newBytes then
+		newBytes = Hash.fpZero()
+	end
+	Hash.fpXor(newBytes, Hash.fpHexToBytes(newFp))
+	self.serviceFpBytes[newService] = newBytes
+
+	self.instFp[id] = newFp
+end
+
+-- == applyFpRemove ==
+
+-- VERBATIM port of Live.applyFpRemove (monolith :2337). XOR the stored fingerprint
+-- out of serviceOf(path) and clear instFp[id]. If the id has no stored fingerprint,
+-- only the (no-op) clear runs — the accumulator is untouched. The serviceFpBytes
+-- entry is NOT deleted even when it returns to all-zero (monolith parity: the empty
+-- service lingers in serviceFingerprintsWire as 64 zeros).
+local function applyFpRemove(self: FingerprintsModule__DARKLUA_TYPE_T, id: string, path: string?): ()
+	local oldFp = self.instFp[id]
+	if oldFp then
+		local service = Hash.serviceOf(path or "")
+		local svcBytes = self.serviceFpBytes[service]
+		if not svcBytes then
+			svcBytes = Hash.fpZero()
+		end
+		Hash.fpXor(svcBytes, Hash.fpHexToBytes(oldFp))
+		self.serviceFpBytes[service] = svcBytes
+	end
+	self.instFp[id] = nil
+end
+
+-- == reset ==
+
+-- Drop all fingerprint state by replacing both tables with fresh empties. VERBATIM
+-- port of Live.resetFingerprints (monolith :2348): new tables, not table.clear, so
+-- any reference held to the OLD tables (e.g. a wire map already emitted) is unaffected.
+local function reset(self: FingerprintsModule__DARKLUA_TYPE_T): ()
+	self.instFp = {}
+	self.serviceFpBytes = {}
+end
+
+-- == Module table ==
+
+-- Assembled as a real value before return; the state tables start empty and every
+-- method above reaches them via `self`, so there is no forward-reference-before-local
+-- read anywhere in the module.
+Fingerprints = {
+	instFp = {},
+	serviceFpBytes = {},
+	serviceFpHex = serviceFpHex,
+	serviceFingerprintsWire = serviceFingerprintsWire,
+	applyFpUpsert = applyFpUpsert,
+	applyFpRemove = applyFpRemove,
+	reset = reset,
+}
+
+return Fingerprints
+end function __DARKLUA_BUNDLE_MODULES.j():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.j if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.j=v end return v.c end end do local function __modImpl()
+-- == Module table ==
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local Theme: ThemeModule__DARKLUA_TYPE_U = table.freeze({
+	-- Palette.
+	panel = Color3.fromRGB(10, 20, 30),
+	surface = Color3.fromRGB(18, 34, 48),
+	surfaceBorder = Color3.fromRGB(42, 72, 92),
+	copper = Color3.fromRGB(196, 142, 72),
+	copperDim = Color3.fromRGB(140, 100, 52),
+	teal = Color3.fromRGB(72, 168, 152),
+	tealDim = Color3.fromRGB(48, 110, 100),
+	muted = Color3.fromRGB(118, 142, 158),
+	body = Color3.fromRGB(224, 236, 244),
+	warn = Color3.fromRGB(232, 178, 108),
+	badge = Color3.fromRGB(32, 88, 108),
+
+	-- Fonts.
+	CODE_FONT = Font.new("rbxasset://fonts/families/RobotoMono.json", Enum.FontWeight.Regular),
+	UI_FONT = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Regular),
+	UI_FONT_BOLD = Font.new("rbxasset://fonts/families/GothamSSm.json", Enum.FontWeight.Bold),
+	TITLE_FONT = Font.new("rbxasset://fonts/families/Merriweather.json", Enum.FontWeight.Bold),
+
+	-- Spacing.
+	PAD = 14,
+})
+
+return Theme
+end function __DARKLUA_BUNDLE_MODULES.k():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.k if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.k=v end return v.c end end do local function __modImpl()--!strict
+-- Ui — the plugin's UI primitive factory, ported faithfully from the monolith's
+-- Ui block (StudioStud.plugin.lua:526-902). Every widget the panels build
+-- (labels, buttons, the ms slider, the status card, the brand badge/logo) is
+-- minted here so the construction recipe — sizes, fonts, colours, ZIndex,
+-- corners/strokes — lives in exactly one place. Pure view construction: no daemon
+-- traffic, no Live/Capture logic; the panels wire behaviour to the handles these
+-- factories return.
+--
+-- Every colour/font/spacing value comes from ./Theme (single source of truth); no
+-- factory re-declares a palette entry.
+--
+-- M4 FIX (the leak this module exists to close): makeMsSlider connects to
+-- UserInputService.InputChanged / .InputEnded (process-wide signals, NOT scoped to
+-- the slider's own Instances, so they outlive the Frame's destruction). The
+-- monolith never disconnected them, so every rebuilt panel leaked two live
+-- connections. Here the slider tracks both RBXScriptConnections and the returned
+-- handle exposes `disconnect()`; the owning panel calls it on teardown. The
+-- slider's own track/knob InputBegan connections die with the Instances (parented
+-- under `row`) and need no explicit teardown — only the UIS subscriptions do.
+--
+-- NB: this module imports no shared aliases from ./Types — it traffics purely in
+-- Roblox UI datatypes (Instances, Color3, UDim2), none of which are part of the
+-- protocol-v2 wire contract. It depends only on ./Theme for the palette/fonts and
+-- on ../Config for the resolved logo asset id. (luau-craft: import what you use.)
+
+
+local Theme = __DARKLUA_BUNDLE_MODULES.k()
+local Config = __DARKLUA_BUNDLE_MODULES.a()
+
+-- `game` is a Studio/plugin global the analyzer types via globalTypes.d.luau.
+-- UserInputService drives slider dragging; resolved once at module load (it is a
+-- process-wide singleton, so there is no per-event GetService on the hot drag path
+-- — cache-at-event) and shared by every slider built thereafter.
+local UserInputService = game:GetService("UserInputService") :: UserInputService
+
+-- The resolved logo asset id ("" or a valid rbxassetid://… string), from Config —
+-- the single source of truth for the icon constant. makeBrandBadge prefers the
+-- image when present, else falls back to the drawn vector logo.
+local resolvedLogoAssetId = Config.resolvedLogoAssetId
+
+-- == Module table ==
+
+-- All factories are fields on this one table; no forward-referenced upvalue is
+-- ever read before it is assigned (the C1-C3 bug class). Where one factory calls
+-- another (e.g. makePrimaryButton -> makeCorner), it goes through `Ui.*`, which is
+-- a field read resolved at call time, never a use-before-local.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+local Ui = {} :: UiModule__DARKLUA_TYPE_X
+
+function Ui.makeCorner(parent: Instance, radius: number?): UICorner
+	local corner = Instance.new("UICorner")
+	corner.CornerRadius = UDim.new(0, radius or 8)
+	corner.Parent = parent
+	return corner
+end
+
+function Ui.makeStroke(parent: Instance, color: Color3, thickness: number?): UIStroke
+	local stroke = Instance.new("UIStroke")
+	stroke.Color = color
+	stroke.Thickness = thickness or 1
+	stroke.Parent = parent
+	return stroke
+end
+
+function Ui.makeLabel(parent: Instance, text: string, y: number, height: number?, textColor: Color3?): TextLabel
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Position = UDim2.fromOffset(Theme.PAD, y)
+	label.Size = UDim2.new(1, -Theme.PAD * 2, 0, height or 24)
+	label.FontFace = Theme.UI_FONT
+	label.TextColor3 = textColor or Theme.body
+	label.TextSize = 14
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.TextYAlignment = Enum.TextYAlignment.Top
+	label.TextWrapped = true
+	label.Text = text
+	label.Parent = parent
+	return label
+end
+
+function Ui.makeSectionLabel(parent: Instance, text: string, y: number): TextLabel
+	local label = Instance.new("TextLabel")
+	label.BackgroundTransparency = 1
+	label.Position = UDim2.fromOffset(Theme.PAD, y)
+	label.Size = UDim2.new(1, -Theme.PAD * 2, 0, 14)
+	label.FontFace = Theme.UI_FONT_BOLD
+	label.TextColor3 = Theme.muted
+	label.TextSize = 11
+	label.TextXAlignment = Enum.TextXAlignment.Left
+	label.Text = string.upper(text)
+	label.Parent = parent
+	return label
+end
+
+function Ui.makePrimaryButton(parent: Instance, text: string): TextButton
+	local button = Instance.new("TextButton")
+	button.BackgroundColor3 = Theme.copper
+	button.BorderSizePixel = 0
+	button.FontFace = Theme.UI_FONT_BOLD
+	button.TextColor3 = Theme.panel
+	button.TextSize = 14
+	button.Text = text
+	button.Parent = parent
+	Ui.makeCorner(button, 8)
+	return button
+end
+
+function Ui.makeSecondaryButton(parent: Instance, text: string): TextButton
+	local button = Instance.new("TextButton")
+	button.BackgroundColor3 = Theme.surface
+	button.BorderSizePixel = 0
+	button.AutoButtonColor = true
+	button.FontFace = Theme.UI_FONT
+	button.TextColor3 = Theme.body
+	button.TextSize = 14
+	button.Text = text
+	button.ZIndex = 2
+	button.Parent = parent
+	Ui.makeCorner(button, 8)
+	Ui.makeStroke(button, Theme.surfaceBorder, 1)
+	return button
+end
+
+-- Horizontal ms slider (integer steps). Calls onChanged(ms) when the value
+-- settles/changes. M4: the two UserInputService subscriptions (drag-move /
+-- drag-end) are captured into `connections` and torn down by the returned
+-- handle's `disconnect()` — the only connections that outlive the slider's Frame.
+function Ui.makeMsSlider(
+	parent: Instance,
+	y: number,
+	minMs: number,
+	maxMs: number,
+	initialMs: number,
+	onChanged: ((ms: number) -> ())?
+): MsSlider__DARKLUA_TYPE_V
+	local row = Instance.new("Frame")
+	row.Name = "MsSlider"
+	row.BackgroundTransparency = 1
+	row.Position = UDim2.fromOffset(Theme.PAD, y)
+	row.Size = UDim2.new(1, -Theme.PAD * 2, 0, 56)
+	row.Parent = parent
+
+	local valueLabel = Instance.new("TextLabel")
+	valueLabel.BackgroundTransparency = 1
+	valueLabel.Size = UDim2.new(1, 0, 0, 18)
+	valueLabel.FontFace = Theme.UI_FONT_BOLD
+	valueLabel.TextColor3 = Theme.body
+	valueLabel.TextSize = 13
+	valueLabel.TextXAlignment = Enum.TextXAlignment.Right
+	valueLabel.Parent = row
+
+	local track = Instance.new("TextButton")
+	track.Name = "Track"
+	track.AutoButtonColor = false
+	track.Text = ""
+	track.BackgroundColor3 = Theme.surface
+	track.BorderSizePixel = 0
+	track.Position = UDim2.fromOffset(0, 22)
+	track.Size = UDim2.new(1, 0, 0, 24)
+	track.ZIndex = 2
+	track.Parent = row
+	Ui.makeCorner(track, 6)
+	Ui.makeStroke(track, Theme.surfaceBorder, 1)
+
+	local fill = Instance.new("Frame")
+	fill.Name = "Fill"
+	fill.BackgroundColor3 = Theme.copper
+	fill.BorderSizePixel = 0
+	fill.Size = UDim2.fromScale(0, 1)
+	fill.ZIndex = 2
+	fill.Parent = track
+	Ui.makeCorner(fill, 6)
+
+	local knob = Instance.new("TextButton")
+	knob.Name = "Knob"
+	knob.AutoButtonColor = false
+	knob.Text = ""
+	knob.BackgroundColor3 = Theme.body
+	knob.BorderSizePixel = 0
+	knob.Size = UDim2.fromOffset(16, 16)
+	knob.AnchorPoint = Vector2.new(0.5, 0.5)
+	knob.ZIndex = 4
+	knob.Parent = track
+	Ui.makeCorner(knob, 8)
+	Ui.makeStroke(knob, Theme.copperDim, 1)
+
+	local minLabel = Instance.new("TextLabel")
+	minLabel.BackgroundTransparency = 1
+	minLabel.Position = UDim2.fromOffset(0, 48)
+	minLabel.Size = UDim2.fromOffset(48, 14)
+	minLabel.FontFace = Theme.UI_FONT
+	minLabel.TextColor3 = Theme.muted
+	minLabel.TextSize = 10
+	minLabel.TextXAlignment = Enum.TextXAlignment.Left
+	minLabel.Text = tostring(minMs) .. " ms"
+	minLabel.Parent = row
+
+	local maxLabel = Instance.new("TextLabel")
+	maxLabel.BackgroundTransparency = 1
+	maxLabel.AnchorPoint = Vector2.new(1, 0)
+	maxLabel.Position = UDim2.new(1, 0, 0, 48)
+	maxLabel.Size = UDim2.fromOffset(52, 14)
+	maxLabel.FontFace = Theme.UI_FONT
+	maxLabel.TextColor3 = Theme.muted
+	maxLabel.TextSize = 10
+	maxLabel.TextXAlignment = Enum.TextXAlignment.Right
+	maxLabel.Text = tostring(maxMs) .. " ms"
+	maxLabel.Parent = row
+
+	local currentMs = math.clamp(math.floor(initialMs + 0.5), minMs, maxMs)
+	local dragging = false
+
+	local function alphaForMs(ms: number): number
+		return (ms - minMs) / (maxMs - minMs)
+	end
+
+	local function msFromAlpha(alpha: number): number
+		return math.clamp(minMs + math.clamp(alpha, 0, 1) * (maxMs - minMs), minMs, maxMs)
+	end
+
+	local function applyMs(ms: number, persist: boolean)
+		currentMs = math.clamp(math.floor(ms + 0.5), minMs, maxMs)
+		local alpha = alphaForMs(currentMs)
+		fill.Size = UDim2.fromScale(alpha, 1)
+		knob.Position = UDim2.fromScale(alpha, 0.5)
+		valueLabel.Text = tostring(currentMs) .. " ms"
+		if persist and onChanged then
+			onChanged(currentMs)
+		end
+	end
+
+	local function updateFromScreenX(screenX: number)
+		local trackX = track.AbsolutePosition.X
+		local trackWidth = track.AbsoluteSize.X
+		if trackWidth <= 0 then
+			return
+		end
+		applyMs(msFromAlpha((screenX - trackX) / trackWidth), true)
+	end
+
+	local function beginDrag(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = true
+			updateFromScreenX(input.Position.X)
+		end
+	end
+
+	-- track/knob InputBegan connections are scoped to those Instances (parented
+	-- under `row`); they die when the slider's Frame is destroyed, so they are NOT
+	-- tracked for teardown — only the process-wide UIS subscriptions below are.
+	track.InputBegan:Connect(beginDrag)
+	knob.InputBegan:Connect(beginDrag)
+
+	-- M4: the leaky pair. Track both so disconnect() can release them.
+	local connections: { RBXScriptConnection } = {}
+
+	connections[#connections + 1] = UserInputService.InputChanged:Connect(function(input: InputObject)
+		if not dragging then
+			return
+		end
+		if input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch then
+			updateFromScreenX(input.Position.X)
+		end
+	end)
+
+	connections[#connections + 1] = UserInputService.InputEnded:Connect(function(input: InputObject)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			dragging = false
+		end
+	end)
+
+	applyMs(currentMs, false)
+
+	return {
+		setValue = function(ms: number)
+			applyMs(ms, false)
+		end,
+		getValue = function(): number
+			return currentMs
+		end,
+		disconnect = function()
+			for _, connection in connections do
+				connection:Disconnect()
+			end
+			table.clear(connections)
+		end,
+	}
+end
+
+function Ui.makeStatusCard(parent: Instance, y: number): StatusCard__DARKLUA_TYPE_W
+	local card = Instance.new("Frame")
+	card.Name = "StatusCard"
+	card.Position = UDim2.fromOffset(Theme.PAD, y)
+	card.Size = UDim2.new(1, -Theme.PAD * 2, 0, 54)
+	card.BackgroundColor3 = Theme.surface
+	card.BorderSizePixel = 0
+	card.Parent = parent
+	Ui.makeCorner(card, 8)
+	Ui.makeStroke(card, Theme.surfaceBorder, 1)
+
+	local stripe = Instance.new("Frame")
+	stripe.Name = "StatusStripe"
+	stripe.BackgroundColor3 = Theme.tealDim
+	stripe.BorderSizePixel = 0
+	stripe.Size = UDim2.new(0, 4, 1, 0)
+	stripe.Parent = card
+	local stripeCorner = Instance.new("UICorner")
+	stripeCorner.CornerRadius = UDim.new(0, 8)
+	stripeCorner.Parent = stripe
+
+	local dot = Instance.new("Frame")
+	dot.Name = "StatusDot"
+	dot.BackgroundColor3 = Theme.muted
+	dot.BorderSizePixel = 0
+	dot.Position = UDim2.fromOffset(14, 12)
+	dot.Size = UDim2.fromOffset(10, 10)
+	dot.Parent = card
+	Ui.makeCorner(dot, 5)
+
+	local statusLabel = Instance.new("TextLabel")
+	statusLabel.BackgroundTransparency = 1
+	statusLabel.Position = UDim2.fromOffset(30, 4)
+	statusLabel.Size = UDim2.new(1, -38, 0, 22)
+	statusLabel.FontFace = Theme.UI_FONT
+	statusLabel.TextColor3 = Theme.body
+	statusLabel.TextSize = 13
+	statusLabel.TextXAlignment = Enum.TextXAlignment.Left
+	statusLabel.TextWrapped = false
+	statusLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	statusLabel.Text = "Waiting for daemon"
+	statusLabel.Parent = card
+
+	local statsLabel = Instance.new("TextLabel")
+	statsLabel.BackgroundTransparency = 1
+	statsLabel.Position = UDim2.fromOffset(30, 30)
+	statsLabel.Size = UDim2.new(1, -38, 0, 18)
+	statsLabel.FontFace = Theme.CODE_FONT
+	statsLabel.TextColor3 = Theme.muted
+	statsLabel.TextSize = 11
+	statsLabel.TextXAlignment = Enum.TextXAlignment.Left
+	statsLabel.TextTruncate = Enum.TextTruncate.AtEnd
+	statsLabel.Text = ""
+	statsLabel.Parent = card
+
+	local function setState(state: string, message: string)
+		statusLabel.Text = message
+		if state == "connected" then
+			dot.BackgroundColor3 = Theme.teal
+			stripe.BackgroundColor3 = Theme.teal
+			statusLabel.TextColor3 = Theme.body
+		elseif state == "syncing" then
+			dot.BackgroundColor3 = Theme.copper
+			stripe.BackgroundColor3 = Theme.copper
+			statusLabel.TextColor3 = Theme.body
+		elseif state == "error" then
+			dot.BackgroundColor3 = Theme.warn
+			stripe.BackgroundColor3 = Theme.warn
+			statusLabel.TextColor3 = Theme.warn
+		else
+			dot.BackgroundColor3 = Theme.muted
+			stripe.BackgroundColor3 = Theme.tealDim
+			statusLabel.TextColor3 = Theme.muted
+		end
+	end
+
+	local function setStats(text: string?)
+		statsLabel.Text = text or ""
+	end
+
+	return { frame = card, setState = setState, setStats = setStats }
+end
+
+function Ui.makeVectorLogo(parent: Instance, size: number): Frame
+	local root = Instance.new("Frame")
+	root.Name = "StudioStudLogo"
+	root.BackgroundColor3 = Theme.badge
+	root.BorderSizePixel = 0
+	root.Size = UDim2.fromOffset(size, size)
+	root.Parent = parent
+	Ui.makeCorner(root, math.floor(size * 0.22))
+
+	local ring = Instance.new("Frame")
+	ring.BackgroundColor3 = Theme.tealDim
+	ring.BorderSizePixel = 0
+	ring.AnchorPoint = Vector2.new(0.5, 0.5)
+	ring.Position = UDim2.fromScale(0.5, 0.5)
+	ring.Size = UDim2.fromOffset(math.floor(size * 0.78), math.floor(size * 0.78))
+	ring.Parent = root
+	Ui.makeCorner(ring, 999)
+
+	local ringInner = Instance.new("Frame")
+	ringInner.BackgroundColor3 = Theme.badge
+	ringInner.BorderSizePixel = 0
+	ringInner.AnchorPoint = Vector2.new(0.5, 0.5)
+	ringInner.Position = UDim2.fromScale(0.5, 0.5)
+	ringInner.Size = UDim2.fromOffset(math.floor(size * 0.58), math.floor(size * 0.58))
+	ringInner.Parent = ring
+	Ui.makeCorner(ringInner, 999)
+
+	local pin = Instance.new("Frame")
+	pin.BackgroundColor3 = Theme.copper
+	pin.BorderSizePixel = 0
+	pin.AnchorPoint = Vector2.new(0.5, 0.5)
+	pin.Position = UDim2.fromScale(0.5, 0.52)
+	pin.Size = UDim2.fromOffset(math.max(3, math.floor(size * 0.12)), math.floor(size * 0.42))
+	pin.Parent = root
+	Ui.makeCorner(pin, 2)
+
+	for index = 0, 2 do
+		local tick = Instance.new("Frame")
+		tick.BackgroundColor3 = Theme.copperDim
+		tick.BorderSizePixel = 0
+		tick.Position = UDim2.fromOffset(math.floor(size * 0.16), math.floor(size * 0.28 + index * size * 0.14))
+		tick.Size = UDim2.fromOffset(math.floor(size * 0.18), math.max(2, math.floor(size * 0.06)))
+		tick.Parent = root
+		Ui.makeCorner(tick, 1)
+	end
+
+	return root
+end
+
+function Ui.makeBrandBadge(parent: Instance): Frame
+	local badge = Instance.new("Frame")
+	badge.Name = "BrandBadge"
+	badge.BackgroundTransparency = 1
+	badge.BorderSizePixel = 0
+	badge.Size = UDim2.fromOffset(36, 36)
+	badge.Parent = parent
+
+	if resolvedLogoAssetId ~= "" then
+		local image = Instance.new("ImageLabel")
+		image.Name = "LogoImage"
+		image.BackgroundTransparency = 1
+		image.Size = UDim2.fromScale(1, 1)
+		image.Image = resolvedLogoAssetId
+		image.ScaleType = Enum.ScaleType.Fit
+		image.Parent = badge
+	else
+		Ui.makeVectorLogo(badge, 36)
+	end
+
+	return badge
+end
+
+return Ui
+end function __DARKLUA_BUNDLE_MODULES.l():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.l if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.l=v end return v.c end end do local function __modImpl()--!strict
 --!nolint DeprecatedApi
 -- DeprecatedApi is silenced FILE-WIDE for exactly one call: the verbatim
 -- `plugin:CreateDockWidgetPluginGui` bootstrap (the monolith's proven API).
@@ -3527,12 +4329,12 @@ end function __DARKLUA_BUNDLE_MODULES.h():typeof(__modImpl())local v=__DARKLUA_B
 -- typed interface plus a typed `plugin`/`game` shim at the trust boundary.
 
 
-local Theme = __DARKLUA_BUNDLE_MODULES.e()
-local Ui = __DARKLUA_BUNDLE_MODULES.f()
+local Theme = __DARKLUA_BUNDLE_MODULES.k()
+local Ui = __DARKLUA_BUNDLE_MODULES.l()
 local Config = __DARKLUA_BUNDLE_MODULES.a()
 local Registry = __DARKLUA_BUNDLE_MODULES.c()
 local Settings = __DARKLUA_BUNDLE_MODULES.b()
-local Transport = __DARKLUA_BUNDLE_MODULES.h()
+local Transport = __DARKLUA_BUNDLE_MODULES.g()
 
 
 
@@ -3616,7 +4418,8 @@ local pluginHandle: Plugin = plugin
 
 
 
-local Shell = {} :: ShellModule__DARKLUA_TYPE_M
+
+local Shell = {} :: ShellModule__DARKLUA_TYPE__
 Shell.mainFrame = nil
 Shell.contentFrame = nil
 Shell.panelHost = nil
@@ -3624,6 +4427,7 @@ Shell.tabStrip = nil
 Shell.settingsFrame = nil
 Shell.statusCard = nil
 Shell.connected = false
+Shell.autoConnectGeneration = 0
 
 -- == Widget + toolbar bootstrap (verbatim port, runs at module load) ==
 
@@ -3654,7 +4458,7 @@ end)
 
 -- == Panel context factory ==
 
-function Shell.makeCtx(): ShellContext__DARKLUA_TYPE_L
+function Shell.makeCtx(): ShellContext__DARKLUA_TYPE_Z
 	return {
 		theme = Theme,
 		ui = Ui,
@@ -4192,398 +4996,135 @@ end
 -- == Widget-enabled hook ==
 
 function Shell.onWidgetEnabled(): ()
-	local selectedId = Registry.selected()
-	if selectedId then
-		local handle = Registry.getHandle(selectedId)
-		if handle and handle.onConnectRequested then
-			handle.onConnectRequested()
-		end
-	else
-		local firstId = Registry.firstEnabledId()
-		if firstId then
-			Registry.select(firstId)
-			local handle = Registry.getHandle(firstId)
+	Shell.autoConnectGeneration += 1
+	local myGeneration = Shell.autoConnectGeneration
+
+	local function requestConnect(): any
+		local selectedId = Registry.selected()
+		if selectedId then
+			local handle = Registry.getHandle(selectedId)
 			if handle and handle.onConnectRequested then
-				handle.onConnectRequested()
+				return handle.onConnectRequested()
+			end
+		else
+			local firstId = Registry.firstEnabledId()
+			if firstId then
+				Registry.select(firstId)
+				local handle = Registry.getHandle(firstId)
+				if handle and handle.onConnectRequested then
+					return handle.onConnectRequested()
+				end
 			end
 		end
+		return nil
 	end
+
+	local result = requestConnect()
+	if result and result.ok then
+		return
+	end
+
+	-- Daemon may start after the plugin; retry with backoff without blocking the frame.
+	task.spawn(function()
+		local delays = { 2, 2, 2, 2, 2 }
+		for _, delay in delays do
+			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
+				return
+			end
+			task.wait(delay)
+			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
+				return
+			end
+			local retryResult = requestConnect()
+			if retryResult and retryResult.ok then
+				return
+			end
+		end
+	end)
 end
 
 return Shell
-end function __DARKLUA_BUNDLE_MODULES.i():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.i if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.i=v end return v.c end end do local function __modImpl()--!strict
--- Session — edit-vs-play mode detection. Ported faithfully from the monolith's
--- Session block (StudioStud.plugin.lua:25-48).
+end function __DARKLUA_BUNDLE_MODULES.m():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.m if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.m=v end return v.c end end do local function __modImpl()--!strict
+-- SelfTest — the in-engine acceptance harness, ported faithfully from the
+-- monolith's SelfTest block (StudioStud.plugin.lua:3918-4571) and re-pointed at
+-- the modular API. Every assertion the monolith ran is preserved (Workstream E,
+-- Phase 3/4/5C, JSON-safety, edit-gate, allow-list parse), PLUS the new
+-- regressions this rewrite exists to lock in: C1 (markDirtyUpsert sets
+-- dirtyUpsert[inst] WITHOUT recursion), C2 (a simulated connect passes a NON-NIL
+-- onReturnToEdit to startTickLoop), C3 (Sync() before live mode does not nil-call),
+-- and a Hash wire-parity assertion (the new Hash.hashInstance must agree with the
+-- monolith's recipe oracle, byte-for-byte).
 --
--- Studio Stud must talk to the daemon ONLY during a genuine edit session. Code
--- running in a play/run DataModel (Play Solo / F8 Run, or a stray copy embedded
--- in the place) reports IsRunning()=true / IsEdit()=false and is gated to "play".
--- The real plugin runs in the edit DataModel; during an F5 playtest (a separate
--- DataModel) it stays "edit" and never sees the running game, so there is nothing
--- to capture there.
+-- WHY THIS RUNS IN-ENGINE ONLY: it drives the real Registry/Shell/Live engine over
+-- a live DataModel (Instance.new, game:GetService, GetDebugId, signal wiring). It is
+-- NOT a pure module, so — like the monolith's SelfTest.run — it is exercised through
+-- `_G.StudioStud.RunSelfTest()` inside Studio, never headless under lune. (The pure
+-- modules it leans on — Hash / Fingerprints / Capture / Live byte sizing — have their
+-- own headless lune specs under __tests__/; this harness is the integration layer.)
 --
--- `decide` is a PURE function (no DataModel reads) so its truth table stays
--- unit-testable headless. The only impure surface is `signals()`, the single
--- read point for the live RunService state.
-
-
-local Types = __DARKLUA_BUNDLE_MODULES.g()
-
--- == Engine handle ==
-
--- `game` is a plugin/Studio global typed via globalTypes.d.luau under the
--- analyzer. Resolution is LAZY (and cached) rather than at module load so the
--- pure `decide` half can be required headlessly (lune has no `game`) for the
--- truth-table test. The first impure call (`signals`) narrows GetService's
--- Instance result to RunService exactly once — the single trust point for the
--- engine handle; every later call reuses the cached handle (cache-at-event).
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local runService: RunService? = nil
-local function getRunService(): RunService
-	local cached = runService
-	if cached then
-		return cached
-	end
-	local resolved = game:GetService("RunService") :: RunService
-	runService = resolved
-	return resolved
-end
-
--- == Implementation ==
-
-local function decide(isEdit: boolean, isRunning: boolean): SessionMode__DARKLUA_TYPE_N
-	if isEdit and not isRunning then
-		return "edit"
-	end
-	return "play"
-end
-
-local function signals(): Signals__DARKLUA_TYPE_O
-	local rs = getRunService()
-	return {
-		isEdit = rs:IsEdit(),
-		isRunning = rs:IsRunning(),
-	}
-end
-
-local function mode(): SessionMode__DARKLUA_TYPE_N
-	local sig = signals()
-	return decide(sig.isEdit, sig.isRunning)
-end
-
-local function isEdit(): boolean
-	return mode() == "edit"
-end
-
--- == Module table ==
-
-local Session: SessionModule__DARKLUA_TYPE_P = {
-	decide = decide,
-	signals = signals,
-	mode = mode,
-	isEdit = isEdit,
-}
-
-return Session
-end function __DARKLUA_BUNDLE_MODULES.j():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.j if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.j=v end return v.c end end do local function __modImpl()--!strict
--- AllowList — property-curation source of truth, ported faithfully from the
--- monolith's AllowList block (StudioStud.plugin.lua:1256-1323).
+-- API RE-POINTING (the monolith's flat `live.*` surface, now modular):
+--   live.hashInstance               -> Hash.hashInstance
+--   live.resetFingerprints          -> Fingerprints:reset()
+--   live.applyFpUpsert/applyFpRemove -> Fingerprints:applyFpUpsert / :applyFpRemove
+--   live.serviceFpHex               -> Fingerprints:serviceFpHex
+--   live.serviceFingerprintsWire    -> Fingerprints:serviceFingerprintsWire()
+--   live.buildTickBody              -> Live:buildTickBody (a `:` method)
+--   live.buildBaselineSnapshot      -> Live:buildBaselineSnapshot (`:` method)
+--   live.classifyChangedProp        -> Live:classifyChangedProp (`:` method)
+--   live.recordPropGap              -> Live:recordPropGap (`:` method)
+--   live.registerInstance/...       -> Live:registerInstance / :unregisterInstance
+--   live.setupAfterBaseline         -> Live:setupAfterBaseline (`:` method)
+--   live.teardown                   -> Live:teardown (`:` method)
+--   live.collectOpsFromEntries(...) -> Live:collectOpsFromDirty() over real dirty
+--                                      instances (the byte-incremental cap is now
+--                                      internal to collectOpsFromDirty — driven here
+--                                      with a fat + small instance, the E1 forward-
+--                                      progress path).
+-- DEVIATIONS from the monolith assertion set (functions that no longer exist as a
+-- standalone surface; the BEHAVIOR they tested is preserved and re-asserted through
+-- the surviving API):
+--   * `live.classifyPayload(n)` is gone — payload inline/bulk is no longer a named
+--     predicate; the wire boundary is Config.TICK_INLINE_THRESHOLD. The two
+--     classify assertions are re-expressed as the same threshold comparison.
+--   * `live.scheduleDriftRecovery(svc, up, rm)` is gone — drift recovery is now
+--     Live:triggerDriftRecovery, which is guarded (no-op off-live) and never touches
+--     the dirty sets. The "drift recovery preserves dirty" intent is re-asserted by
+--     marking dirty, invoking the guarded recovery, and confirming the dirty sets
+--     survive.
 --
--- The daemon serves /studio-stud/allowlist: per exact ClassName, the ordered set
--- of properties capture should read (including inherited props) and whether each
--- is read-only. When that fetch succeeds, it overrides the static curation; when
--- it fails (daemon down, bad JSON, malformed body) the plugin keeps the static
--- Config.CLASS_PROPERTIES fallback and capture proceeds — a fetch failure is
--- NEVER fatal. This module owns the loaded-vs-fallback decision; capture's
--- getPropertyNames/curatedSet ask namesFor/setFor and fall back themselves when
--- those return nil.
---
--- Responsibilities (one each):
---   * parse(decoded) — PURE: a decoded /allowlist body -> { version, sets, lists }
---       or nil on bad input. The headless-testable surface (AllowList.spec).
---   * fetch() — GET /allowlist via Transport, parse, and on success swap in the
---       parsed sets/lists/version + mark loaded. On any failure: log (debug) and
---       leave the static fallback in place, returning false.
---   * namesFor(className) / setFor(className) — the per-class lookups capture
---       consumes. Both return nil unless loaded AND the exact class is present, so
---       an unknown class (even when loaded) falls through to the static list in
---       capture. This nil-on-unknown contract is load-bearing — reproduced exactly.
---
--- State model: this module carries mutable state (loaded/version/sets/lists). It
--- lives as fields on the module table (`AllowList.*`), and every method reaches
--- the state through that table — never through a forward-referenced upvalue. This
--- is the structural defense against the C1-C3 forward-reference bug class: the
--- table is a real value before any method runs, so there is no "before-local"
--- window to read a nil through.
---
--- TRUST BOUNDARY (harden once): the decoded /allowlist body is untrusted `any`.
--- parse is the single place it is validated; it walks every class/entry with
--- type guards and silently drops anything malformed, so namesFor/setFor only ever
--- hand capture well-formed ordered lists and boolean membership sets.
+-- Structure note (the bug class this rewrite kills): SelfTest holds no
+-- forward-referenced upvalues. `assert`/`run` are fields on the module table reached
+-- through `SelfTest.*` (call-time field reads), and every collaborator is a required
+-- module table. There is no before-local window anywhere here.
 
--- NB: this module does NOT require ./Config. The static CLASS_PROPERTIES fallback
--- is owned by Config and consumed by Capture (getPropertyNames/curatedSet) when
--- namesFor/setFor return nil — AllowList itself never reads it, so requiring
--- Config here would be a dead dependency (luau-craft: import what you use).
 
-local Types = __DARKLUA_BUNDLE_MODULES.g()
+local Config = __DARKLUA_BUNDLE_MODULES.a()
+local Session = __DARKLUA_BUNDLE_MODULES.f()
 local Settings = __DARKLUA_BUNDLE_MODULES.b()
-local Transport = __DARKLUA_BUNDLE_MODULES.h()
-
--- Forward declaration of the module table so methods reference one another and
--- the mutable state through it (e.g. fetch -> parse, fetch -> AllowList.sets)
--- WITHOUT forward-referencing a not-yet-assigned local. Every cross-reference
--- goes through `AllowList.*`, which is a real table field by the time any method
--- runs — the C1/C2/C3 bug class this rewrite exists to kill.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local AllowList: AllowListModule__DARKLUA_TYPE_S
-
--- == parse (PURE — the headless-testable surface) ==
-
--- Turn a decoded /allowlist body into { version, sets, lists }, or nil on bad
--- input. Verbatim port: a non-table body, or one whose `classes` is not a table,
--- yields nil (caller keeps the static fallback). Each class's `props` must be a
--- table; each entry must be a table with a string `name`. readOnly defaults to
--- false unless the entry says exactly `true` (`entry.readOnly == true`), matching
--- the monolith. Anything malformed is skipped, never fatal.
-local function parse(decoded: any): ParsedAllowList__DARKLUA_TYPE_R?
-	if type(decoded) ~= "table" or type(decoded.classes) ~= "table" then
-		return nil
-	end
-	local raw = decoded :: { classes: { [string]: any }, version: any }
-	local sets: { [string]: ClassPropSet__DARKLUA_TYPE_Q } = {}
-	local lists: { [string]: { string } } = {}
-	for className, props in raw.classes do
-		if type(props) == "table" then
-			local set: ClassPropSet__DARKLUA_TYPE_Q = {}
-			local list: { string } = {}
-			for _, entry in ipairs(props :: { any }) do
-				if type(entry) == "table" and type(entry.name) == "string" then
-					local name: string = entry.name
-					set[name] = entry.readOnly == true
-					list[#list + 1] = name
-				end
-			end
-			sets[className] = set
-			lists[className] = list
-		end
-	end
-	return { version = raw.version, sets = sets, lists = lists }
-end
-
--- == fetch ==
-
--- GET /allowlist via Transport, parse, and on success swap in the parsed state.
--- On any failure (request not ok, or parse nil) log via Settings.debugLog and
--- return false, leaving loaded/sets/lists/version untouched so the static
--- fallback stays in force. Verbatim behavior of the monolith's AllowList.fetch.
-local function fetch(): boolean
-	local ok, decoded = Transport.requestJson("GET", "/studio-stud/allowlist", nil, 15)
-	if not ok then
-		Settings.debugLog("allowlist: fetch failed (static fallback):", decoded and decoded.error)
-		return false
-	end
-	local parsed = AllowList.parse(decoded)
-	if not parsed then
-		Settings.debugLog("allowlist: bad response (static fallback)")
-		return false
-	end
-	AllowList.sets = parsed.sets
-	AllowList.lists = parsed.lists
-	AllowList.version = parsed.version
-	AllowList.loaded = true
-	local count = 0
-	for _ in parsed.sets do
-		count += 1
-	end
-	Settings.debugLog("allowlist: loaded version", tostring(parsed.version), "classes", count)
-	return true
-end
-
--- == per-class lookups ==
-
--- Ordered property names for an exact class. nil unless loaded AND the class is
--- present in the loaded lists — an unknown class returns nil even when loaded, so
--- capture falls through to the static CLASS_PROPERTIES. (Indexing a missing class
--- yields nil; the explicit `loaded` gate matches the monolith's early-out.)
-local function namesFor(className: string): { string }?
-	if AllowList.loaded then
-		return AllowList.lists[className]
-	end
-	return nil
-end
-
--- Membership set { propName = readOnly } for an exact class. Same nil-on-unknown
--- contract as namesFor.
-local function setFor(className: string): ClassPropSet__DARKLUA_TYPE_Q?
-	if AllowList.loaded then
-		return AllowList.sets[className]
-	end
-	return nil
-end
-
--- == Module table ==
-
--- Initial state mirrors the monolith: not loaded, no version, empty sets/lists.
--- While unloaded, namesFor/setFor return nil and capture uses the static
--- Config.CLASS_PROPERTIES fallback (owned by Config, applied in Capture).
-AllowList = {
-	loaded = false,
-	version = nil,
-	sets = {},
-	lists = {},
-
-	parse = parse,
-	fetch = fetch,
-	namesFor = namesFor,
-	setFor = setFor,
-}
-
-return AllowList
-end function __DARKLUA_BUNDLE_MODULES.k():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.k if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.k=v end return v.c end end do local function __modImpl()--!strict
--- Hash — the fingerprint recipe, ported VERBATIM from the monolith's Live
--- fingerprint block (StudioStud.plugin.lua:2189-2302). This is FP-1, the
--- plugin-authoritative drift hash: the daemon stores and XORs whatever value the
--- plugin emits, so the hash bytes MUST be byte-identical to the old plugin or
--- every tick reports phantom drift. NOTHING here may be "improved" — the canonical
--- string, the lane offsets, the FNV multiply/mod, and the hex layout are the wire.
---
--- This module is the SINGLE SOURCE OF TRUTH for the one fingerprint recipe used by
--- both the per-op entry hash (Fingerprints.applyFpUpsert) and the per-service XOR
--- accumulator (Fingerprints byte ops). It owns:
---   * hashInstance(entry) -> Hex64 — the 4-lane FNV-32 → 64-hex canonical hash.
---   * serviceOf(path) -> string — the leading path segment (service name).
---   * the byte helpers fpZero / fpHexToBytes / fpBytesToHex / fpXor used by the
---     XOR accumulators. (Named fpZero/fpXor here, matching the contract; the
---     monolith's locals were fpZeroBytes/fpXorBytes.)
---
--- M3 (by design): `source` is EXCLUDED from the canonical string. A script's text
--- edit changes `source` but NOT its fingerprint, so source-only edits do not show
--- as structural drift; the source rides the entry (Types.InstanceEntry.source) but
--- is never hashed. The canonical field order is, verbatim:
---   className | name | parentId | path | depth | siblingIndex | childCount |
---   duplicateSiblingName(0/1) | properties | attributes | tags
--- with map keys sorted and tags joined by ",".
---
--- PURE: no DataModel reads, no module state, no upvalue forward references. Every
--- function is a plain local assigned into the module table before return, so there
--- is no before-local window (the C1-C3 bug class this rewrite exists to kill).
-
-
-local Types = __DARKLUA_BUNDLE_MODULES.g()
-
--- == FNV constants (the wire — do not touch) ==
-
--- Four lane offsets (monolith :2189). Lane i hashes the canonical string with
--- offset[i] for the low word and a derived offset for the high word.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local FNV32_OFFSETS = { 0x811C9DC5, 0x050C5D1F, 0x9E3779B9, 0x7F4A7C15 }
--- The 32-bit FNV prime (monolith :2190).
-local FNV32_PRIME = 16777619
--- 2^32, the FNV-32 modulus. Named so the hot multiply reads as a masking step.
-local FNV32_MOD = 4294967296
--- High-word offset perturbation: lane offset XOR this constant (monolith :2267).
-local HI_OFFSET_XOR = 0xA5A5A5A5
-
--- == Canonical-string serialization (verbatim) ==
-
--- Sorted string keys of a table. Every key is tostring'd first so mixed key types
--- order deterministically, then table.sort'd (monolith :2192). Returns a fresh
--- ordered array — the canonical map serialization iterates this, never raw pairs,
--- so the byte order is stable across runs.
-local function fpSortedKeys(tbl: { [any]: any }): { string }
+local Transport = __DARKLUA_BUNDLE_MODULES.g()
+local AllowList = __DARKLUA_BUNDLE_MODULES.h()
+local Hash = __DARKLUA_BUNDLE_MODULES.i()
+local Fingerprints = __DARKLUA_BUNDLE_MODULES.j()
+local Registry = __DARKLUA_BUNDLE_MODULES.c()
+local GlobalApi = __DARKLUA_BUNDLE_MODULES.d()
+local Theme = __DARKLUA_BUNDLE_MODULES.k()
+local Shell = __DARKLUA_BUNDLE_MODULES.m()
+
+local SETTINGS = Config.SETTINGS
+local DEFAULT_DAEMON_URL = Config.DEFAULT_DAEMON_URL
+local TICK_INLINE_THRESHOLD = Config.TICK_INLINE_THRESHOLD
+
+-- == Monolith fingerprint oracle (the Hash wire-parity guard) ==
+
+-- The 0.4.21 fingerprint recipe, copied VERBATIM from StudioStud.plugin.lua:2189-2302
+-- as an independent oracle. The new Hash.hashInstance MUST agree with this
+-- byte-for-byte or the unchanged daemon sees phantom drift on every tick. This is the
+-- in-engine twin of Hash.spec's headless oracle — kept here so the Studio gate proves
+-- parity in the real runtime too.
+local ORACLE_OFFSETS = { 0x811C9DC5, 0x050C5D1F, 0x9E3779B9, 0x7F4A7C15 }
+local ORACLE_PRIME = 16777619
+
+local function oracleSortedKeys(tbl: { [any]: any }): { string }
 	local keys: { string } = {}
 	for key in pairs(tbl) do
 		keys[#keys + 1] = tostring(key)
@@ -4592,28 +5133,14 @@ local function fpSortedKeys(tbl: { [any]: any }): { string }
 	return keys
 end
 
--- Forward declaration so fpSerializeScalar can recurse into nested tables without
--- referencing a not-yet-assigned local (it calls itself; declaring the type up
--- front keeps the recursion strict-typed and avoids a before-local read).
-local fpSerializeScalar: (value: any) -> string
-
--- Serialize one scalar value to its canonical token (monolith :2201). typeof-based
--- so it matches the engine's runtime type of captured property values:
---   string  -> "s:" .. value
---   number  -> "n:" .. tostring(value)
---   boolean -> "b:1" / "b:0"
---   nil     -> "z"
---   table   -> array form "[a,b,...]" when #value > 0, else map form "{k=v;...}"
---   else    -> "u:" .. tostring(value)  (userdata/datatypes etc.)
--- Recurses for nested tables (arrays and maps) exactly as the monolith did.
-function fpSerializeScalar(value: any): string
+local oracleSerializeScalar: (value: any) -> string
+function oracleSerializeScalar(value: any): string
 	local kind = typeof(value)
 	if kind == "string" then
 		return "s:" .. value
 	elseif kind == "number" then
 		return "n:" .. tostring(value)
 	elseif kind == "boolean" then
-		-- Real if/else over the boolean — not the and/or trap (luau-craft).
 		if value then
 			return "b:1"
 		else
@@ -4626,149 +5153,941 @@ function fpSerializeScalar(value: any): string
 		if #tbl > 0 then
 			local parts: { string } = {}
 			for _, item in ipairs(tbl) do
-				parts[#parts + 1] = fpSerializeScalar(item)
+				parts[#parts + 1] = oracleSerializeScalar(item)
 			end
 			return "[" .. table.concat(parts, ",") .. "]"
 		end
 		local parts: { string } = {}
-		for _, key in ipairs(fpSortedKeys(tbl)) do
-			parts[#parts + 1] = key .. "=" .. fpSerializeScalar(tbl[key])
+		for _, key in ipairs(oracleSortedKeys(tbl)) do
+			parts[#parts + 1] = key .. "=" .. oracleSerializeScalar(tbl[key])
 		end
 		return "{" .. table.concat(parts, ";") .. "}"
 	end
 	return "u:" .. tostring(value)
 end
 
--- Serialize a property/attribute map to "key=scalar;key=scalar;..." with keys
--- sorted (monolith :2228). A nil map serializes as the empty string.
-local function fpSerializeMap(map: { [string]: any }?): string
+local function oracleSerializeMap(map: { [string]: any }?): string
 	local source: { [any]: any } = map or {}
 	local parts: { string } = {}
-	for _, key in ipairs(fpSortedKeys(source)) do
-		parts[#parts + 1] = key .. "=" .. fpSerializeScalar(source[key])
+	for _, key in ipairs(oracleSortedKeys(source)) do
+		parts[#parts + 1] = key .. "=" .. oracleSerializeScalar(source[key])
 	end
 	return table.concat(parts, ";")
 end
 
--- == FNV-32 core (verbatim) ==
-
--- One lane of FNV-32 over a string from a given offset (monolith :2236).
--- h := offset; for each byte: h = ((h XOR byte) * PRIME) mod 2^32. Hot path:
--- one xor + one multiply + one mod per character, no allocation.
-local function fnv32(str: string, offset: number): number
+local function oracleFnv32(str: string, offset: number): number
 	local h = offset
 	for i = 1, #str do
 		h = bit32.bxor(h, string.byte(str, i))
-		h = (h * FNV32_PRIME) % FNV32_MOD
+		h = (h * ORACLE_PRIME) % 4294967296
 	end
 	return h
 end
 
--- == hashInstance (the FP-1 recipe — byte-identical to the monolith) ==
-
--- Build the canonical pipe string and hash it across 4 lanes into 64 hex chars.
--- VERBATIM port of Live.hashInstance (monolith :2245). Field order and defaults
--- are the wire: each missing field falls back exactly as the old code did
--- (className/name/parentId/path -> "", depth/siblingIndex/childCount -> 0,
--- duplicateSiblingName -> "1"/"0"). `source` is NOT included (M3). For each lane,
--- the low word hashes the canonical string from the lane offset and the high word
--- hashes canonical .. "#" .. lane from (offset XOR 0xA5A5A5A5); the lane emits
--- "%08x%08x" (lo then hi), and the four lanes concatenate to 64 hex.
-local function hashInstance(entry: InstanceEntry__DARKLUA_TYPE_V): Hex64__DARKLUA_TYPE_T
-	-- entry is typed, but the monolith hashed `entry.x or default` on raw capture
-	-- output; widen to `any` for the exact tostring/or fallbacks so the bytes match
-	-- even if a field arrives nil off an untrusted/partial entry.
-	local e = entry :: any
+local function oracleHashInstance(entry: { [string]: any }): string
 	local parts: { string } = {
-		tostring(e.className or ""),
-		tostring(e.name or ""),
-		tostring(e.parentId or ""),
-		tostring(e.path or ""),
-		tostring(e.depth or 0),
-		tostring(e.siblingIndex or 0),
-		tostring(e.childCount or 0),
-		(if e.duplicateSiblingName then "1" else "0"),
-		fpSerializeMap(e.properties),
-		fpSerializeMap(e.attributes),
+		tostring(entry.className or ""),
+		tostring(entry.name or ""),
+		tostring(entry.parentId or ""),
+		tostring(entry.path or ""),
+		tostring(entry.depth or 0),
+		tostring(entry.siblingIndex or 0),
+		tostring(entry.childCount or 0),
+		(if entry.duplicateSiblingName then "1" else "0"),
+		oracleSerializeMap(entry.properties),
+		oracleSerializeMap(entry.attributes),
 	}
 	local tagParts: { string } = {}
-	for _, tag in ipairs(e.tags or {}) do
+	for _, tag in ipairs(entry.tags or {}) do
 		tagParts[#tagParts + 1] = tostring(tag)
 	end
 	parts[#parts + 1] = table.concat(tagParts, ",")
-
 	local canonical = table.concat(parts, "|")
 	local hexParts: { string } = {}
 	for lane = 1, 4 do
-		local lo = fnv32(canonical, FNV32_OFFSETS[lane])
-		local hi = fnv32(canonical .. "#" .. tostring(lane), bit32.bxor(FNV32_OFFSETS[lane], HI_OFFSET_XOR))
+		local lo = oracleFnv32(canonical, ORACLE_OFFSETS[lane])
+		local hi = oracleFnv32(canonical .. "#" .. tostring(lane), bit32.bxor(ORACLE_OFFSETS[lane], 0xA5A5A5A5))
 		hexParts[#hexParts + 1] = string.format("%08x%08x", lo, hi)
 	end
 	return table.concat(hexParts)
 end
 
--- == serviceOf ==
+-- Single module table; methods reach one another via `SelfTest.*` (call-time field
+-- reads), never a forward-referenced upvalue.
 
--- Leading path segment before the first "/", or the whole path when there is no
--- "/". A nil path is treated as "" (monolith :2300): match returns nil, so we
--- fall back to "" — preserving the old `... or (path or "")` chain.
-local function serviceOf(path: string?): string
-	local p = path or ""
-	return string.match(p, "^([^/]+)") or p
-end
 
--- == Byte helpers (32-byte XOR accumulator primitives) ==
 
--- A fresh 32-zero byte array (monolith fpZeroBytes :2273).
-local function fpZero(): Bytes__DARKLUA_TYPE_U
-	return table.create(32, 0)
-end
 
--- Unpack 64 hex chars into 32 bytes. Each byte is the value of a 2-char hex pair;
--- a bad/short pair yields 0 via the tonumber fallback (monolith fpHexToBytes :2278).
-local function fpHexToBytes(hex: string): Bytes__DARKLUA_TYPE_U
-	local bytes: Bytes__DARKLUA_TYPE_U = table.create(32, 0)
-	for i = 1, 32 do
-		bytes[i] = tonumber(string.sub(hex, (i - 1) * 2 + 1, (i - 1) * 2 + 2), 16) or 0
+
+
+
+
+
+
+
+
+
+local SelfTest = {} :: SelfTestModule__DARKLUA_TYPE_0
+
+-- == assert ==
+
+function SelfTest.assert(name: string, condition: any, failures: { string }): ()
+	if condition then
+		print("[Studio Stud SelfTest] PASS:", name)
+	else
+		failures[#failures + 1] = name
+		warn("[Studio Stud SelfTest] FAIL:", name)
 	end
-	return bytes
 end
 
--- Pack 32 bytes into 64 lowercase hex (nil entries → "00"; monolith fpBytesToHex
--- :2286).
-local function fpBytesToHex(bytes: Bytes__DARKLUA_TYPE_U): Hex64__DARKLUA_TYPE_T
-	local parts: { string } = table.create(32, "")
-	for i = 1, 32 do
-		parts[i] = string.format("%02x", bytes[i] or 0)
+-- == run ==
+
+function SelfTest.run(): boolean
+	local failures: { string } = {}
+	local preIds = Registry.snapshotIds()
+	local origLive = Settings.getBool(SETTINGS.liveCaptureEnabled, true)
+	local origDebounce = Settings.getNumber(SETTINGS.debounceMs, 300)
+	local origUrl = Settings.getString(SETTINGS.daemonUrl, DEFAULT_DAEMON_URL)
+
+	-- HttpService for the JSON-safety raw-encode checks (resolved once, cache-at-event).
+	local httpService = game:GetService("HttpService")
+
+	-- A dummy panel descriptor factory (verbatim port of makeDummy, monolith :3938):
+	-- a registerable panel whose handle exposes show/hide/destroy counters.
+	local function makeDummy(id: string, title: string): PanelDescriptor__DARKLUA_TYPE_d		
+local showCount = 0
+		local hideCount = 0
+		local destroyCount = 0
+		local descriptor: PanelDescriptor__DARKLUA_TYPE_d= {
+			id = id,
+			title = title,
+			defaultEnabled = true,
+			build = function(parent: Frame, _ctx: any): PanelHandle__DARKLUA_TYPE_e				
+local label = Instance.new("TextLabel")
+				label.BackgroundTransparency = 1
+				label.Size = UDim2.fromScale(1, 1)
+				label.FontFace = Theme.UI_FONT
+				label.TextColor3 = Theme.body
+				label.Text = title
+				label.Parent = parent
+				return {
+					frame = parent,
+					onShow = function()
+						showCount += 1
+					end,
+					onHide = function()
+						hideCount += 1
+					end,
+					destroy = function()
+						destroyCount += 1
+						parent:Destroy()
+					end,
+					showCount = function(): number
+						return showCount
+					end,
+					hideCount = function(): number
+						return hideCount
+					end,
+					destroyCount = function(): number
+						return destroyCount
+					end,
+				}
+			end,
+		}
+		return descriptor
 	end
-	return table.concat(parts)
-end
 
--- In-place 32-byte XOR of `source` into `target` (monolith fpXorBytes :2294).
--- nil entries on either side count as 0. Returns target for call-site convenience
--- (the monolith mutated in place; returning it changes nothing for in-place uses).
-local function fpXor(target: Bytes__DARKLUA_TYPE_U, source: Bytes__DARKLUA_TYPE_U): Bytes__DARKLUA_TYPE_U
-	for i = 1, 32 do
-		target[i] = bit32.bxor(target[i] or 0, source[i] or 0)
+	local dummyA = makeDummy("__selftest_a", "SelfTest A")
+	local dummyB = makeDummy("__selftest_b", "SelfTest B")
+
+	local okA = Registry.register(dummyA)
+	SelfTest.assert("register dummy A", okA, failures)
+	local okDup = Registry.register(dummyA)
+	SelfTest.assert("reject duplicate id", not okDup, failures)
+	local okB = Registry.register(dummyB)
+	SelfTest.assert("register dummy B", okB, failures)
+
+	local idsAfterRegister = Registry.snapshotIds()
+	local indexA: number?, indexB: number? = nil, nil
+	for index, id in ipairs(idsAfterRegister) do
+		if id == "__selftest_a" then
+			indexA = index
+		elseif id == "__selftest_b" then
+			indexB = index
+		end
 	end
-	return target
+	SelfTest.assert("registration order", indexA ~= nil and indexB ~= nil and indexA < indexB, failures)
+
+	Registry.select("__selftest_a")
+	Registry.select("__selftest_b")
+	local handleA = Registry.getHandle("__selftest_a")
+	local handleB = Registry.getHandle("__selftest_b")
+	SelfTest.assert(
+		"select lifecycle onShow/onHide",
+		handleA ~= nil and handleB ~= nil and handleA.hideCount() >= 1 and handleB.showCount() >= 1,
+		failures
+	)
+
+	local visibleCount = 0
+	for _, handle in pairs(Registry.handles) do
+		if handle.frame and handle.frame.Visible then
+			visibleCount += 1
+		end
+	end
+	SelfTest.assert("one visible panel frame", visibleCount == 1, failures)
+
+	Registry.setEnabled("__selftest_a", false)
+	SelfTest.assert("disable persists", Settings.getPanelEnabled("__selftest_a", true) == false, failures)
+	local enabledAfterDisable = false
+	for _, item in ipairs(Registry.list()) do
+		if item.id == "__selftest_a" and item.enabled then
+			enabledAfterDisable = true
+		end
+	end
+	SelfTest.assert("disabled panel excluded from enabled set", not enabledAfterDisable, failures)
+	Registry.setEnabled("__selftest_a", true)
+
+	Settings.setBool(SETTINGS.liveCaptureEnabled, false)
+	Settings.setDebounceMs(450)
+	Settings.setString(SETTINGS.daemonUrl, "http://127.0.0.1:31999")
+	SelfTest.assert("settings round-trip bool", Settings.getBool(SETTINGS.liveCaptureEnabled, true) == false, failures)
+	SelfTest.assert("settings round-trip number", Settings.getDebounceMs() == 450, failures)
+	SelfTest.assert(
+		"settings round-trip string",
+		Settings.getString(SETTINGS.daemonUrl, DEFAULT_DAEMON_URL) == "http://127.0.0.1:31999",
+		failures
+	)
+
+	Settings.setString(SETTINGS.writeToken, "selftest-write-token")
+	SelfTest.assert(
+		"write token settings round-trip",
+		Settings.getString(SETTINGS.writeToken, "") == "selftest-write-token",
+		failures
+	)
+	local authedHeaders = Transport.buildAuthedHeaders(Settings.getString(SETTINGS.writeToken, ""))
+	SelfTest.assert(
+		"requestJsonAuthed attaches write token header",
+		authedHeaders["X-StudioStud-Token"] == "selftest-write-token",
+		failures
+	)
+	Settings.setString(SETTINGS.writeToken, "")
+
+	local captureHandleBefore = Registry.getHandle("capture")
+	local oldRunningFn = captureHandleBefore and captureHandleBefore.isRunning
+	local oldRunning = (oldRunningFn ~= nil and oldRunningFn()) or false
+
+	Registry.unregister("__selftest_a")
+	Registry.unregister("__selftest_b")
+	SelfTest.assert(
+		"unregister removes dummy ids",
+		Registry.snapshotIds()[1] == "capture" and #Registry.snapshotIds() == 1,
+		failures
+	)
+
+	Registry.teardownAll()
+	SelfTest.assert(
+		"teardown stops capture loop",
+		captureHandleBefore ~= nil and not captureHandleBefore.isRunning(),
+		failures
+	)
+	-- S2: `_G.StudioStud` no longer publishes `Sync`; the disabled-handler is held
+	-- internally on GlobalApi (the panel destroy ran installNoOps on teardown). The
+	-- monolith asserted `_G.StudioStud.Sync()` returned the disabled shape; the faithful
+	-- equivalent under S2 is GlobalApi.syncFn being cleared (the disabled state).
+	SelfTest.assert("_G no-op while torn down (S2: syncFn cleared)", GlobalApi.syncFn == nil, failures)
+	local disabledFn = GlobalApi.makeDisabledFn()
+	local disabledResult = disabledFn()
+	SelfTest.assert(
+		"disabled handler shape",
+		disabledResult.ok == false and disabledResult.error == "panel disabled",
+		failures
+	)
+
+	Shell.build()
+	local captureHandleAfter = Registry.getHandle("capture")
+	SelfTest.assert("re-init capture handle", captureHandleAfter ~= nil, failures)
+	-- S2: identity is now GlobalApi.syncFn == handle.sync (the panel wires its sync entry
+	-- into GlobalApi on build), replacing the monolith's `_G.StudioStud.Sync == handle.sync`.
+	SelfTest.assert(
+		"_G re-wire identity (S2: GlobalApi.syncFn == handle.sync)",
+		captureHandleAfter ~= nil and GlobalApi.syncFn == captureHandleAfter.sync,
+		failures
+	)
+	SelfTest.assert(
+		"single poll loop after re-init",
+		captureHandleAfter ~= nil
+			and captureHandleAfter.isRunning()
+			and (not oldRunning or (captureHandleBefore ~= nil and not captureHandleBefore.isRunning())),
+		failures
+	)
+
+	local tabCount = 0
+	local tabStrip0 = Shell.tabStrip
+	if tabStrip0 then
+		for _, child in ipairs(tabStrip0:GetChildren()) do
+			if child:IsA("TextButton") then
+				tabCount += 1
+			end
+		end
+	end
+	Shell.build()
+	local tabCountAgain = 0
+	local tabStrip1 = Shell.tabStrip
+	if tabStrip1 then
+		for _, child in ipairs(tabStrip1:GetChildren()) do
+			if child:IsA("TextButton") then
+				tabCountAgain += 1
+			end
+		end
+	end
+	SelfTest.assert("idempotent Shell.build tab count", tabCountAgain == 1, failures)
+	SelfTest.assert(
+		"no ghost selftest tabs",
+		not string.find(table.concat(Registry.snapshotIds(), ","), "__selftest"),
+		failures
+	)
+
+	-- == Live machinery self-tests (Workstream E) ==
+	do
+		-- GetDebugId stability across reparent.
+		local testFolder = Instance.new("Folder")
+		testFolder.Name = "StudioStudSelfTestLive"
+		testFolder.Parent = game:GetService("ReplicatedStorage")
+		local okBefore, idBeforeRaw = pcall(function(): string
+			return testFolder:GetDebugId(0)
+		end)
+		local idBefore = if okBefore then idBeforeRaw else ""
+		testFolder.Parent = game:GetService("ServerStorage")
+		local okAfter, idAfterRaw = pcall(function(): string
+			return testFolder:GetDebugId(0)
+		end)
+		local idAfter = if okAfter then idAfterRaw else ""
+		SelfTest.assert("GetDebugId stable across reparent", idBefore ~= "" and idBefore == idAfter, failures)
+		testFolder:Destroy()
+	end
+
+	-- The capture/live exports off the rebuilt panel handle.
+	local captureHandleLive = Registry.getHandle("capture")
+	local live = captureHandleLive and captureHandleLive.live
+	local capture = captureHandleLive and captureHandleLive.capture
+
+	-- == Phase 3: getPropertyNames + curatedSet routing ==
+	do
+		if capture then
+			local part = Instance.new("Part")
+			-- not loaded -> static fallback includes CFrame (BasePart).
+			AllowList.loaded = false
+			local fallbackNames = capture.getPropertyNames(part)
+			local hasCFrame = false
+			for _, n in ipairs(fallbackNames) do
+				if n == "CFrame" then
+					hasCFrame = true
+				end
+			end
+			SelfTest.assert("getPropertyNames fallback includes CFrame", hasCFrame, failures)
+			-- loaded -> uses the allow-list.
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency" } }
+			AllowList.sets = { Part = { Transparency = false } }
+			local allowNames = capture.getPropertyNames(part)
+			SelfTest.assert(
+				"getPropertyNames uses allow-list when loaded",
+				#allowNames == 1 and allowNames[1] == "Transparency",
+				failures
+			)
+			SelfTest.assert("curatedSet membership from allow-list", capture.curatedSet(part).Transparency == false, failures)
+			-- restore.
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available")
+		end
+	end
+
+	-- == Phase 4: baseline yield + readPropsFrom + readSource ==
+	do
+		if capture then
+			SelfTest.assert("shouldYield(0,500)=false", not capture.shouldYield(0, 500), failures)
+			SelfTest.assert("shouldYield(500,500)=true", capture.shouldYield(500, 500), failures)
+			SelfTest.assert("shouldYield(750,500)=false", not capture.shouldYield(750, 500), failures)
+			SelfTest.assert("shouldYield(1000,500)=true", capture.shouldYield(1000, 500), failures)
+			SelfTest.assert("shouldYield(5,0)=false", not capture.shouldYield(5, 0), failures)
+
+			local fakeOk = { Transparency = 0.5, Size = Vector3.new(1, 2, 3) }
+			local propsOk, errsOk = capture.readPropsFrom(fakeOk, { "Transparency", "Size" })
+			SelfTest.assert(
+				"readPropsFrom success path",
+				propsOk.Transparency == 0.5 and propsOk.Size ~= nil and #errsOk == 0,
+				failures
+			)
+
+			local fakeThrow = setmetatable({}, {
+				__index = function(_, key: any): any
+					if key == "BadProp" then
+						error("read failed")
+					end
+					if key == "GoodProp" then
+						return 1
+					end
+					if key == "GoodProp2" then
+						return 1
+					end
+					return nil
+				end,
+			})
+			local propsFb, errsFb = capture.readPropsFrom(fakeThrow, { "GoodProp", "BadProp", "GoodProp2" })
+			SelfTest.assert(
+				"readPropsFrom fallback returns rest",
+				propsFb.GoodProp == 1 and propsFb.GoodProp2 == 1 and #errsFb == 1,
+				failures
+			)
+
+			local mod = Instance.new("ModuleScript")
+			mod.Source = "return 42"
+			local srcUtf8, encUtf8 = capture.readSource(mod)
+			SelfTest.assert("readSource ModuleScript utf8", srcUtf8 == "return 42" and encUtf8 == "utf8", failures)
+			local part = Instance.new("Part")
+			local srcNil, encNil = capture.readSource(part)
+			SelfTest.assert("readSource non-script nil", srcNil == nil and encNil == nil, failures)
+			local binary = string.char(0xFF, 0x00, 0xAB)
+			local encB64 = capture.base64encode(binary)
+			local roundTrip = capture.base64decode(encB64)
+			SelfTest.assert("base64 round-trip", roundTrip == binary, failures)
+			SelfTest.assert("base64 alphabet valid", string.match(encB64, "^[A-Za-z0-9+/=]+$") ~= nil, failures)
+			mod:Destroy()
+			part:Destroy()
+		else
+			print("[Studio Stud SelfTest] SKIP: capture handle not available (phase 4)")
+		end
+	end
+
+	-- == Hash wire-parity (NEW regression): Hash.hashInstance must equal the
+	-- monolith recipe oracle byte-for-byte, in the live runtime. A drift here means
+	-- the unchanged daemon would report phantom drift on every tick. ==
+	do
+		local sample: { [string]: any } = {
+			id = "hp1",
+			className = "Part",
+			name = "P",
+			parentId = "ws",
+			path = "Workspace/P[1]",
+			depth = 1,
+			siblingIndex = 1,
+			childCount = 0,
+			duplicateSiblingName = true,
+			properties = {
+				Transparency = 0.5,
+				Anchored = true,
+				CanCollide = false,
+				Size = { type = "Vector3", x = 1, y = 2, z = 3 },
+				CFrame = { 0, 5, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1 },
+			},
+			attributes = { foo = "bar", count = 7 },
+			tags = { "tagA", "tagB" },
+		}
+		SelfTest.assert(
+			"Hash parity: full entry matches monolith oracle",
+			Hash.hashInstance(sample :: any) == oracleHashInstance(sample),
+			failures
+		)
+		-- source is EXCLUDED (M3): an entry differing only by source hashes equal.
+		local withSource: { [string]: any } = table.clone(sample)
+		withSource.source = "print('x')"
+		withSource.sourceEncoding = "utf8"
+		SelfTest.assert(
+			"Hash parity: source excluded from hash (M3)",
+			Hash.hashInstance(withSource :: any) == Hash.hashInstance(sample :: any),
+			failures
+		)
+		-- sparse defaults reproduce the monolith `or` fallbacks.
+		local sparse: { [string]: any } = { id = "sp" }
+		SelfTest.assert(
+			"Hash parity: sparse defaults match oracle",
+			Hash.hashInstance(sparse :: any) == oracleHashInstance(sparse),
+			failures
+		)
+	end
+
+	-- == Phase 5C: hashInstance + incremental serviceFp ==
+	if live then
+		do
+			local realLive = live :: typeof(live)
+			local sample: { [string]: any } = {
+				id = "a1",
+				className = "Part",
+				name = "P",
+				parentId = "ws",
+				path = "Workspace/P[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = { Transparency = 0.5, Size = { type = "Vector3", x = 1, y = 2, z = 3 } },
+				attributes = { foo = "bar" },
+				tags = { "tagA", "tagB" },
+			}
+			local h1 = Hash.hashInstance(sample :: any)
+			local h2 = Hash.hashInstance(sample :: any)
+			SelfTest.assert("hashInstance stable", h1 == h2, failures)
+			SelfTest.assert("hashInstance 64 hex", #h1 == 64 and string.match(h1, "^[0-9a-f]+$") ~= nil, failures)
+
+			local snap = realLive:buildBaselineSnapshot("selftest")
+			SelfTest.assert("baseline snapshot has instances", #snap.instances > 0, failures)
+			local reordered: { [string]: any } = {
+				id = "a1",
+				className = "Part",
+				name = "P",
+				parentId = "ws",
+				path = "Workspace/P[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = { Size = { type = "Vector3", x = 1, y = 2, z = 3 }, Transparency = 0.5 },
+				attributes = { foo = "bar" },
+				tags = { "tagA", "tagB" },
+			}
+			SelfTest.assert("hashInstance property order invariant", Hash.hashInstance(reordered :: any) == h1, failures)
+			sample.properties.Transparency = 0.6
+			SelfTest.assert("hashInstance property change", Hash.hashInstance(sample :: any) ~= h1, failures)
+
+			Fingerprints:reset()
+			local entryA: { [string]: any } = {
+				id = "a",
+				className = "Part",
+				name = "A",
+				parentId = "ws",
+				path = "Workspace/A[1]",
+				depth = 1,
+				siblingIndex = 1,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = {},
+				attributes = {},
+				tags = {},
+			}
+			local entryB: { [string]: any } = {
+				id = "b",
+				className = "Part",
+				name = "B",
+				parentId = "ws",
+				path = "Workspace/B[1]",
+				depth = 1,
+				siblingIndex = 2,
+				childCount = 0,
+				duplicateSiblingName = false,
+				properties = {},
+				attributes = {},
+				tags = {},
+			}
+			Fingerprints:applyFpUpsert("a", entryA :: any, nil)
+			Fingerprints:applyFpUpsert("b", entryB :: any, nil)
+			local fpB = Hash.hashInstance(entryB :: any)
+			local wsXor = Fingerprints:serviceFpHex("Workspace")
+			Fingerprints:applyFpRemove("a", entryA.path)
+			SelfTest.assert("serviceFp remove A leaves B", Fingerprints:serviceFpHex("Workspace") == fpB, failures)
+			Fingerprints:applyFpUpsert("a", entryA :: any, nil)
+			SelfTest.assert("serviceFp re-add A restores XOR", Fingerprints:serviceFpHex("Workspace") == wsXor, failures)
+
+			local body = realLive:buildTickBody("123", "edit", 2, { Workspace = string.rep("a", 64) }, {
+				upserted = { { id = "x" } :: any },
+				removed = { "y" },
+			}, nil)
+			SelfTest.assert(
+				"buildTickBody shape",
+				body.placeId == "123"
+					and body.sessionMode == "edit"
+					and body.baseRevision == 2
+					and body.ops.upserted[1].id == "x"
+					and body.bulkRef == nil,
+				failures
+			)
+			-- DEVIATION: live.classifyPayload is gone; the inline/bulk boundary is now
+			-- Config.TICK_INLINE_THRESHOLD (the byte size collectOpsFromDirty caps on).
+			-- Re-assert the same two classification facts against that threshold.
+			SelfTest.assert("payload inline below threshold", 1024 <= TICK_INLINE_THRESHOLD, failures)
+			SelfTest.assert("payload bulk above threshold", 300000 > TICK_INLINE_THRESHOLD, failures)
+
+			Fingerprints:reset()
+			Fingerprints:applyFpUpsert("ws", {
+				path = "Workspace",
+				fp = Hash.hashInstance({
+					id = "ws",
+					path = "Workspace",
+					name = "Workspace",
+					className = "Workspace",
+					depth = 0,
+					siblingIndex = 0,
+					childCount = 0,
+					duplicateSiblingName = false,
+					properties = {},
+					attributes = {},
+					tags = {},
+				} :: any),
+			}, nil)
+			local fpPreOp = Fingerprints:serviceFingerprintsWire()
+			Fingerprints:applyFpUpsert("p1", {
+				path = "Workspace/Part[1]",
+				fp = Hash.hashInstance({
+					id = "p1",
+					path = "Workspace/Part[1]",
+					name = "Part",
+					className = "Part",
+					depth = 1,
+					siblingIndex = 1,
+					childCount = 0,
+					duplicateSiblingName = false,
+					properties = {},
+					attributes = {},
+					tags = {},
+				} :: any),
+			}, nil)
+			local fpPostOp = Fingerprints:serviceFingerprintsWire()
+			SelfTest.assert("edit tick fingerprints are post-ops", fpPreOp.Workspace ~= fpPostOp.Workspace, failures)
+
+			-- DEVIATION: live.scheduleDriftRecovery(svc, up, rm) is gone. Drift recovery
+			-- is now Live:triggerDriftRecovery — guarded (no-op off-live) and it NEVER
+			-- touches the dirty sets. Re-assert the "preserves dirty" intent: mark dirty,
+			-- invoke the guarded recovery (off-live -> returns false, no-op), confirm the
+			-- dirty sets survive untouched.
+			local ws = game:GetService("Workspace")
+			realLive.dirtyUpsert[ws] = true
+			realLive.dirtyRemoved.z = true
+			local recoveryStarted = realLive:triggerDriftRecovery({ "Workspace" })
+			SelfTest.assert("drift recovery is a no-op while off-live", recoveryStarted == false, failures)
+			SelfTest.assert(
+				"drift recovery preserves dirty",
+				realLive.dirtyUpsert[ws] == true and realLive.dirtyRemoved.z == true,
+				failures
+			)
+			realLive.dirtyUpsert = {}
+			realLive.dirtyRemoved = {}
+
+			-- E1 forward-progress + cap: drive the real collectOpsFromDirty with a fat
+			-- (over-threshold) and a small instance among the dirty set. The fat one is
+			-- depth-sorted equal, so ordering is by the pairs() walk; we assert the cap
+			-- ships at most one when the fat entry would overflow, and that a SOLO fat
+			-- entry still ships (forward-progress). This is the modular equivalent of the
+			-- monolith's collectOpsFromEntries cap tests.
+			do
+				local capFolder = Instance.new("Folder")
+				capFolder.Name = "StudioStudSelfTestCap"
+				capFolder.Parent = game:GetService("ReplicatedStorage")
+
+				local fatPart = Instance.new("Part")
+				fatPart.Name = "Fat"
+				fatPart.Parent = capFolder
+				-- An attribute large enough to push the entry over TICK_INLINE_THRESHOLD.
+				fatPart:SetAttribute("pad", string.rep("x", TICK_INLINE_THRESHOLD + 4096))
+
+				local smallPart = Instance.new("Part")
+				smallPart.Name = "Small"
+				smallPart.Parent = capFolder
+
+				-- Register both in the live identity maps so buildUpsertedEntry resolves them.
+				local fatId = fatPart:GetDebugId(0)
+				local smallId = smallPart:GetDebugId(0)
+				local capId = capFolder:GetDebugId(0)
+				capture.instanceIdByRef[capFolder] = capId
+				capture.pathByRef[capFolder] = "ReplicatedStorage/StudioStudSelfTestCap[1]"
+				capture.instanceIdByRef[fatPart] = fatId
+				capture.pathByRef[fatPart] = ""
+				capture.instanceIdByRef[smallPart] = smallId
+				capture.pathByRef[smallPart] = ""
+
+				-- SOLO fat: forward-progress ships it even though it exceeds the threshold.
+				Fingerprints:reset()
+				realLive.dirtyUpsert = {}
+				realLive.dirtyRemoved = {}
+				realLive.upsertStamp = {}
+				realLive.removedStamp = {}
+				realLive:markDirtyUpsert(fatPart)
+				local soloUpserted = realLive:collectOpsFromDirty()
+				SelfTest.assert(
+					"solo fat op collects one entry (forward-progress)",
+					#soloUpserted == 1 and soloUpserted[1].id == fatId,
+					failures
+				)
+
+				-- small + fat: the cap breaks after the first committed op, so the batch
+				-- never ships BOTH inline (the fat overflow is deferred to the next tick).
+				Fingerprints:reset()
+				realLive.dirtyUpsert = {}
+				realLive.dirtyRemoved = {}
+				realLive.upsertStamp = {}
+				realLive.removedStamp = {}
+				realLive:markDirtyUpsert(smallPart)
+				realLive:markDirtyUpsert(fatPart)
+				local cappedUpserted = realLive:collectOpsFromDirty()
+				SelfTest.assert(
+					"fat batch caps (does not ship both inline)",
+					#cappedUpserted < 2,
+					failures
+				)
+
+				-- Clean the live maps + DataModel.
+				capture.instanceIdByRef[capFolder] = nil
+				capture.pathByRef[capFolder] = nil
+				capture.instanceIdByRef[fatPart] = nil
+				capture.pathByRef[fatPart] = nil
+				capture.instanceIdByRef[smallPart] = nil
+				capture.pathByRef[smallPart] = nil
+				realLive.dirtyUpsert = {}
+				realLive.dirtyRemoved = {}
+				realLive.upsertStamp = {}
+				realLive.removedStamp = {}
+				Fingerprints:reset()
+				capFolder:Destroy()
+			end
+		end
+	end
+
+	-- == JSON safety: a snapshot must always encode, even with NaN/inf or invalid-UTF-8 (0.4.18) ==
+	do
+		local report: { string } = {}
+		local dirty: { [string]: any } = {
+			nan = 0 / 0,
+			posInf = math.huge,
+			negInf = -math.huge,
+			ok = 1.5,
+			badStr = "abc" .. string.char(0xFF, 0xFE) .. "z",
+			goodStr = "héllo",
+			nested = { x = 0 / 0, y = 2 },
+		}
+		local rawOk = pcall(function()
+			return httpService:JSONEncode(dirty)
+		end)
+		SelfTest.assert("dirty snapshot fails raw JSONEncode", not rawOk, failures)
+		Transport.sanitizeJsonValue(dirty, "root", report, nil)
+		local postOk = pcall(function()
+			return httpService:JSONEncode(dirty)
+		end)
+		SelfTest.assert("sanitized snapshot encodes", postOk, failures)
+		SelfTest.assert("sanitize reported offenders", #report >= 4, failures)
+		SelfTest.assert("sanitize replaced NaN with 0", dirty.nan == 0, failures)
+		SelfTest.assert("sanitize kept finite number", dirty.ok == 1.5, failures)
+		SelfTest.assert("sanitize kept valid multibyte string", dirty.goodStr == "héllo", failures)
+	end
+
+	if live then
+		local realLive = live :: typeof(live)
+		realLive:teardown()
+		SelfTest.assert("live.teardown clears liveRunning", not realLive.liveRunning, failures)
+		SelfTest.assert("live.teardown clears instConns", next(realLive.instConns) == nil, failures)
+		SelfTest.assert("live.teardown clears rootConns", #realLive.rootConns == 0, failures)
+		SelfTest.assert("live.teardown clears globalConns", #realLive.globalConns == 0, failures)
+		SelfTest.assert("live.teardown resets revision", realLive.currentRevision == 0, failures)
+		SelfTest.assert("live.teardown resets liveInstanceCount", realLive.liveInstanceCount == 0, failures)
+		SelfTest.assert("live.teardown clears dirtyUpsert", next(realLive.dirtyUpsert) == nil, failures)
+		SelfTest.assert("live.teardown clears dirtyRemoved", next(realLive.dirtyRemoved) == nil, failures)
+		SelfTest.assert("live.teardown resets verifyNeeded", realLive.verifyNeeded == false, failures)
+
+		-- Settings gate: liveCaptureEnabled = false → setupAfterBaseline is a no-op.
+		Settings.setBool(SETTINGS.liveCaptureEnabled, false)
+		realLive:setupAfterBaseline({ revision = 5, instances = 100 })
+		SelfTest.assert("live gated by liveCaptureEnabled=false", not realLive.liveRunning, failures)
+		Settings.setBool(SETTINGS.liveCaptureEnabled, true)
+
+		-- Dirty-set precedence: removed wins over upserted for same id.
+		local dummyInst = Instance.new("Folder")
+		dummyInst.Parent = game:GetService("ReplicatedStorage")
+		local dummyId = dummyInst:GetDebugId(0)
+		realLive.dirtyUpsert[dummyInst] = true
+		realLive.dirtyRemoved[dummyId] = true
+		-- collectOpsFromDirty skips this inst because its id is in dirtyRemoved.
+		local skipped = realLive.dirtyRemoved[dummyId] == true
+		SelfTest.assert("removed wins over upserted in dirty sets", skipped, failures)
+		realLive.dirtyUpsert = {}
+		realLive.dirtyRemoved = {}
+		dummyInst:Destroy()
+
+		-- == C1 regression: markDirtyUpsert sets dirtyUpsert[inst] WITHOUT recursion ==
+		-- The monolith's buggy markDirtyUpsert called itself (infinite recursion). The
+		-- cure: it ONLY sets dirtyUpsert[inst]=true + stamps. Assert the post-condition
+		-- (the inst is dirty and stamped) AND that the call returns normally (a recursive
+		-- version would stack-overflow before reaching the assert).
+		do
+			realLive.dirtyUpsert = {}
+			realLive.upsertStamp = {}
+			realLive.dirtyStamp = 0
+			local c1Inst = Instance.new("Folder")
+			c1Inst.Parent = game:GetService("ReplicatedStorage")
+			realLive:markDirtyUpsert(c1Inst)
+			SelfTest.assert(
+				"C1: markDirtyUpsert sets dirtyUpsert[inst] (no recursion)",
+				realLive.dirtyUpsert[c1Inst] == true,
+				failures
+			)
+			SelfTest.assert(
+				"C1: markDirtyUpsert stamps the inst once",
+				realLive.dirtyStamp == 1 and realLive.upsertStamp[c1Inst] == 1,
+				failures
+			)
+			realLive.dirtyUpsert = {}
+			realLive.upsertStamp = {}
+			c1Inst:Destroy()
+		end
+
+		-- == C2 regression: a simulated connect passes a NON-NIL onReturnToEdit to
+		-- startTickLoop ==
+		-- The monolith captured a not-yet-assigned `onReturnToEdit` upvalue into
+		-- startTickLoop (nil at capture time -> the play->edit resume silently died).
+		-- Simulate the connect seam: build a real callback and hand it to startTickLoop,
+		-- asserting the engine accepts a non-nil onReturnToEdit (and that the call itself
+		-- returns normally — a nil-call would have thrown). Tear down immediately so the
+		-- spawned loop exits on its next generation guard.
+		do
+			Settings.setBool(SETTINGS.liveCaptureEnabled, true)
+			realLive.liveRunning = true -- arm the loop guard so startTickLoop spawns
+			local returnSeen = false
+			local onReturnToEdit = function()
+				returnSeen = true
+			end
+			local okStart = pcall(function()
+				realLive:startTickLoop({ revision = 0, instanceCount = 0 }, onReturnToEdit)
+			end)
+			SelfTest.assert("C2: startTickLoop accepts a non-nil onReturnToEdit", okStart, failures)
+			SelfTest.assert("C2: onReturnToEdit is a function (non-nil)", type(onReturnToEdit) == "function", failures)
+			-- `returnSeen` exists only so the closure is genuinely capturable (no dead
+			-- upvalue); the loop fires it only on a play->edit transition, not here.
+			SelfTest.assert("C2: onReturnToEdit closure is live", returnSeen == false, failures)
+			realLive:teardown() -- bump generation so the spawned loop exits
+		end
+
+		-- == C3 regression: Sync() before live mode does not nil-call ==
+		-- The monolith's Sync() before live nil-called a not-yet-assigned upvalue. Here
+		-- the engine's host starts as a NO-OP stub (Live.host = NOOP_HOST) until attach,
+		-- so a pre-live engine call routes through the stub and is a safe no-op. After
+		-- teardown the engine is off-live; drive a host-touching engine path
+		-- (triggerRebaseline goes straight through host.* ) and assert it does not throw.
+		do
+			realLive.liveRunning = false
+			local okPreLive = pcall(function()
+				realLive:triggerRebaseline("c3-pre-live")
+			end)
+			SelfTest.assert("C3: pre-live engine call is a safe no-op (no nil-call)", okPreLive, failures)
+			-- And the panel handle's sync entry (the real Sync()) returns a result table
+			-- rather than throwing, even with no daemon (off-live, edit session).
+			if captureHandleLive then
+				local okSync, syncResult = pcall(function(): any
+					return captureHandleLive.sync()
+				end)
+				SelfTest.assert(
+					"C3: Sync() before live returns a result (no nil-call)",
+					okSync and type(syncResult) == "table",
+					failures
+				)
+			end
+		end
+
+		-- == Phase 3: detection collapse ==
+		do
+			local curated = { Transparency = false }
+			SelfTest.assert("classify Name -> name", realLive:classifyChangedProp("Name", curated) == "name", failures)
+			SelfTest.assert("classify Source -> dirty", realLive:classifyChangedProp("Source", curated) == "dirty", failures)
+			SelfTest.assert(
+				"classify curated -> dirty",
+				realLive:classifyChangedProp("Transparency", curated) == "dirty",
+				failures
+			)
+			SelfTest.assert(
+				"classify uncurated -> gap",
+				realLive:classifyChangedProp("Archivable", curated) == "gap",
+				failures
+			)
+
+			-- gap-probe dedup.
+			realLive.propGaps = {}
+			realLive:recordPropGap("Part", "Foo")
+			realLive:recordPropGap("Part", "Foo")
+			local gapCount = 0
+			for _ in pairs(realLive.propGaps) do
+				gapCount += 1
+			end
+			SelfTest.assert("recordPropGap dedups", gapCount == 1, failures)
+
+			-- connection-count collapse: a Part should register ~3 connections, not ~20.
+			AllowList.loaded = true
+			AllowList.lists = { Part = { "Transparency", "Size" } }
+			AllowList.sets = { Part = { Transparency = false, Size = false } }
+			local part = Instance.new("Part")
+			realLive:registerInstance(part)
+			local partConns = realLive.instConns[part]
+			SelfTest.assert("registerInstance collapses Part to <=4 conns", partConns ~= nil and #partConns <= 4, failures)
+			realLive:unregisterInstance(part)
+			part:Destroy()
+
+			-- ValueBase registers explicit signals (Ancestry + Attribute + Name + Value).
+			local iv = Instance.new("IntValue")
+			realLive:registerInstance(iv)
+			local ivConns = realLive.instConns[iv]
+			SelfTest.assert("ValueBase registers >=3 conns", ivConns ~= nil and #ivConns >= 3, failures)
+			realLive:unregisterInstance(iv)
+			iv:Destroy()
+
+			AllowList.loaded = false
+			AllowList.lists = {}
+			AllowList.sets = {}
+		end
+	else
+		-- Live handle not available: skip but don't fail.
+		print("[Studio Stud SelfTest] SKIP: live handle not available (live tests skipped)")
+	end
+
+	-- == Phase 3: allow-list parse (pure) ==
+	do
+		local parsed = AllowList.parse({
+			version = "1.2.3.4",
+			classes = {
+				Part = {
+					{ name = "Transparency", readOnly = false },
+					{ name = "AbsoluteSize", readOnly = true },
+				},
+			},
+		})
+		SelfTest.assert("allowlist parse version", parsed ~= nil and parsed.version == "1.2.3.4", failures)
+		SelfTest.assert("allowlist parse membership", parsed ~= nil and parsed.sets.Part.Transparency == false, failures)
+		SelfTest.assert("allowlist parse readOnly flag", parsed ~= nil and parsed.sets.Part.AbsoluteSize == true, failures)
+		SelfTest.assert("allowlist parse ordered list", parsed ~= nil and #parsed.lists.Part == 2, failures)
+		SelfTest.assert("allowlist parse rejects bad input", AllowList.parse({}) == nil, failures)
+	end
+
+	-- == Edit-session gate self-tests ==
+	-- SelfTest runs in a genuine edit session, so the primitive MUST resolve to edit.
+	-- A failure here means the gate would wrongly suspend all capture during normal editing.
+	do
+		SelfTest.assert("Session.decide is a function", type(Session.decide) == "function", failures)
+		SelfTest.assert("Session.signals is a function", type(Session.signals) == "function", failures)
+		-- Pure decision truth table (independent of the live RunService):
+		SelfTest.assert("decide edit when isEdit & !isRunning", Session.decide(true, false) == "edit", failures)
+		SelfTest.assert("decide play when isRunning", Session.decide(false, true) == "play", failures)
+		SelfTest.assert("decide play when !isEdit", Session.decide(false, false) == "play", failures)
+		SelfTest.assert("decide play when isEdit & isRunning", Session.decide(true, true) == "play", failures)
+		-- SelfTest runs in a genuine edit session, so the LIVE decision must be edit:
+		SelfTest.assert("Session.mode() == 'edit' while editing", Session.mode() == "edit", failures)
+	end
+
+	Settings.setBool(SETTINGS.liveCaptureEnabled, origLive)
+	Settings.setNumber(SETTINGS.debounceMs, origDebounce)
+	Settings.setString(SETTINGS.daemonUrl, origUrl)
+	SelfTest.assert(
+		"registry ids restored",
+		Registry.snapshotIds()[1] == preIds[1] and #Registry.snapshotIds() == #preIds,
+		failures
+	)
+
+	if #failures == 0 then
+		print("[Studio Stud SelfTest] PASS — all checks passed")
+		return true
+	end
+	warn("[Studio Stud SelfTest] FAIL — " .. tostring(#failures) .. " check(s) failed")
+	return false
 end
 
--- == Module table ==
-
--- Assembled as a real value before return; every cross-reference above is a plain
--- local, so there is no forward-reference-before-local read anywhere in the module.
-local Hash: HashModule__DARKLUA_TYPE_W = {
-	hashInstance = hashInstance,
-	serviceOf = serviceOf,
-	fpZero = fpZero,
-	fpHexToBytes = fpHexToBytes,
-	fpBytesToHex = fpBytesToHex,
-	fpXor = fpXor,
-}
-
-return Hash
-end function __DARKLUA_BUNDLE_MODULES.l():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.l if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.l=v end return v.c end end do local function __modImpl()--!strict
+return SelfTest
+end function __DARKLUA_BUNDLE_MODULES.n():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.n if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.n=v end return v.c end end do local function __modImpl()--!strict
 -- Capture — DataModel → wire serialization, ported faithfully from the monolith's
 -- Capture.* block (StudioStud.plugin.lua:1623-2063) plus buildUpsertedEntry
 -- (:2736-2808). This is the read half of the protocol: it turns live Studio
@@ -4820,10 +6139,10 @@ end function __DARKLUA_BUNDLE_MODULES.l():typeof(__modImpl())local v=__DARKLUA_B
 -- structural fields, so a source-only edit does not change fp.
 
 
-local Types = __DARKLUA_BUNDLE_MODULES.g()
+local Types = __DARKLUA_BUNDLE_MODULES.e()
 local Config = __DARKLUA_BUNDLE_MODULES.a()
-local AllowList = __DARKLUA_BUNDLE_MODULES.k()
-local Hash = __DARKLUA_BUNDLE_MODULES.l()
+local AllowList = __DARKLUA_BUNDLE_MODULES.h()
+local Hash = __DARKLUA_BUNDLE_MODULES.i()
 
 
 
@@ -4966,7 +6285,7 @@ local BASELINE_YIELD_EVERY = Config.BASELINE_YIELD_EVERY
 
 
 
-local Capture: CaptureModule__DARKLUA_TYPE_7
+local Capture: CaptureModule__DARKLUA_TYPE_ac
 
 -- == shouldYield ==
 
@@ -5104,12 +6423,12 @@ end
 -- Membership set for the instance's class: AllowList set when loaded, else built
 -- from getPropertyNames with readOnly=false (the monolith's `set[name] = false`).
 -- VERBATIM port of Capture.curatedSet (monolith :1746).
-local function curatedSet(inst: Instance): ClassPropSet__DARKLUA_TYPE_0
+local function curatedSet(inst: Instance): ClassPropSet__DARKLUA_TYPE_5
 	local fromAllow = AllowList.setFor(inst.ClassName)
 	if fromAllow then
 		return fromAllow
 	end
-	local set: ClassPropSet__DARKLUA_TYPE_0 = {}
+	local set: ClassPropSet__DARKLUA_TYPE_5 = {}
 	for _, name in ipairs(getPropertyNames(inst)) do
 		set[name] = false
 	end
@@ -5122,9 +6441,9 @@ end
 -- property doesn't abort the rest; collect failures as errors. `inst` is `any` to
 -- match the monolith's index-by-string (`fakeInst[propName]`) over a real Instance.
 -- VERBATIM port of Capture.readPropsFrom (monolith :1758).
-local function readPropsFrom(inst: any, names: { string }): (PropertyMap__DARKLUA_TYPE_Y, { PropertyError__DARKLUA_TYPE_2 })
-	local properties: PropertyMap__DARKLUA_TYPE_Y = {}
-	local errors: { PropertyError__DARKLUA_TYPE_2 } = {}
+local function readPropsFrom(inst: any, names: { string }): (PropertyMap__DARKLUA_TYPE_2, { PropertyError__DARKLUA_TYPE_7 })
+	local properties: PropertyMap__DARKLUA_TYPE_2 = {}
+	local errors: { PropertyError__DARKLUA_TYPE_7 } = {}
 	for _, propName in ipairs(names) do
 		local ok, value = pcall(function()
 			return inst[propName]
@@ -5143,13 +6462,13 @@ end
 -- to the per-property readPropsFrom so a single bad property never loses the rest.
 -- Then the Model bounding-box/pivot extras (each pcall-guarded). VERBATIM port of
 -- Capture.readProperties (monolith :1774).
-local function readProperties(inst: Instance): (PropertyMap__DARKLUA_TYPE_Y, { PropertyError__DARKLUA_TYPE_2 })
+local function readProperties(inst: Instance): (PropertyMap__DARKLUA_TYPE_2, { PropertyError__DARKLUA_TYPE_7 })
 	local anyInst = inst :: any
 	local names = getPropertyNames(inst)
-	local properties: PropertyMap__DARKLUA_TYPE_Y = {}
-	local errors: { PropertyError__DARKLUA_TYPE_2 } = {}
+	local properties: PropertyMap__DARKLUA_TYPE_2 = {}
+	local errors: { PropertyError__DARKLUA_TYPE_7 } = {}
 	local batchOk, batchProps = pcall(function()
-		local props: PropertyMap__DARKLUA_TYPE_Y = {}
+		local props: PropertyMap__DARKLUA_TYPE_2 = {}
 		for _, propName in ipairs(names) do
 			props[propName] = serializeValue(anyInst[propName])
 		end
@@ -5258,7 +6577,7 @@ end
 -- LuaSourceContainer source: utf8 inline when valid UTF-8, else base64 (with the
 -- "base64" encoding tag). (nil, nil) for non-script instances or a read failure.
 -- VERBATIM port of Capture.readSource (monolith :1876).
-local function readSource(inst: Instance): (string?, SourceEncoding__DARKLUA_TYPE_1?)
+local function readSource(inst: Instance): (string?, SourceEncoding__DARKLUA_TYPE_6?)
 	if not inst:IsA("LuaSourceContainer") then
 		return nil, nil
 	end
@@ -5281,7 +6600,7 @@ end
 
 -- All attributes (no whitelist), serialized through serializeValue. On a GetAttributes
 -- failure returns ({}, one error). VERBATIM port of Capture.readAttributes (:1892).
-local function readAttributes(inst: Instance): (AttributeMap__DARKLUA_TYPE_Z, { PropertyError__DARKLUA_TYPE_2 })
+local function readAttributes(inst: Instance): (AttributeMap__DARKLUA_TYPE_3, { PropertyError__DARKLUA_TYPE_7 })
 	local ok, attrs = pcall(function()
 		return inst:GetAttributes()
 	end)
@@ -5293,7 +6612,7 @@ end
 
 -- CollectionService tags in capture order; {} on failure or non-table result.
 -- VERBATIM port of Capture.readTags (monolith :1902).
-local function readTags(inst: Instance): Tags__DARKLUA_TYPE__
+local function readTags(inst: Instance): Tags__DARKLUA_TYPE_4
 	local ok, tags = pcall(function()
 		return inst:GetTags()
 	end)
@@ -5309,8 +6628,8 @@ end
 -- (some services don't exist in every place); each kept once; then sorted by
 -- ROOT_SERVICE_INDEX (className then name), name, then className — the exact
 -- tie-break chain of the monolith. VERBATIM port of Capture.getRootEntries (:1912).
-local function getRootEntries(): { RootEntry__DARKLUA_TYPE_3 }
-	local roots: { RootEntry__DARKLUA_TYPE_3 } = {}
+local function getRootEntries(): { RootEntry__DARKLUA_TYPE_8 }
+	local roots: { RootEntry__DARKLUA_TYPE_8 } = {}
 	local seen: { [Instance]: boolean } = {}
 	for _, serviceName in ipairs(ROOT_SERVICE_ORDER) do
 		local ok, service = pcall(function()
@@ -5427,7 +6746,7 @@ end
 -- fills each entry's attributes/properties/source/tags/propertyErrors (now that all
 -- ids/paths exist for InstanceRef resolution). VERBATIM port of Capture.buildSnapshot
 -- (monolith :2009).
-local function buildSnapshot(options: SnapshotOptions__DARKLUA_TYPE_5?): Snapshot__DARKLUA_TYPE_4
+local function buildSnapshot(options: SnapshotOptions__DARKLUA_TYPE_aa?): Snapshot__DARKLUA_TYPE_9
 	local startedAt = os.date("!%Y-%m-%dT%H:%M:%SZ")
 	local instances, rootNames = collectBaseInstances()
 	local idToEntry: { [string]: any } = {}
@@ -5492,7 +6811,7 @@ end
 -- when parent:GetChildren() throws (the caller early-outs, mirroring the monolith).
 local function resolveSiblings(
 	parent: Instance,
-	memo: SiblingMemo__DARKLUA_TYPE_6?
+	memo: SiblingMemo__DARKLUA_TYPE_ab?
 ): ({ Instance }?, { [string]: number }?)
 	if memo then
 		local cached = memo[parent]
@@ -5527,7 +6846,7 @@ end
 -- Returns (nil, nil) on any of the monolith's early-outs: no id in the walk map, no
 -- parent, parent GetChildren throws, or the instance not found among its siblings
 -- (siblingIndex stays 0 — likely mid-destroy).
-local function buildUpsertedEntry(inst: Instance, memo: SiblingMemo__DARKLUA_TYPE_6?): (InstanceEntry__DARKLUA_TYPE_X?, string?)
+local function buildUpsertedEntry(inst: Instance, memo: SiblingMemo__DARKLUA_TYPE_ab?): (InstanceEntry__DARKLUA_TYPE_1?, string?)
 	local id = Capture.instanceIdByRef[inst]
 	if not id then
 		return nil, nil
@@ -5568,7 +6887,7 @@ local function buildUpsertedEntry(inst: Instance, memo: SiblingMemo__DARKLUA_TYP
 	local attributes = readAttributes(inst)
 	local tags = readTags(inst)
 	local src, srcEnc = readSource(inst)
-	local entry: InstanceEntry__DARKLUA_TYPE_X = {
+	local entry: InstanceEntry__DARKLUA_TYPE_1 = {
 		id = id,
 		parentId = parentId,
 		path = path,
@@ -5590,7 +6909,7 @@ local function buildUpsertedEntry(inst: Instance, memo: SiblingMemo__DARKLUA_TYP
 		-- returns them paired); default to "utf8" like the monolith. The cast pins the
 		-- literal union the analyzer would otherwise widen to `string` through the
 		-- narrowing branch.
-		entry.sourceEncoding = (if srcEnc then srcEnc else "utf8") :: SourceEncoding__DARKLUA_TYPE_1
+		entry.sourceEncoding = (if srcEnc then srcEnc else "utf8") :: SourceEncoding__DARKLUA_TYPE_6
 	end
 	entry.fp = Hash.hashInstance(entry)
 	return entry, oldPath
@@ -5633,240 +6952,7 @@ Capture = {
 }
 
 return Capture
-end function __DARKLUA_BUNDLE_MODULES.m():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.m if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.m=v end return v.c end end do local function __modImpl()--!strict
--- Fingerprints — the live per-service XOR accumulators, ported faithfully from the
--- monolith's Live fingerprint block (StudioStud.plugin.lua: instFp/serviceFpBytes
--- :2183-2184, serviceFpHex :2304, serviceFingerprintsWire :2312, applyFpUpsert
--- :2320, applyFpRemove :2337, resetFingerprints :2348). This is the FP-1 live half:
--- the daemon stores and XORs whatever per-service fingerprint the plugin emits, so
--- the accumulator math (and the recipe behind it) MUST be byte-identical to the old
--- plugin or every tick reports phantom drift.
---
--- The recipe itself (the 4-lane FNV → 64-hex hash and the 32-byte XOR primitives)
--- lives in Hash — the single source of truth. This module owns ONLY the per-service
--- accumulation: which fingerprint belongs to which service, and the add / remove /
--- REPARENT inverse (XOR the old fingerprint out of the old service, XOR the new
--- fingerprint into the new service). It never re-derives the hash math.
---
--- The accumulator is XOR-based, so it is order-independent and self-inverse:
---   * add A, add B            -> serviceFp == hash(A) XOR hash(B)
---   * remove A                -> serviceFp == hash(B)        (A XOR'd back out)
---   * re-add A                -> serviceFp == hash(A) XOR hash(B)  (restored)
--- A reparent is just remove-from-old + add-to-new in one call: applyFpUpsert with a
--- distinct oldPath XORs the stored fingerprint out of serviceOf(oldPath) and the new
--- fingerprint into serviceOf(entry.path).
---
--- STATE: instFp ([id] = current 64-hex fingerprint) and serviceFpBytes ([service] =
--- 32-byte XOR accumulator) are module fields on the Fingerprints table — every method
--- reaches them through `Fingerprints.*`, never a forward-referenced upvalue, so there
--- is no before-local window (the C1-C3 bug class this rewrite exists to kill). The
--- monolith held the same two tables on its giant Live closure; here they are explicit
--- typed fields the Live engine can also read (Types.LiveState pins their shape).
---
--- M3 (by design): a fingerprint never includes `source` (Hash excludes it), so a
--- script-only edit does not change the per-service accumulator — no phantom drift.
-
-
-local Types = __DARKLUA_BUNDLE_MODULES.g()
-local Hash = __DARKLUA_BUNDLE_MODULES.l()
-
--- Forward declaration of the module table so methods reach the shared state through
--- it (Fingerprints.instFp / Fingerprints.serviceFpBytes) WITHOUT a forward-referenced
--- upvalue. Fingerprints.* is a real table field by the time any method runs.
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-local Fingerprints: FingerprintsModule__DARKLUA_TYPE_ab
-
--- == serviceFpHex ==
-
--- 64-hex of a service's accumulator, or 64 zeros when none exists yet. VERBATIM
--- port of Live.serviceFpHex (monolith :2304): the bytes-missing branch returns
--- string.rep("0", 64), NOT fpZero packed (same value, but the monolith short-circuited
--- before allocating a byte array — preserved here).
-local function serviceFpHex(self: FingerprintsModule__DARKLUA_TYPE_ab, service: string): Hex64__DARKLUA_TYPE_8
-	local bytes = self.serviceFpBytes[service]
-	if not bytes then
-		return string.rep("0", 64)
-	end
-	return Hash.fpBytesToHex(bytes)
-end
-
--- == serviceFingerprintsWire ==
-
--- The per-service wire map { [service] = 64-hex } over every service with an
--- accumulator. VERBATIM port of Live.serviceFingerprintsWire (monolith :2312):
--- iterate serviceFpBytes keys, emit serviceFpHex for each. Only services that have
--- ever held a fingerprint appear (a service that was added then fully removed stays
--- in the map with a 64-zero value — exactly as the monolith left it, because
--- applyFpRemove never deletes the serviceFpBytes entry).
-local function serviceFingerprintsWire(self: FingerprintsModule__DARKLUA_TYPE_ab): { [string]: Hex64__DARKLUA_TYPE_8 }
-	local out: { [string]: Hex64__DARKLUA_TYPE_8 } = {}
-	for service in pairs(self.serviceFpBytes) do
-		out[service] = self:serviceFpHex(service)
-	end
-	return out
-end
-
--- == applyFpUpsert (add / update / reparent) ==
-
--- VERBATIM port of Live.applyFpUpsert (monolith :2320). Order matters and is
--- preserved exactly:
---   1. newFp = entry.fp or Hash.hashInstance(entry); write it back onto entry.fp.
---   2. newService = serviceOf(entry.path).
---   3. If an old fingerprint exists for this id, XOR it OUT of serviceOf(oldPath or
---      entry.path) — the reparent inverse. (oldPath defaults to entry.path, so a
---      same-service update XORs the old value out of the same service it goes back in.)
---   4. XOR newFp INTO newService.
---   5. instFp[id] = newFp.
--- A fresh service accumulator is fpZero() (lazily created), matching the monolith's
--- `Live.serviceFpBytes[...] or fpZeroBytes()`.
-local function applyFpUpsert(self: FingerprintsModule__DARKLUA_TYPE_ab, id: string, entry: FpEntry__DARKLUA_TYPE_aa, oldPath: string?): ()
-	-- Real if/else over the optional fp (luau-craft: no `a or b` where b can throw /
-	-- allocate unconditionally — though here both are values, the monolith's `or` is
-	-- a cheap fallback so we keep the same single-evaluation semantics).
-	local newFp: Hex64__DARKLUA_TYPE_8
-	if entry.fp then
-		newFp = entry.fp
-	else
-		newFp = Hash.hashInstance(entry :: any)
-	end
-	entry.fp = newFp
-
-	local newService = Hash.serviceOf(entry.path)
-	local oldFp = self.instFp[id]
-	if oldFp then
-		local oldService = Hash.serviceOf(oldPath or entry.path)
-		local svcBytes = self.serviceFpBytes[oldService]
-		if not svcBytes then
-			svcBytes = Hash.fpZero()
-		end
-		Hash.fpXor(svcBytes, Hash.fpHexToBytes(oldFp))
-		self.serviceFpBytes[oldService] = svcBytes
-	end
-
-	local newBytes = self.serviceFpBytes[newService]
-	if not newBytes then
-		newBytes = Hash.fpZero()
-	end
-	Hash.fpXor(newBytes, Hash.fpHexToBytes(newFp))
-	self.serviceFpBytes[newService] = newBytes
-
-	self.instFp[id] = newFp
-end
-
--- == applyFpRemove ==
-
--- VERBATIM port of Live.applyFpRemove (monolith :2337). XOR the stored fingerprint
--- out of serviceOf(path) and clear instFp[id]. If the id has no stored fingerprint,
--- only the (no-op) clear runs — the accumulator is untouched. The serviceFpBytes
--- entry is NOT deleted even when it returns to all-zero (monolith parity: the empty
--- service lingers in serviceFingerprintsWire as 64 zeros).
-local function applyFpRemove(self: FingerprintsModule__DARKLUA_TYPE_ab, id: string, path: string?): ()
-	local oldFp = self.instFp[id]
-	if oldFp then
-		local service = Hash.serviceOf(path or "")
-		local svcBytes = self.serviceFpBytes[service]
-		if not svcBytes then
-			svcBytes = Hash.fpZero()
-		end
-		Hash.fpXor(svcBytes, Hash.fpHexToBytes(oldFp))
-		self.serviceFpBytes[service] = svcBytes
-	end
-	self.instFp[id] = nil
-end
-
--- == reset ==
-
--- Drop all fingerprint state by replacing both tables with fresh empties. VERBATIM
--- port of Live.resetFingerprints (monolith :2348): new tables, not table.clear, so
--- any reference held to the OLD tables (e.g. a wire map already emitted) is unaffected.
-local function reset(self: FingerprintsModule__DARKLUA_TYPE_ab): ()
-	self.instFp = {}
-	self.serviceFpBytes = {}
-end
-
--- == Module table ==
-
--- Assembled as a real value before return; the state tables start empty and every
--- method above reaches them via `self`, so there is no forward-reference-before-local
--- read anywhere in the module.
-Fingerprints = {
-	instFp = {},
-	serviceFpBytes = {},
-	serviceFpHex = serviceFpHex,
-	serviceFingerprintsWire = serviceFingerprintsWire,
-	applyFpUpsert = applyFpUpsert,
-	applyFpRemove = applyFpRemove,
-	reset = reset,
-}
-
-return Fingerprints
-end function __DARKLUA_BUNDLE_MODULES.n():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.n if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.n=v end return v.c end end do local function __modImpl()--!strict
+end function __DARKLUA_BUNDLE_MODULES.o():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.o if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.o=v end return v.c end end do local function __modImpl()--!strict
 -- Live — the live capture engine, ported faithfully from the monolith's Live.*
 -- block (StudioStud.plugin.lua:2168-3346), MINUS the Hash / Capture / Fingerprints
 -- code already extracted into their own modules. This is the heart of protocol v2:
@@ -5919,14 +7005,14 @@ end function __DARKLUA_BUNDLE_MODULES.n():typeof(__modImpl())local v=__DARKLUA_B
 --   * historyDirty -> rebaseline; teardown resets all; connect/baseline full bulk.
 
 
-local Types = __DARKLUA_BUNDLE_MODULES.g()
+local Types = __DARKLUA_BUNDLE_MODULES.e()
 local Config = __DARKLUA_BUNDLE_MODULES.a()
-local Session = __DARKLUA_BUNDLE_MODULES.j()
+local Session = __DARKLUA_BUNDLE_MODULES.f()
 local Settings = __DARKLUA_BUNDLE_MODULES.b()
-local Transport = __DARKLUA_BUNDLE_MODULES.h()
-local Capture = __DARKLUA_BUNDLE_MODULES.m()
-local Fingerprints = __DARKLUA_BUNDLE_MODULES.n()
-local Hash = __DARKLUA_BUNDLE_MODULES.l()
+local Transport = __DARKLUA_BUNDLE_MODULES.g()
+local Capture = __DARKLUA_BUNDLE_MODULES.o()
+local Fingerprints = __DARKLUA_BUNDLE_MODULES.j()
+local Hash = __DARKLUA_BUNDLE_MODULES.i()
 
 
 
@@ -6086,7 +7172,7 @@ end
 
 
 
-local Live: LiveModule__DARKLUA_TYPE_ah
+local Live: LiveModule__DARKLUA_TYPE_ai
 
 -- == No-op host stub (the C3 cure) ==
 
@@ -6094,7 +7180,7 @@ local Live: LiveModule__DARKLUA_TYPE_ah
 -- nil-called a not-yet-assigned upvalue; here a pre-live call routes through this stub
 -- and does nothing. requestJson/requestBody return a failure shape so any stray pre-
 -- attach network call fails gracefully instead of throwing.
-local NOOP_HOST: LiveHost__DARKLUA_TYPE_ag = {
+local NOOP_HOST: LiveHost__DARKLUA_TYPE_ah = {
 	transport = {
 		requestJson = function(_method: string, _path: string, _body: any?, _timeout: number?): (boolean, any)
 			return false, { error = "live host not attached" }
@@ -6117,7 +7203,7 @@ local NOOP_HOST: LiveHost__DARKLUA_TYPE_ag = {
 	end,
 }
 
-local function attach(self: LiveModule__DARKLUA_TYPE_ah, host: LiveHost__DARKLUA_TYPE_ag): ()
+local function attach(self: LiveModule__DARKLUA_TYPE_ai, host: LiveHost__DARKLUA_TYPE_ah): ()
 	self.host = host
 end
 
@@ -6131,14 +7217,14 @@ local debugLog = Settings.debugLog
 
 -- VERBATIM port of Live.markDirtyUpsert (monolith :2353). Sets dirtyUpsert[inst]=true
 -- and stamps it — NO recursion, NO read (the C1 cure: the buggy version called itself).
-local function markDirtyUpsert(self: LiveModule__DARKLUA_TYPE_ah, inst: Instance): ()
+local function markDirtyUpsert(self: LiveModule__DARKLUA_TYPE_ai, inst: Instance): ()
 	self.dirtyUpsert[inst] = true
 	self.dirtyStamp += 1
 	self.upsertStamp[inst] = self.dirtyStamp
 end
 
 -- VERBATIM port of Live.markDirtyRemoved (monolith :2359).
-local function markDirtyRemoved(self: LiveModule__DARKLUA_TYPE_ah, id: string): ()
+local function markDirtyRemoved(self: LiveModule__DARKLUA_TYPE_ai, id: string): ()
 	self.dirtyRemoved[id] = true
 	self.dirtyStamp += 1
 	self.removedStamp[id] = self.dirtyStamp
@@ -6147,7 +7233,7 @@ end
 -- BFS dirty-mark: root + all captured descendants (path cascade on rename/reparent).
 -- VERBATIM port of Live.markSubtreeUpsert (monolith :2486). Only instances present in
 -- the walk map are marked; GetChildren is pcall-guarded so a destroying node is skipped.
-local function markSubtreeUpsert(self: LiveModule__DARKLUA_TYPE_ah, root: Instance): ()
+local function markSubtreeUpsert(self: LiveModule__DARKLUA_TYPE_ai, root: Instance): ()
 	local idByRef = Capture.instanceIdByRef
 	local queue: { Instance } = { root }
 	local qi = 1
@@ -6170,7 +7256,7 @@ end
 
 -- Dirty parent + all same-name siblings under parent (siblingIndex/duplicate changed).
 -- VERBATIM port of Live.markSiblingsDirty (monolith :2507).
-local function markSiblingsDirty(self: LiveModule__DARKLUA_TYPE_ah, parent: Instance?, name: string): ()
+local function markSiblingsDirty(self: LiveModule__DARKLUA_TYPE_ai, parent: Instance?, name: string): ()
 	if not parent then
 		return
 	end
@@ -6199,7 +7285,7 @@ end
 -- MUST be tested with `~= nil`, not truthiness (the Phase-3 fix — else writable props
 -- are missed). Source is PluginSecurity-only (excluded from the allow-list) — special-
 -- cased to "dirty" so live source edits ship. Returns "name" | "dirty" | "gap".
-local function classifyChangedProp(_self: LiveModule__DARKLUA_TYPE_ah, prop: string, curatedSet: { [string]: boolean }): string
+local function classifyChangedProp(_self: LiveModule__DARKLUA_TYPE_ai, prop: string, curatedSet: { [string]: boolean }): string
 	if prop == "Name" then
 		return "name"
 	elseif prop == "Source" then
@@ -6213,7 +7299,7 @@ end
 
 -- Uncurated properties that fired, deduped, for later reporting (Phase 5). VERBATIM
 -- port of Live.recordPropGap (monolith :2545).
-local function recordPropGap(self: LiveModule__DARKLUA_TYPE_ah, className: string?, prop: any): ()
+local function recordPropGap(self: LiveModule__DARKLUA_TYPE_ai, className: string?, prop: any): ()
 	local key = (className or "?") .. "/" .. tostring(prop)
 	if not self.propGaps[key] then
 		self.propGaps[key] = true
@@ -6224,7 +7310,7 @@ end
 -- Shared name-change cascade (was the body of the old Name signal). VERBATIM port of
 -- Live.onNameChanged (monolith :2554): dirty the subtree (path cascade), then dirty
 -- same-name siblings under both the old and new parent for siblingIndex/duplicate.
-local function onNameChanged(self: LiveModule__DARKLUA_TYPE_ah, inst: Instance): ()
+local function onNameChanged(self: LiveModule__DARKLUA_TYPE_ai, inst: Instance): ()
 	local pathByRef = Capture.pathByRef
 	local oldPath = pathByRef[inst] or ""
 	local oldName = oldPath:match("([^%[/]+)%[%d+%]$") or inst.Name
@@ -6242,7 +7328,7 @@ end
 -- VALUE, not a prop name) OR ONE inst.Changed connection routed through
 -- classifyChangedProp. Every Connect is pcall-guarded (some signals throw on exotic
 -- instances) and only kept on success.
-local function registerInstance(self: LiveModule__DARKLUA_TYPE_ah, inst: Instance): ()
+local function registerInstance(self: LiveModule__DARKLUA_TYPE_ai, inst: Instance): ()
 	if self.instConns[inst] then
 		return
 	end
@@ -6339,7 +7425,7 @@ end
 
 -- Disconnect all per-instance signals for one instance (table not mutated during
 -- iteration). VERBATIM port of Live.unregisterInstance (monolith :2648).
-local function unregisterInstance(self: LiveModule__DARKLUA_TYPE_ah, inst: Instance): ()
+local function unregisterInstance(self: LiveModule__DARKLUA_TYPE_ai, inst: Instance): ()
 	local conns = self.instConns[inst]
 	if conns then
 		for _, conn in ipairs(conns) do
@@ -6356,7 +7442,7 @@ end
 -- fingerprints out, disconnect, clear maps. VERBATIM port of Live.unregisterSubtree
 -- (monolith :2662). Disconnects inline (NOT via unregisterInstance) to avoid mutating
 -- instConns during the outer BFS.
-local function unregisterSubtree(self: LiveModule__DARKLUA_TYPE_ah, root: Instance): ()
+local function unregisterSubtree(self: LiveModule__DARKLUA_TYPE_ai, root: Instance): ()
 	local idByRef = Capture.instanceIdByRef
 	local pathByRef = Capture.pathByRef
 	local queue: { Instance } = { root }
@@ -6395,7 +7481,7 @@ end
 -- Root DescendantAdded handler. VERBATIM port of Live.onDescendantAdded (monolith
 -- :2697): off-live, warn and bail; else assign a debug id (best-effort), record the
 -- parent, register signals, mark dirty, and dirty same-name siblings.
-local function onDescendantAdded(self: LiveModule__DARKLUA_TYPE_ah, child: Instance): ()
+local function onDescendantAdded(self: LiveModule__DARKLUA_TYPE_ai, child: Instance): ()
 	if not self.liveRunning then
 		warn("[StudioStud] +added (live off — click Capture/Query first):", child:GetFullName())
 		return
@@ -6429,7 +7515,7 @@ end
 -- Root DescendantRemoving handler. VERBATIM port of Live.onDescendantRemoving
 -- (monolith :2720): off-live, warn and bail; else unregister the subtree, ensure the
 -- removed node loses any pending upsert (removed wins), and dirty siblings.
-local function onDescendantRemoving(self: LiveModule__DARKLUA_TYPE_ah, child: Instance): ()
+local function onDescendantRemoving(self: LiveModule__DARKLUA_TYPE_ai, child: Instance): ()
 	if not self.liveRunning then
 		warn("[StudioStud] -removing (live off, skipped):", child:GetFullName())
 		return
@@ -6466,7 +7552,7 @@ end
 -- Encoded byte length of one entry, via safeEncode (the same encoder the wire uses).
 -- A non-encodable entry returns math.huge so it is treated as oversized (forward-
 -- progress still ships it solo, exactly as a huge tickPayloadByteLen would have).
-local function entryByteLen(entry: InstanceEntry__DARKLUA_TYPE_ac): number
+local function entryByteLen(entry: InstanceEntry__DARKLUA_TYPE_ad): number
 	local ok, encoded = Transport.safeEncode(entry, "tick-entry")
 	if ok then
 		return #encoded
@@ -6477,7 +7563,7 @@ end
 -- The fixed tick-body envelope size (zero ops): everything except the upserted/removed
 -- arrays' contents. Measured once per flush, matching the monolith's full-body probe
 -- but without re-encoding per op.
-local function envelopeByteLen(self: LiveModule__DARKLUA_TYPE_ah, removed: { string }): number
+local function envelopeByteLen(self: LiveModule__DARKLUA_TYPE_ai, removed: { string }): number
 	local body = self:buildTickBody(
 		game.PlaceId,
 		"edit",
@@ -6501,8 +7587,8 @@ end
 -- committed) breaks with forward-progress, rolling the just-applied fingerprint back
 -- (and restoring the previous fp) exactly as the monolith did. Returns the ops plus
 -- the per-op stamps so clearSentDirty can do its no-data-loss clear.
-local function collectOpsFromDirty(self: LiveModule__DARKLUA_TYPE_ah): (
-	{ InstanceEntry__DARKLUA_TYPE_ac },
+local function collectOpsFromDirty(self: LiveModule__DARKLUA_TYPE_ai): (
+	{ InstanceEntry__DARKLUA_TYPE_ad },
 	{ string },
 	{ [Instance]: number },
 	{ [string]: number }
@@ -6518,7 +7604,7 @@ local function collectOpsFromDirty(self: LiveModule__DARKLUA_TYPE_ah): (
 	
 
 
-local upsertList: { WorkItem__DARKLUA_TYPE_ai } = {}
+local upsertList: { WorkItem__DARKLUA_TYPE_aj } = {}
 	for inst in pairs(self.dirtyUpsert) do
 		local id = idByRef[inst]
 		if id and not self.dirtyRemoved[id] then
@@ -6531,20 +7617,20 @@ local upsertList: { WorkItem__DARKLUA_TYPE_ai } = {}
 			upsertList[#upsertList + 1] = { inst = inst, depth = depth }
 		end
 	end
-	table.sort(upsertList, function(a: WorkItem__DARKLUA_TYPE_ai, b: WorkItem__DARKLUA_TYPE_ai): boolean
+	table.sort(upsertList, function(a: WorkItem__DARKLUA_TYPE_aj, b: WorkItem__DARKLUA_TYPE_aj): boolean
 		return a.depth < b.depth
 	end)
 
 	-- E1: measure the envelope once, then add each entry's encoded length + comma.
 	local committedBytes = envelopeByteLen(self, removed)
-	local upserted: { InstanceEntry__DARKLUA_TYPE_ac } = {}
+	local upserted: { InstanceEntry__DARKLUA_TYPE_ad } = {}
 
 	for _, item in ipairs(upsertList) do
 		local inst = item.inst
 		if inst.Parent ~= nil then
 			local entry, oldPath = Capture.buildUpsertedEntry(inst)
 			if entry then
-				local realEntry = entry :: InstanceEntry__DARKLUA_TYPE_ac
+				local realEntry = entry :: InstanceEntry__DARKLUA_TYPE_ad
 				local prevFp = Fingerprints.instFp[realEntry.id]
 				Fingerprints:applyFpUpsert(realEntry.id, realEntry, oldPath)
 
@@ -6596,7 +7682,7 @@ end
 -- send time — an edit that re-marked it mid-tick bumped the stamp, so it stays dirty
 -- and is re-sent next tick.
 local function clearSentDirty(
-	self: LiveModule__DARKLUA_TYPE_ah,
+	self: LiveModule__DARKLUA_TYPE_ai,
 	sentUpsertStamps: { [Instance]: number },
 	sentRemovedStamps: { [string]: number }
 ): ()
@@ -6617,19 +7703,19 @@ end
 -- == Tick body + query ==
 
 -- VERBATIM port of Live.tickQuerySuffix (monolith :2372): placeId, URL-encoded.
-local function tickQuerySuffix(_self: LiveModule__DARKLUA_TYPE_ah): string
+local function tickQuerySuffix(_self: LiveModule__DARKLUA_TYPE_ai): string
 	return "placeId=" .. getHttpService():UrlEncode(tostring(game.PlaceId))
 end
 
 -- VERBATIM port of Live.buildTickBody (monolith :2376). The protocol-v2 tick body.
 -- placeId is stringified (the daemon expects a string placeId on the wire).
 local function buildTickBody(
-	_self: LiveModule__DARKLUA_TYPE_ah,
+	_self: LiveModule__DARKLUA_TYPE_ai,
 	placeId: any,
-	sessionMode: SessionMode__DARKLUA_TYPE_ae,
+	sessionMode: SessionMode__DARKLUA_TYPE_af,
 	baseRevision: number,
-	serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_af },
-	ops: Ops__DARKLUA_TYPE_ad,
+	serviceFingerprints: { [string]: Hex64__DARKLUA_TYPE_ag },
+	ops: Ops__DARKLUA_TYPE_ae,
 	bulkRef: string?
 ): any
 	return {
@@ -6648,14 +7734,14 @@ end
 -- snapshot. VERBATIM port of Live.initFingerprintsFromWalk (monolith :2955): reset,
 -- then buildUpsertedEntry each live instance (which sets pathByRef + fp), XOR-ing into
 -- the accumulator via the FP module, yielding every BASELINE_YIELD_EVERY.
-local function initFingerprintsFromWalk(_self: LiveModule__DARKLUA_TYPE_ah): ()
+local function initFingerprintsFromWalk(_self: LiveModule__DARKLUA_TYPE_ai): ()
 	Fingerprints:reset()
 	local processed = 0
 	for inst in pairs(Capture.instanceIdByRef) do
 		if inst.Parent ~= nil then
 			local entry, oldPath = Capture.buildUpsertedEntry(inst)
 			if entry then
-				local realEntry = entry :: InstanceEntry__DARKLUA_TYPE_ac
+				local realEntry = entry :: InstanceEntry__DARKLUA_TYPE_ad
 				Fingerprints:applyFpUpsert(realEntry.id, realEntry, oldPath)
 			end
 			processed += 1
@@ -6670,7 +7756,7 @@ end
 -- of Live.buildBaselineSnapshot (monolith :2969): reset, build the snapshot, then a
 -- YIELDING loop (the Q1 fix — never stall the frame) that hashes each entry and XORs
 -- it into the accumulator.
-local function buildBaselineSnapshot(_self: LiveModule__DARKLUA_TYPE_ah, reason: string?): any
+local function buildBaselineSnapshot(_self: LiveModule__DARKLUA_TYPE_ai, reason: string?): any
 	Fingerprints:reset()
 	local snapshot = Capture.buildSnapshot({ reason = reason or "tick-baseline" })
 	local processed = 0
@@ -6689,7 +7775,7 @@ end
 -- port of Live.uploadTickBulk (monolith :2893): start -> chunk(s) -> complete, sending
 -- the whole body in one chunk when it fits, else splitting by maxChunkBytes. Returns
 -- (true, {syncId=...}) on success so the caller stages pendingBulkRef.
-local function uploadTickBulk(self: LiveModule__DARKLUA_TYPE_ah, jsonText: string, reason: string?): (boolean, any)
+local function uploadTickBulk(self: LiveModule__DARKLUA_TYPE_ai, jsonText: string, reason: string?): (boolean, any)
 	local query = self:tickQuerySuffix()
 	local http = getHttpService()
 	local placeKey: string
@@ -6762,7 +7848,7 @@ end
 -- pendingBulkRef. VERBATIM port of Live.triggerFullBaseline (monolith :2991): guard
 -- against re-entry (baselineInProgress / pendingBulkRef / not live / not edit), then
 -- spawn the build+encode+upload off the caller's frame. Returns whether it started.
-local function triggerFullBaseline(self: LiveModule__DARKLUA_TYPE_ah, reason: string?): boolean
+local function triggerFullBaseline(self: LiveModule__DARKLUA_TYPE_ai, reason: string?): boolean
 	if self.baselineInProgress or self.pendingBulkRef or not self.liveRunning then
 		return false
 	end
@@ -6792,7 +7878,7 @@ end
 
 -- VERBATIM port of Live.triggerDriftRecovery (monolith :2984): same guards, then a
 -- full rebaseline (delta-only recovery — no partial materialize).
-local function triggerDriftRecovery(self: LiveModule__DARKLUA_TYPE_ah, _driftServices: { string }?): boolean
+local function triggerDriftRecovery(self: LiveModule__DARKLUA_TYPE_ai, _driftServices: { string }?): boolean
 	if self.baselineInProgress or self.pendingBulkRef or not self.liveRunning then
 		return false
 	end
@@ -6801,7 +7887,7 @@ end
 
 -- VERBATIM port of Live.triggerRebaseline (monolith :2464): deferred teardown +
 -- disconnect + full reconnect through the host (the orchestrator owns the handshake).
-local function triggerRebaseline(self: LiveModule__DARKLUA_TYPE_ah, reason: string?): ()
+local function triggerRebaseline(self: LiveModule__DARKLUA_TYPE_ai, reason: string?): ()
 	task.defer(function()
 		if self.liveRunning then
 			self:teardown()
@@ -6823,8 +7909,8 @@ end
 -- AFTER op collection (the post-ops fix); POST; on ok, advance revision/count, commit
 -- bulkRef, clear sent dirty (stamp-based), and handle drift/no_baseline; on repeated
 -- failure (>=4) tear down and surface the offline status.
-local function runTick(self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMode__DARKLUA_TYPE_ae?): ()
-	if not self.liveRunning or self.syncInFlight then
+local function runTick(self: LiveModule__DARKLUA_TYPE_ai, sessionMode: SessionMode__DARKLUA_TYPE_af?): ()
+	if not self.liveRunning or self.syncInFlight or self.baselineInProgress then
 		return
 	end
 	if sessionMode == "edit" and self.historyDirty then
@@ -6833,7 +7919,7 @@ local function runTick(self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMo
 	end
 	self.syncInFlight = true
 
-	local mode: SessionMode__DARKLUA_TYPE_ae
+	local mode: SessionMode__DARKLUA_TYPE_af
 	if sessionMode then
 		mode = sessionMode
 	elseif Session.isEdit() then
@@ -6843,7 +7929,7 @@ local function runTick(self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMo
 	end
 
 	local bulkRef = self.pendingBulkRef
-	local upserted: { InstanceEntry__DARKLUA_TYPE_ac } = {}
+	local upserted: { InstanceEntry__DARKLUA_TYPE_ad } = {}
 	local removed: { string } = {}
 	local sentUpsertStamps: { [Instance]: number } = {}
 	local sentRemovedStamps: { [string]: number } = {}
@@ -6854,7 +7940,7 @@ local function runTick(self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMo
 	-- Post-ops: snapshot fingerprints AFTER collectOpsFromDirty has XOR'd this tick's
 	-- entries into the accumulators (the Phase-5 ordering fix).
 	local serviceFingerprints = Fingerprints:serviceFingerprintsWire()
-	local ops: Ops__DARKLUA_TYPE_ad = { upserted = upserted, removed = removed }
+	local ops: Ops__DARKLUA_TYPE_ae = { upserted = upserted, removed = removed }
 	local body = self:buildTickBody(game.PlaceId, mode, self.currentRevision, serviceFingerprints, ops, bulkRef)
 
 	local okEnc, encoded = Transport.safeEncode(body, "tick")
@@ -6903,7 +7989,7 @@ local function runTick(self: LiveModule__DARKLUA_TYPE_ah, sessionMode: SessionMo
 			errText = "no response"
 		end
 		warn("[StudioStud] tick error:", errText)
-		if self.networkErrorCount >= 4 then
+		if self.networkErrorCount >= 4 and not self.pendingBulkRef and not self.baselineInProgress then
 			self:teardown()
 			self.host.setConnected(false)
 			self.host.setBaseline(false)
@@ -6924,7 +8010,7 @@ end
 -- real injected function), keepalive-tick during play, and run an edit tick otherwise
 -- with a pending-count stat line.
 local function startTickLoop(
-	self: LiveModule__DARKLUA_TYPE_ah,
+	self: LiveModule__DARKLUA_TYPE_ai,
 	pausedBaselineRef: { revision: number, instanceCount: number }?,
 	onReturnToEditFn: (() -> ())?
 ): ()
@@ -6996,7 +8082,7 @@ end
 -- and root signals, and connect Selection/ChangeHistory globals. VERBATIM port of
 -- Live.connectLiveMode (monolith :3099). Returns false (without arming) when live
 -- capture is disabled in settings.
-local function connectLiveMode(self: LiveModule__DARKLUA_TYPE_ah): boolean
+local function connectLiveMode(self: LiveModule__DARKLUA_TYPE_ai): boolean
 	if not Settings.getBool(SETTINGS.liveCaptureEnabled, true) then
 		return false
 	end
@@ -7065,7 +8151,7 @@ end
 
 -- VERBATIM port of Live.setupAfterBaseline (monolith :3272): arm live mode and seed
 -- revision/count from the materialized baseline result.
-local function setupAfterBaseline(self: LiveModule__DARKLUA_TYPE_ah, materialized: any?): ()
+local function setupAfterBaseline(self: LiveModule__DARKLUA_TYPE_ai, materialized: any?): ()
 	if self:connectLiveMode() then
 		self.currentRevision = (materialized and materialized.revision) or 0
 		self.liveInstanceCount = (materialized and (materialized.instances or materialized.totalItems)) or 0
@@ -7076,7 +8162,7 @@ end
 -- (monolith :3235): disconnect root/global/per-instance connections, clear every
 -- dirty/stamp/parent map, reset fingerprints, bump the tick generation so any running
 -- loop exits on its next guard check.
-local function teardown(self: LiveModule__DARKLUA_TYPE_ah): ()
+local function teardown(self: LiveModule__DARKLUA_TYPE_ai): ()
 	self.liveRunning = false
 	for _, conn in ipairs(self.rootConns) do
 		pcall(function()
@@ -7181,7 +8267,7 @@ Live = {
 }
 
 return Live
-end function __DARKLUA_BUNDLE_MODULES.o():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.o if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.o=v end return v.c end end do local function __modImpl()--!strict
+end function __DARKLUA_BUNDLE_MODULES.p():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.p if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.p=v end return v.c end end do local function __modImpl()--!strict
 -- CapturePanel — the Capture/Query panel VIEW, ported faithfully from the
 -- monolith's CapturePanel block (StudioStud.plugin.lua:1564-3346) MINUS the live
 -- engine and the capture serializer, which now live in their own modules (Live /
@@ -7223,14 +8309,14 @@ end function __DARKLUA_BUNDLE_MODULES.o():typeof(__modImpl())local v=__DARKLUA_B
 -- '_G no-op while torn down' / '_G re-wire identity' SelfTest assertions.)
 
 
-local Theme = __DARKLUA_BUNDLE_MODULES.e()
-local Ui = __DARKLUA_BUNDLE_MODULES.f()
-local Shell = __DARKLUA_BUNDLE_MODULES.i()
+local Theme = __DARKLUA_BUNDLE_MODULES.k()
+local Ui = __DARKLUA_BUNDLE_MODULES.l()
+local Shell = __DARKLUA_BUNDLE_MODULES.m()
 local Config = __DARKLUA_BUNDLE_MODULES.a()
-local Session = __DARKLUA_BUNDLE_MODULES.j()
-local AllowList = __DARKLUA_BUNDLE_MODULES.k()
-local Live = __DARKLUA_BUNDLE_MODULES.o()
-local Capture = __DARKLUA_BUNDLE_MODULES.m()
+local Session = __DARKLUA_BUNDLE_MODULES.f()
+local AllowList = __DARKLUA_BUNDLE_MODULES.h()
+local Live = __DARKLUA_BUNDLE_MODULES.p()
+local Capture = __DARKLUA_BUNDLE_MODULES.o()
 local GlobalApi = __DARKLUA_BUNDLE_MODULES.d()
 
 
@@ -7373,11 +8459,11 @@ end
 
 
 
-local CapturePanel = {} :: CapturePanelModule__DARKLUA_TYPE_ap
+local CapturePanel = {} :: CapturePanelModule__DARKLUA_TYPE_aq
 
 -- == build ==
 
-function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): PanelHandle__DARKLUA_TYPE_ao
+function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): PanelHandle__DARKLUA_TYPE_ap
 	local debugLog = ctx.settings.debugLog
 
 	local resultLabel = Ui.makeLabel(parent, "Latest capture: none", Theme.PAD, 72, Theme.muted)
@@ -7391,7 +8477,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	connectButton.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
 
 	-- The state record; fields assigned below before any handler can fire.
-	local panel: PanelState__DARKLUA_TYPE_aq = {
+	local panel: PanelState__DARKLUA_TYPE_ar = {
 		ctx = ctx,
 		parent = parent,
 		resultLabel = resultLabel,
@@ -7403,10 +8489,10 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 		pollGeneration = 0,
 		sessionHasBaseline = false,
 		pausedBaseline = { revision = 0, instanceCount = 0 },
-	} :: PanelState__DARKLUA_TYPE_aq
+	} :: PanelState__DARKLUA_TYPE_ar
 
 	-- VERBATIM port of CapturePanel.build's formatError (monolith :1594).
-	function panel.formatError(_self: PanelState__DARKLUA_TYPE_aq, prefix: string, result: any): string
+	function panel.formatError(_self: PanelState__DARKLUA_TYPE_ar, prefix: string, result: any): string
 		local message = prefix .. ": " .. tostring(result and result.error or "unknown error")
 		if result and result.statusCode then
 			message = message .. " (HTTP " .. tostring(result.statusCode) .. ")"
@@ -7419,7 +8505,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 
 	-- VERBATIM port of setConnectButtonState (monolith :1605). Three states, driven
 	-- by `syncing` and ctx.isConnected().
-	function panel.setConnectButtonState(self: PanelState__DARKLUA_TYPE_aq): ()
+	function panel.setConnectButtonState(self: PanelState__DARKLUA_TYPE_ar): ()
 		if self.syncing then
 			self.connectButton.Text = "Capturing..."
 			self.connectButton.BackgroundColor3 = Theme.teal
@@ -7438,7 +8524,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	-- VERBATIM port of statusFn (monolith :2077): ping the daemon, run the mutual
 	-- protocol handshake, set the connection LED/status, and (on success) prime the
 	-- write token. Returns the loose result shape the monolith returned.
-	function panel.statusFn(self: PanelState__DARKLUA_TYPE_aq): SyncResult__DARKLUA_TYPE_an
+	function panel.statusFn(self: PanelState__DARKLUA_TYPE_ar): SyncResult__DARKLUA_TYPE_ao
 		self.ctx.setStatus("syncing", "Checking daemon...")
 		local ok, result = self.ctx.transport.requestJson("GET", "/studio-stud/ping", nil)
 		if ok and result.ok then
@@ -7506,7 +8592,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 
 	-- VERBATIM port of syncFn (monolith :2065): gate to edit sessions; if live is
 	-- already running, schedule a tick baseline; else run the full connect+capture.
-	function panel.syncFn(self: PanelState__DARKLUA_TYPE_aq, options: any?): SyncResult__DARKLUA_TYPE_an
+	function panel.syncFn(self: PanelState__DARKLUA_TYPE_ar, options: any?): SyncResult__DARKLUA_TYPE_ao
 		if not Session.isEdit() then
 			return { ok = false, error = "studio_in_play_session" }
 		end
@@ -7523,7 +8609,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	-- start the single tick loop — handing it this panel's pausedBaseline ref and a
 	-- NON-NIL onReturnToEdit (the C2 cure: the monolith captured a not-yet-assigned
 	-- upvalue here). The onReturnToEdit closure routes back through `panel:onReturnToEdit()`.
-	function panel.startupConnectAndCapture(self: PanelState__DARKLUA_TYPE_aq): SyncResult__DARKLUA_TYPE_an
+	function panel.startupConnectAndCapture(self: PanelState__DARKLUA_TYPE_ar): SyncResult__DARKLUA_TYPE_ao
 		-- Edit-session gate: do not connect/capture while Studio is in a play session.
 		if not Session.isEdit() then
 			return { ok = false, error = "studio_in_play_session" }
@@ -7562,7 +8648,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	-- a short settle, if still in edit, re-arm live mode from the stashed pausedBaseline
 	-- and restart the tick loop (re-passing self:onReturnToEdit so the loop stays armed
 	-- across further transitions); else trigger a full rebaseline via the host.
-	function panel.onReturnToEdit(self: PanelState__DARKLUA_TYPE_aq): ()
+	function panel.onReturnToEdit(self: PanelState__DARKLUA_TYPE_ar): ()
 		task.wait(1.5)
 		if not Session.isEdit() then
 			return
@@ -7590,7 +8676,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	-- now typed). setBaseline persists this panel's sessionHasBaseline; reconnect is the
 	-- full connect handshake (the monolith's startupConnectAndCapture, used by
 	-- triggerRebaseline); isRunning is the panel-alive flag the tick loop checks.
-	local host: LiveHost__DARKLUA_TYPE_ak = {
+	local host: LiveHost__DARKLUA_TYPE_al = {
 		transport = {
 			requestJson = ctx.transport.requestJson,
 			requestBody = ctx.transport.requestBody,
@@ -7637,10 +8723,10 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 	-- returned on the handle AND wired into GlobalApi below — preserving the monolith's
 	-- `_G.StudioStud.Sync == handle.sync` identity (now `GlobalApi.syncFn == handle.sync`
 	-- under S2). They close over `panel` and route through its methods.
-	local syncEntry = function(options: any?): SyncResult__DARKLUA_TYPE_an
+	local syncEntry = function(options: any?): SyncResult__DARKLUA_TYPE_ao
 		return panel:syncFn(options)
 	end
-	local statusEntry = function(): SyncResult__DARKLUA_TYPE_an
+	local statusEntry = function(): SyncResult__DARKLUA_TYPE_ao
 		return panel:statusFn()
 	end
 
@@ -7672,7 +8758,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_aj): 
 			return panel.running
 		end,
 		pollGeneration = myGeneration,
-		onConnectRequested = function(): SyncResult__DARKLUA_TYPE_an
+		onConnectRequested = function(): SyncResult__DARKLUA_TYPE_ao
 			return panel:startupConnectAndCapture()
 		end,
 		destroy = destroy,
@@ -7693,7 +8779,7 @@ CapturePanel.descriptor = {
 }
 
 return CapturePanel
-end function __DARKLUA_BUNDLE_MODULES.p():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.p if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.p=v end return v.c end end end--!strict
+end function __DARKLUA_BUNDLE_MODULES.q():typeof(__modImpl())local v=__DARKLUA_BUNDLE_MODULES.cache.q if not v then v={c=__modImpl()}__DARKLUA_BUNDLE_MODULES.cache.q=v end return v.c end end end--!strict
 -- init — the plugin bootstrap and darklua bundle root. Ported faithfully from the
 -- monolith's top guard (StudioStud.plugin.lua:1-24) and its Bootstrap block
 -- (:4572-4613). This is the ONE file darklua resolves `require`s from to produce
@@ -7762,8 +8848,9 @@ local pluginHandle: Plugin = pluginGlobal
 local Config = __DARKLUA_BUNDLE_MODULES.a()
 local Registry = __DARKLUA_BUNDLE_MODULES.c()
 local GlobalApi = __DARKLUA_BUNDLE_MODULES.d()
-local Shell = __DARKLUA_BUNDLE_MODULES.i()
-local CapturePanel = __DARKLUA_BUNDLE_MODULES.p()
+local SelfTest = __DARKLUA_BUNDLE_MODULES.n()
+local Shell = __DARKLUA_BUNDLE_MODULES.m()
+local CapturePanel = __DARKLUA_BUNDLE_MODULES.q()
 
 local PLUGIN_VERSION = Config.PLUGIN_VERSION
 local WELCOME_VERSION = Config.WELCOME_VERSION
@@ -7771,19 +8858,9 @@ local SETTINGS = Config.SETTINGS
 
 -- == RunSelfTest binding ==
 
--- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`, and
--- `SelfTest.run` returns a BARE BOOLEAN (StudioStud.plugin.lua:4566 `return true`
--- on pass, :4569 `return false` on fail). The SelfTest module is the last rewrite
--- phase (P7) and is not yet present; until it lands the bootstrap publishes a typed
--- stand-in that returns `false` (the harness is unavailable, so it cannot pass) and
--- warns — matching the monolith's boolean return shape so any caller branching on
--- `_G.StudioStud.RunSelfTest()` as a boolean never silently breaks. When
--- SelfTest.luau exists this single binding is the only line that changes (require it
--- and pass `SelfTest.run`).
-local function runSelfTest(): boolean
-	warn("[StudioStud] SelfTest module is not installed in this build.")
-	return false
-end
+-- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`; `SelfTest.run`
+-- returns a bare boolean (`true` on pass, `false` on fail).
+local runSelfTest = SelfTest.run
 
 -- == Public interface ==
 

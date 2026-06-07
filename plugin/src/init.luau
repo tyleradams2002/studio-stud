@@ -66,6 +66,7 @@ local pluginHandle: Plugin = pluginGlobal
 local Config = require("@src/Config")
 local Registry = require("@src/Registry")
 local GlobalApi = require("@src/GlobalApi")
+local SelfTest = require("@src/SelfTest")
 local Shell = require("@src/ui/Shell")
 local CapturePanel = require("@src/ui/CapturePanel")
 
@@ -75,19 +76,9 @@ local SETTINGS = Config.SETTINGS
 
 -- == RunSelfTest binding ==
 
--- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`, and
--- `SelfTest.run` returns a BARE BOOLEAN (StudioStud.plugin.lua:4566 `return true`
--- on pass, :4569 `return false` on fail). The SelfTest module is the last rewrite
--- phase (P7) and is not yet present; until it lands the bootstrap publishes a typed
--- stand-in that returns `false` (the harness is unavailable, so it cannot pass) and
--- warns — matching the monolith's boolean return shape so any caller branching on
--- `_G.StudioStud.RunSelfTest()` as a boolean never silently breaks. When
--- SelfTest.luau exists this single binding is the only line that changes (require it
--- and pass `SelfTest.run`).
-local function runSelfTest(): boolean
-	warn("[StudioStud] SelfTest module is not installed in this build.")
-	return false
-end
+-- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`; `SelfTest.run`
+-- returns a bare boolean (`true` on pass, `false` on fail).
+local runSelfTest = SelfTest.run
 
 -- == Public interface ==
 
