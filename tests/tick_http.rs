@@ -621,6 +621,183 @@ fn tick_large_inline_delta_preserves_baseline() {
 }
 
 #[test]
+fn script_sources_while_serve_holds_wal() {
+    let storage = temp_storage("script_serve_wal");
+    ingest_fixture("baseline_script_binary.json", &storage);
+    let _serve = start_serve(&storage);
+    let list = run_cli(&["script-sources", "999001"], &storage);
+    assert_eq!(list.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(list.get("count").and_then(Value::as_i64), Some(2));
+
+    let utf8 = run_cli(
+        &["script-source", "999001", "Workspace/Folder/Utf8Module"],
+        &storage,
+    );
+    assert_eq!(utf8.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        utf8.get("sourceText").and_then(Value::as_str),
+        Some("return 1\n")
+    );
+
+    let binary = run_cli(
+        &["script-source", "999001", "Workspace/Folder/BinModule"],
+        &storage,
+    );
+    assert_eq!(binary.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        binary.get("sourceEncoding").and_then(Value::as_str),
+        Some("base64")
+    );
+    assert_eq!(
+        binary.get("sourceText").and_then(Value::as_str),
+        Some("AQIDBAU=")
+    );
+}
+
+#[test]
+fn play_edit_transition() {
+    let storage = temp_storage("play_edit");
+    ingest_baseline(&storage);
+    let serve = start_serve(&storage);
+    let fps = service_fps_from_cli(&storage);
+    let inst_fp = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+
+    let play_body = json!({
+        "placeId": "999001",
+        "sessionMode": "play",
+        "baseRevision": 0,
+        "serviceFingerprints": fps,
+        "ops": {
+            "upserted": [{
+                "id": "playonly",
+                "parentId": "ws",
+                "path": "Workspace/PlayOnly",
+                "name": "PlayOnly",
+                "className": "Part",
+                "depth": 1,
+                "childCount": 0,
+                "siblingIndex": 0,
+                "duplicateSiblingName": false,
+                "properties": {},
+                "attributes": {},
+                "tags": [],
+                "fp": inst_fp
+            }],
+            "removed": []
+        },
+        "bulkRef": null
+    });
+    let play_resp = post_tick(serve.port, &play_body);
+    assert_eq!(play_resp.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(play_resp.get("revision").and_then(Value::as_i64), Some(0));
+
+    let mut drift_fps = service_fps_from_cli(&storage);
+    drift_fps.insert("Workspace".to_string(), json!("0".repeat(64)));
+    let drift_play = json!({
+        "placeId": "999001",
+        "sessionMode": "play",
+        "baseRevision": 0,
+        "serviceFingerprints": drift_fps,
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": null
+    });
+    let drift_resp = post_tick(serve.port, &drift_play);
+    let drift = drift_resp
+        .get("driftServices")
+        .and_then(Value::as_array)
+        .expect("driftServices");
+    assert!(drift.iter().any(|v| v.as_str() == Some("Workspace")));
+
+    let mut edit_fps = service_fps_from_cli(&storage);
+    let ws_fp = edit_fps
+        .get("Workspace")
+        .and_then(Value::as_str)
+        .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
+    edit_fps.insert("Workspace".to_string(), json!(xor_fp_hex(ws_fp, inst_fp)));
+    let edit_body = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": 0,
+        "serviceFingerprints": edit_fps,
+        "ops": {
+            "upserted": [{
+                "id": "editpart",
+                "parentId": "ws",
+                "path": "Workspace/EditPart",
+                "name": "EditPart",
+                "className": "Part",
+                "depth": 1,
+                "childCount": 0,
+                "siblingIndex": 11,
+                "duplicateSiblingName": false,
+                "properties": {},
+                "attributes": {},
+                "tags": [],
+                "fp": inst_fp
+            }],
+            "removed": []
+        },
+        "bulkRef": null
+    });
+    let edit_resp = post_tick(serve.port, &edit_body);
+    assert_eq!(edit_resp.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(edit_resp.get("revision").and_then(Value::as_i64), Some(1));
+
+    let dump = run_cli(&["live-dump", "999001"], &storage);
+    let state = dump
+        .get("state")
+        .and_then(Value::as_array)
+        .expect("state");
+    assert!(
+        state.iter().any(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == "editpart")
+        }),
+        "edit tick must apply ops after play session"
+    );
+    assert!(
+        !state.iter().any(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == "playonly")
+        }),
+        "play-session op must not persist"
+    );
+}
+
+#[test]
+fn daemon_restart_reconnect() {
+    let storage = temp_storage("daemon_restart");
+    ingest_baseline(&storage);
+    let serve1 = start_serve(&storage);
+    let fps = service_fps_from_cli(&storage);
+    let keepalive = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": 0,
+        "serviceFingerprints": fps.clone(),
+        "ops": { "upserted": [], "removed": [] },
+        "bulkRef": null
+    });
+    let resp1 = post_tick(serve1.port, &keepalive);
+    assert_eq!(resp1.get("ok").and_then(Value::as_bool), Some(true));
+    drop(serve1);
+
+    let serve2 = start_serve(&storage);
+    let resp2 = post_tick(serve2.port, &keepalive);
+    assert_eq!(resp2.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        resp2.get("driftServices").and_then(Value::as_array).map(Vec::len),
+        Some(0)
+    );
+}
+
+#[test]
+fn drift_injection_converges() {
+    drift_recovery_full_baseline_preserves_other_services();
+}
+
 fn drift_recovery_full_baseline_preserves_other_services() {
     let storage = temp_storage("drift_recovery");
     ingest_fixture("two_service_baseline.json", &storage);
