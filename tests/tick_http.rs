@@ -437,3 +437,151 @@ fn fp_xor_invariant_via_tick() {
         Some(0)
     );
 }
+
+fn xor_fp_hex(a: &str, b: &str) -> String {
+    let mut out = [0u8; 32];
+    for i in 0..32 {
+        out[i] = u8::from_str_radix(&a[i * 2..i * 2 + 2], 16).expect("hex digit")
+            ^ u8::from_str_radix(&b[i * 2..i * 2 + 2], 16).expect("hex digit");
+    }
+    out.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn post_apply_service_fps(
+    storage: &Path,
+    batch: &[Value],
+) -> serde_json::Map<String, Value> {
+    let mut fps = service_fps_from_cli(storage);
+    for entry in batch {
+        let fp = entry.get("fp").and_then(Value::as_str).expect("fp");
+        let path = entry.get("path").and_then(Value::as_str).expect("path");
+        let service = path.split('/').next().expect("service segment");
+        let current = fps
+            .get(service)
+            .and_then(Value::as_str)
+            .unwrap_or("0000000000000000000000000000000000000000000000000000000000000000");
+        fps.insert(service.to_string(), json!(xor_fp_hex(current, fp)));
+    }
+    fps
+}
+
+fn current_revision(storage: &Path) -> i64 {
+    run_cli(&["live-dump", "999001"], storage)
+        .get("meta")
+        .and_then(|m| m.get("revision"))
+        .and_then(Value::as_i64)
+        .expect("revision")
+}
+
+fn make_fat_upsert(id: &str, sibling_index: i64, pad_bytes: usize) -> Value {
+    let pad = "x".repeat(pad_bytes);
+    json!({
+        "id": id,
+        "parentId": "ws",
+        "path": format!("Workspace/{id}"),
+        "name": id,
+        "className": "Part",
+        "depth": 1,
+        "childCount": 0,
+        "siblingIndex": sibling_index,
+        "duplicateSiblingName": false,
+        "properties": { "pad": pad },
+        "attributes": {},
+        "tags": [],
+        "fp": format!("{:064x}", sibling_index as u64)
+    })
+}
+
+#[test]
+fn tick_large_inline_delta_preserves_baseline() {
+    let storage = temp_storage("large_inline");
+    let baseline = ingest_baseline(&storage);
+    let baseline_count = baseline
+        .get("instances")
+        .and_then(Value::as_u64)
+        .expect("baseline instances") as i64;
+    let serve = start_serve(&storage);
+
+    let mut batch: Vec<Value> = Vec::new();
+    let mut batch_bytes = 0usize;
+    let pad_per_inst = 3500usize;
+    let mut inst_index = 0i64;
+    let send_batch = |batch: &[Value]| {
+        let fps = post_apply_service_fps(&storage, batch);
+        let body = json!({
+            "placeId": "999001",
+            "sessionMode": "edit",
+            "baseRevision": current_revision(&storage),
+            "serviceFingerprints": fps,
+            "ops": { "upserted": batch, "removed": [] },
+            "bulkRef": null
+        });
+        let resp = post_tick(serve.port, &body);
+        assert_eq!(resp.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            resp.get("driftServices").and_then(Value::as_array).map(Vec::len),
+            Some(0),
+            "inline capped batch should not drift when fingerprints are post-ops"
+        );
+    };
+
+    loop {
+        let inst_id = format!("bulk_{inst_index}");
+        let entry = make_fat_upsert(&inst_id, inst_index + 10, pad_per_inst);
+        let entry_len = entry.to_string().len();
+        if !batch.is_empty() && batch_bytes + entry_len > 240_000 {
+            send_batch(&batch);
+            batch = Vec::new();
+            batch_bytes = 0;
+        }
+        batch.push(entry);
+        batch_bytes += entry_len;
+        inst_index += 1;
+        if inst_index >= 80 {
+            break;
+        }
+    }
+
+    if !batch.is_empty() {
+        let fps = post_apply_service_fps(&storage, &batch);
+        let body = json!({
+            "placeId": "999001",
+            "sessionMode": "edit",
+            "baseRevision": current_revision(&storage),
+            "serviceFingerprints": fps,
+            "ops": { "upserted": batch, "removed": [] },
+            "bulkRef": null
+        });
+        let resp = post_tick(serve.port, &body);
+        assert_eq!(resp.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            resp.get("driftServices").and_then(Value::as_array).map(Vec::len),
+            Some(0)
+        );
+    }
+
+    let dump = run_cli(&["live-dump", "999001"], &storage);
+    let final_count = dump
+        .get("state")
+        .and_then(Value::as_array)
+        .map(|rows| rows.len() as i64)
+        .expect("state rows");
+    assert_eq!(
+        final_count,
+        baseline_count + inst_index,
+        "large inline deltas must add instances, not replace the place"
+    );
+
+    let state = dump
+        .get("state")
+        .and_then(Value::as_array)
+        .expect("state rows");
+    assert!(
+        state.iter().any(|row| {
+            row.get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id == "dup_a")
+        }),
+        "baseline instance dup_a must survive large inline delta batches"
+    );
+}

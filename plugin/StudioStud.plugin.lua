@@ -2385,6 +2385,22 @@ function CapturePanel.build(parent, ctx)
 		return "bulk"
 	end
 
+	function Live.tickPayloadByteLen(upserted, removed)
+		local body = Live.buildTickBody(
+			game.PlaceId,
+			"edit",
+			Live.currentRevision,
+			Live.serviceFingerprintsWire(),
+			{ upserted = upserted, removed = removed },
+			nil
+		)
+		local ok, encoded = Transport.safeEncode(body, "tick-probe")
+		if ok then
+			return #encoded
+		end
+		return math.huge
+	end
+
 	function Live.scheduleDriftRecovery(driftServices, dirtyUpsert, dirtyRemoved)
 		local preservedUpsert = {}
 		for inst, _ in pairs(dirtyUpsert) do
@@ -2683,7 +2699,7 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	-- Build one full upserted entry for inst by reading the live tree
-	local function buildUpsertedEntry(inst)
+	local function buildUpsertedEntry(inst, applyFp)
 		local id = instanceIdByRef[inst]
 		if not id then
 			return nil
@@ -2719,6 +2735,7 @@ function CapturePanel.build(parent, ctx)
 		end
 		local segment = inst.Name .. "[" .. siblingIndex .. "]"
 		local path = parentPath == "" and segment or (parentPath .. "/" .. segment)
+		local oldPath = pathByRef[inst]
 		pathByRef[inst] = path
 		local _, slashCount = string.gsub(path, "/", "")
 		local ownOk, ownChildren = pcall(function()
@@ -2749,9 +2766,11 @@ function CapturePanel.build(parent, ctx)
 			entry.source = src
 			entry.sourceEncoding = srcEnc or "utf8"
 		end
-		local oldPath = pathByRef[inst]
-		Live.applyFpUpsert(id, entry, oldPath)
-		return entry
+		entry.fp = Live.hashInstance(entry)
+		if applyFp ~= false then
+			Live.applyFpUpsert(id, entry, oldPath)
+		end
+		return entry, oldPath
 	end
 
 	function Live.collectOpsFromDirty()
@@ -2773,7 +2792,6 @@ function CapturePanel.build(parent, ctx)
 					p = p.Parent
 				end
 				table.insert(upsertList, { inst = inst, depth = depth })
-				sentUpsertStamps[inst] = Live.upsertStamp[inst]
 			end
 		end
 		table.sort(upsertList, function(a, b)
@@ -2783,9 +2801,28 @@ function CapturePanel.build(parent, ctx)
 		for _, item in ipairs(upsertList) do
 			local inst = item.inst
 			if inst.Parent ~= nil then
-				local entry = buildUpsertedEntry(inst)
+				local entry, oldPath = buildUpsertedEntry(inst, false)
 				if entry then
+					local prevFp = Live.instFp[entry.id]
+					Live.applyFpUpsert(entry.id, entry, oldPath)
+					local trialUpserted = table.create(#upserted + 1)
+					for i = 1, #upserted do
+						trialUpserted[i] = upserted[i]
+					end
+					trialUpserted[#upserted + 1] = entry
+					if Live.tickPayloadByteLen(trialUpserted, removed) > TICK_INLINE_THRESHOLD then
+						Live.applyFpRemove(entry.id, entry.path)
+						if prevFp then
+							Live.applyFpUpsert(
+								entry.id,
+								{ fp = prevFp, path = oldPath or entry.path },
+								oldPath
+							)
+						end
+						break
+					end
 					table.insert(upserted, entry)
+					sentUpsertStamps[inst] = Live.upsertStamp[inst]
 				else
 					local id = instanceIdByRef[inst]
 					if id then
@@ -3019,12 +3056,12 @@ function CapturePanel.build(parent, ctx)
 		end
 
 		local mode = sessionMode or (Session.isEdit() and "edit" or "play")
-		local serviceFingerprints = Live.serviceFingerprintsWire()
 		local bulkRef = Live.pendingBulkRef
 		local upserted, removed, sentUpsertStamps, sentRemovedStamps = {}, {}, {}, {}
 		if mode == "edit" and not bulkRef then
 			upserted, removed, sentUpsertStamps, sentRemovedStamps = Live.collectOpsFromDirty()
 		end
+		local serviceFingerprints = Live.serviceFingerprintsWire()
 		local ops = { upserted = upserted, removed = removed }
 		local body = Live.buildTickBody(
 			game.PlaceId,
@@ -3040,21 +3077,6 @@ function CapturePanel.build(parent, ctx)
 			finish()
 			return
 		end
-		if mode == "edit" and not bulkRef and Live.classifyPayload(#encoded) == "bulk" then
-			local inlineSnapshot = Live.buildBaselineSnapshot("tick-inline-spill")
-			inlineSnapshot.instances = upserted
-			local okSpill, spillText = Transport.safeEncode(inlineSnapshot, "tick-spill")
-			if okSpill then
-				local okBulk, bulkResult = Live.uploadTickBulk(spillText, "tick-spill")
-				if okBulk and bulkResult and bulkResult.syncId then
-					bulkRef = bulkResult.syncId
-					body.bulkRef = bulkRef
-					body.ops = { upserted = {}, removed = removed }
-					okEnc, encoded = Transport.safeEncode(body, "tick-bulkref")
-				end
-			end
-		end
-
 		local tickPath = "/studio-stud/tick?" .. Live.tickQuerySuffix()
 		local ok, result = ctx.transport.requestJson("POST", tickPath, body)
 		if ok and result and result.ok then
@@ -4312,6 +4334,49 @@ function SelfTest.run()
 			)
 			SelfTest.assert("classifyPayload inline", live.classifyPayload(1024) == "inline", failures)
 			SelfTest.assert("classifyPayload bulk", live.classifyPayload(300000) == "bulk", failures)
+
+			live.resetFingerprints()
+			live.applyFpUpsert("ws", {
+				id = "ws",
+				path = "Workspace",
+				fp = live.hashInstance({
+					id = "ws",
+					path = "Workspace",
+					name = "Workspace",
+					className = "Workspace",
+					depth = 0,
+					siblingIndex = 0,
+					childCount = 0,
+					duplicateSiblingName = false,
+					properties = {},
+					attributes = {},
+					tags = {},
+				}),
+			}, nil)
+			local fpPreOp = live.serviceFingerprintsWire()
+			live.applyFpUpsert("p1", {
+				id = "p1",
+				path = "Workspace/Part[1]",
+				fp = live.hashInstance({
+					id = "p1",
+					path = "Workspace/Part[1]",
+					name = "Part",
+					className = "Part",
+					depth = 1,
+					siblingIndex = 1,
+					childCount = 0,
+					duplicateSiblingName = false,
+					properties = {},
+					attributes = {},
+					tags = {},
+				}),
+			}, nil)
+			local fpPostOp = live.serviceFingerprintsWire()
+			SelfTest.assert(
+				"edit tick fingerprints are post-ops",
+				fpPreOp.Workspace ~= fpPostOp.Workspace,
+				failures
+			)
 			local dirtyUpsert = { [game:GetService("Workspace")] = true }
 			local dirtyRemoved = { z = true }
 			local recovery = live.scheduleDriftRecovery({ "Workspace" }, dirtyUpsert, dirtyRemoved)
