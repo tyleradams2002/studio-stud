@@ -402,18 +402,10 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 	portBox.FocusLost:Connect(persistEndpoint)
 	y += 66
 
+	-- Live capture is mandatory (always on) — no user toggle. The label + note remain as
+	-- an explanation of the automatic behavior.
 	Ui.makeSectionLabel(scroll, "Live capture", y)
 	y += 18
-	local liveEnabled = Settings.getBool(SETTINGS.liveCaptureEnabled, true)
-	local liveButton = Ui.makeSecondaryButton(scroll, if liveEnabled then "Live capture: ON" else "Live capture: OFF")
-	liveButton.Position = UDim2.fromOffset(Theme.PAD, y)
-	liveButton.Size = UDim2.new(1, -Theme.PAD * 2, 0, 32)
-	liveButton.MouseButton1Click:Connect(function()
-		liveEnabled = not liveEnabled
-		Settings.setBool(SETTINGS.liveCaptureEnabled, liveEnabled)
-		liveButton.Text = if liveEnabled then "Live capture: ON" else "Live capture: OFF"
-	end)
-	y += 40
 	local liveNote = Ui.makeLabel(
 		scroll,
 		"Auto-starts on plugin load. Signals stream changes to the daemon each tick and self-heal on drift. Reconnects automatically if the daemon restarts.",
@@ -452,54 +444,6 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 		debugButton.Text = if debugEnabled then "Debug logs: ON" else "Debug logs: OFF"
 	end)
 	y += 48
-
-	Ui.makeSectionLabel(scroll, "Tabs", y)
-	y += 18
-	local tabsList = Instance.new("Frame")
-	tabsList.Name = "TabsList"
-	tabsList.BackgroundTransparency = 1
-	tabsList.Position = UDim2.fromOffset(Theme.PAD, y)
-	tabsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 28)
-	tabsList.Parent = scroll
-
-	local function renderPanelToggles()
-		for _, child in ipairs(tabsList:GetChildren()) do
-			child:Destroy()
-		end
-		local rowY = 0
-		for _, item in ipairs(Registry.list()) do
-			local row = Instance.new("Frame")
-			row.BackgroundTransparency = 1
-			row.Size = UDim2.new(1, 0, 0, 28)
-			row.Position = UDim2.fromOffset(0, rowY)
-			row.Parent = tabsList
-
-			local nameLabel = Instance.new("TextLabel")
-			nameLabel.BackgroundTransparency = 1
-			nameLabel.Size = UDim2.fromScale(0.65, 1)
-			nameLabel.FontFace = Theme.UI_FONT
-			nameLabel.TextColor3 = Theme.body
-			nameLabel.TextSize = 13
-			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-			nameLabel.Text = item.title
-			nameLabel.Parent = row
-
-			local panelId = item.id
-			local toggle = Ui.makeSecondaryButton(row, if item.enabled then "Enabled" else "Disabled")
-			toggle.Size = UDim2.fromScale(0.32, 1)
-			toggle.Position = UDim2.fromScale(0.68, 0)
-			toggle.MouseButton1Click:Connect(function()
-				local newValue = not Settings.getPanelEnabled(panelId, item.defaultEnabled ~= false)
-				Registry.setEnabled(panelId, newValue)
-				renderPanelToggles()
-			end)
-			toggle.Parent = row
-			rowY += 32
-		end
-		tabsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, math.max(rowY, 28))
-	end
-	renderPanelToggles()
-	y += 160
 
 	Ui.makeLabel(
 		scroll,
