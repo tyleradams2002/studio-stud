@@ -87,6 +87,7 @@ export type ShellModule = {
 	settingsFrame: Frame?,
 	statusCard: StatusCard?,
 	connected: boolean,
+	autoConnectGeneration: number,
 
 	-- Build the panel context every panel's build receives.
 	makeCtx: () -> ShellContext,
@@ -124,6 +125,7 @@ Shell.tabStrip = nil
 Shell.settingsFrame = nil
 Shell.statusCard = nil
 Shell.connected = false
+Shell.autoConnectGeneration = 0
 
 -- == Widget + toolbar bootstrap (verbatim port, runs at module load) ==
 
@@ -692,22 +694,51 @@ end
 -- == Widget-enabled hook ==
 
 function Shell.onWidgetEnabled(): ()
-	local selectedId = Registry.selected()
-	if selectedId then
-		local handle = Registry.getHandle(selectedId)
-		if handle and handle.onConnectRequested then
-			handle.onConnectRequested()
-		end
-	else
-		local firstId = Registry.firstEnabledId()
-		if firstId then
-			Registry.select(firstId)
-			local handle = Registry.getHandle(firstId)
+	Shell.autoConnectGeneration += 1
+	local myGeneration = Shell.autoConnectGeneration
+
+	local function requestConnect(): any
+		local selectedId = Registry.selected()
+		if selectedId then
+			local handle = Registry.getHandle(selectedId)
 			if handle and handle.onConnectRequested then
-				handle.onConnectRequested()
+				return handle.onConnectRequested()
+			end
+		else
+			local firstId = Registry.firstEnabledId()
+			if firstId then
+				Registry.select(firstId)
+				local handle = Registry.getHandle(firstId)
+				if handle and handle.onConnectRequested then
+					return handle.onConnectRequested()
+				end
 			end
 		end
+		return nil
 	end
+
+	local result = requestConnect()
+	if result and result.ok then
+		return
+	end
+
+	-- Daemon may start after the plugin; retry with backoff without blocking the frame.
+	task.spawn(function()
+		local delays = { 2, 2, 2, 2, 2 }
+		for _, delay in delays do
+			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
+				return
+			end
+			task.wait(delay)
+			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
+				return
+			end
+			local retryResult = requestConnect()
+			if retryResult and retryResult.ok then
+				return
+			end
+		end
+	end)
 end
 
 return Shell
