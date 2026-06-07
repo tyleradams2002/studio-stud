@@ -166,6 +166,8 @@ pub(crate) enum Commands {
         #[command(flatten)]
         common: CommonArgs,
     },
+    /// Gracefully stop the running Studio Stud daemon.
+    Stop,
     /// Deprecated alias for `serve`.
     #[command(hide = true)]
     Daemon {
@@ -417,6 +419,7 @@ fn dispatch(cli: Cli) -> Result<()> {
             &common,
         ),
         Some(Commands::Capture { timeout, no_wait }) => cmd_capture(timeout, no_wait),
+        Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Update { check }) => cmd_update(check),
         Some(Commands::Serve {
             host,
@@ -797,6 +800,32 @@ fn cmd_update(check: bool) -> Result<()> {
     } else {
         crate::update::run_on_serve(crate::update::LATEST_URL, true);
     }
+    Ok(())
+}
+
+/// Gracefully stop the running daemon: read its lock port + the local write token, POST the
+/// authed shutdown, and confirm the lock is gone. Reuses the same path the installer uses to
+/// stop the daemon before an update.
+fn cmd_stop() -> Result<()> {
+    let Some(port) = crate::setup_core::install::read_daemon_lock_port() else {
+        println!("Studio Stud daemon is not running.");
+        return Ok(());
+    };
+    let token = std::fs::read_to_string(crate::setup_core::config::write_token_path())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(anyhow!(
+            "write token not found — cannot authenticate shutdown"
+        ));
+    }
+    crate::setup_core::install::stop_daemon_graceful(&token, port)?;
+    if crate::setup_core::install::read_daemon_lock_port().is_some() {
+        return Err(anyhow!(
+            "daemon did not stop (still on port {port}); force-stop with: Get-Process studio-stud | Stop-Process"
+        ));
+    }
+    println!("Studio Stud daemon stopped.");
     Ok(())
 }
 
