@@ -5,13 +5,23 @@
 -- Run:
 --   lune run plugin/src/__tests__/ConnectionUx.spec.luau
 
+-- testRoblox only injects `game`; the UI modules also build with these value types at
+-- require-time, so inject them too. selene's std-lib lint flags reassigning each global
+-- and its inline allow covers only the next statement, hence one allow per write.
 local roblox = require("@lune/roblox")
+-- selene: allow(incorrect_standard_library_use)
 Color3 = roblox.Color3
+-- selene: allow(incorrect_standard_library_use)
 Font = roblox.Font
+-- selene: allow(incorrect_standard_library_use)
 Enum = roblox.Enum
+-- selene: allow(incorrect_standard_library_use)
 UDim2 = roblox.UDim2
+-- selene: allow(incorrect_standard_library_use)
 Vector2 = roblox.Vector2
+-- selene: allow(incorrect_standard_library_use)
 Instance = roblox.Instance
+-- selene: allow(incorrect_standard_library_use)
 DockWidgetPluginGuiInfo = {
 	new = function(_a: any, _b: any, _c: any, _d: any, _e: any, _f: any, _g: any): any
 		return {}
