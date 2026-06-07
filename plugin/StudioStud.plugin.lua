@@ -983,7 +983,7 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 
 
 
-local PLUGIN_VERSION = "0.4.27"
+local PLUGIN_VERSION = "0.4.28"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -5360,7 +5360,13 @@ local label = Instance.new("TextLabel")
 			end
 		end
 	end
-	SelfTest.assert("idempotent Shell.build tab count", tabCountAgain == 1, failures)
+	-- A single enabled panel hides the tab strip (0 tab buttons); a rebuild stays
+	-- idempotent — same count, no stacked/duplicate tabs.
+	SelfTest.assert(
+		"single-panel build hides tab strip (idempotent)",
+		tabCountAgain == 0 and tabCountAgain == tabCount,
+		failures
+	)
 	SelfTest.assert(
 		"no ghost selftest tabs",
 		not string.find(table.concat(Registry.snapshotIds(), ","), "__selftest"),

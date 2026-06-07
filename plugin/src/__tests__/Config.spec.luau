@@ -19,7 +19,7 @@ local function check(label: string, cond: boolean)
 end
 
 -- == Version / protocol handshake (must not drift) ==
-check("PLUGIN_VERSION 0.4.27", Config.PLUGIN_VERSION == "0.4.27")
+check("PLUGIN_VERSION 0.4.28", Config.PLUGIN_VERSION == "0.4.28")
 check("PROTOCOL_VERSION 2", Config.PROTOCOL_VERSION == 2)
 check("MIN_DAEMON_PROTOCOL_VERSION 2", Config.MIN_DAEMON_PROTOCOL_VERSION == 2)
 

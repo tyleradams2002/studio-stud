@@ -393,7 +393,13 @@ function SelfTest.run(): boolean
 			end
 		end
 	end
-	SelfTest.assert("idempotent Shell.build tab count", tabCountAgain == 1, failures)
+	-- A single enabled panel hides the tab strip (0 tab buttons); a rebuild stays
+	-- idempotent — same count, no stacked/duplicate tabs.
+	SelfTest.assert(
+		"single-panel build hides tab strip (idempotent)",
+		tabCountAgain == 0 and tabCountAgain == tabCount,
+		failures
+	)
 	SelfTest.assert(
 		"no ghost selftest tabs",
 		not string.find(table.concat(Registry.snapshotIds(), ","), "__selftest"),
