@@ -1,8 +1,12 @@
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Child, Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -60,6 +64,152 @@ fn dump_compare_parts(dump: &Value) -> (Value, String) {
             .expect("fingerprint")
             .to_string(),
     )
+}
+
+fn pick_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind ephemeral port")
+        .local_addr()
+        .expect("local addr")
+        .port()
+}
+
+fn http_post_tick(port: u16, body: &Value) -> Value {
+    let body_str = body.to_string();
+    let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
+    stream.set_read_timeout(Some(Duration::from_secs(30))).ok();
+    let req = format!(
+        "POST /studio-stud/tick?placeId=999001 HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_str}",
+        body_str.len()
+    );
+    stream.write_all(req.as_bytes()).expect("write");
+    let mut buf = Vec::new();
+    stream.read_to_end(&mut buf).expect("read");
+    let response = String::from_utf8_lossy(&buf);
+    let body_json = response.split("\r\n\r\n").nth(1).unwrap_or("");
+    serde_json::from_str(body_json.trim()).expect("tick json")
+}
+
+struct ServeGuard {
+    child: Child,
+    port: u16,
+}
+
+impl Drop for ServeGuard {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn start_serve(storage: &Path) -> ServeGuard {
+    let port = pick_port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_studio-stud"))
+        .args([
+            "serve",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port.to_string(),
+            "--storage-root",
+        ])
+        .arg(storage)
+        .current_dir(repo_root())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn serve");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect");
+        let req = format!(
+            "GET /studio-stud/ping HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+        );
+        stream.write_all(req.as_bytes()).ok();
+        let mut buf = Vec::new();
+        stream.read_to_end(&mut buf).ok();
+        if String::from_utf8_lossy(&buf).contains("\"ok\":true") {
+            return ServeGuard { child, port };
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    let _ = child.kill();
+    panic!("serve did not become ready");
+}
+
+fn service_fps(storage: &Path) -> serde_json::Map<String, Value> {
+    let dump = run_cli(&["live-services", "999001"], storage);
+    let services = dump
+        .get("services")
+        .and_then(Value::as_object)
+        .expect("services");
+    let mut out = serde_json::Map::new();
+    for (name, entry) in services {
+        let fp = entry
+            .get("fingerprint")
+            .and_then(Value::as_str)
+            .expect("fingerprint");
+        out.insert(name.clone(), json!(fp));
+    }
+    out
+}
+
+#[test]
+fn structural_convergence_via_tick() {
+    let storage = temp_storage("tick_convergence");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let serve = start_serve(&storage);
+    let delta: Value =
+        serde_json::from_slice(&fs::read(fixture("delta_struct.json")).unwrap()).unwrap();
+    let ops = delta.get("ops").cloned().expect("ops");
+    let inst_fp = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+    let mut upserted = ops
+        .get("upserted")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    for entry in &mut upserted {
+        if let Some(obj) = entry.as_object_mut() {
+            obj.insert("fp".to_string(), json!(inst_fp));
+        }
+    }
+    let fps = service_fps(&storage);
+    let body = json!({
+        "placeId": "999001",
+        "sessionMode": "edit",
+        "baseRevision": 0,
+        "serviceFingerprints": fps,
+        "ops": { "upserted": upserted, "removed": ops.get("removed").cloned().unwrap_or(json!([])) },
+        "bulkRef": null
+    });
+    let resp = http_post_tick(serve.port, &body);
+    assert_eq!(resp.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(resp.get("revision").and_then(Value::as_i64), Some(1));
+
+    let dump_delta = run_cli(&["live-dump", "999001"], &storage);
+    let storage_full = temp_storage("tick_convergence_full");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("full_after.json").to_str().unwrap(),
+        ],
+        &storage_full,
+    );
+    let dump_full = run_cli(&["live-dump", "999001"], &storage_full);
+    let (state_delta, _) = dump_compare_parts(&dump_delta);
+    let (state_full, _) = dump_compare_parts(&dump_full);
+    assert_eq!(
+        state_delta, state_full,
+        "tick delta must converge to full ingest (instance rows)"
+    );
 }
 
 #[test]
@@ -511,6 +661,50 @@ fn non_script_no_source_row() {
     let list = run_cli(&["script-sources", "999001"], &storage);
     assert_eq!(list.get("ok").and_then(Value::as_bool), Some(true));
     assert_eq!(list.get("count").and_then(Value::as_i64), Some(0));
+}
+
+#[test]
+fn script_source_binary_round_trip() {
+    let storage = temp_storage("script_bin");
+    run_cli(
+        &[
+            "ingest",
+            "--raw",
+            fixture("baseline_script_binary.json").to_str().unwrap(),
+        ],
+        &storage,
+    );
+    let utf8 = run_cli(
+        &["script-source", "999001", "Workspace/Folder/Utf8Module"],
+        &storage,
+    );
+    assert_eq!(utf8.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        utf8.get("sourceEncoding").and_then(Value::as_str),
+        Some("utf8")
+    );
+    assert_eq!(
+        utf8.get("sourceText").and_then(Value::as_str),
+        Some("return 1\n")
+    );
+
+    let binary = run_cli(
+        &["script-source", "999001", "Workspace/Folder/BinModule"],
+        &storage,
+    );
+    assert_eq!(binary.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(
+        binary.get("sourceEncoding").and_then(Value::as_str),
+        Some("base64")
+    );
+    assert_eq!(
+        binary.get("sourceText").and_then(Value::as_str),
+        Some("AQIDBAU=")
+    );
+
+    let list = run_cli(&["script-sources", "999001"], &storage);
+    assert_eq!(list.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(list.get("count").and_then(Value::as_i64), Some(2));
 }
 
 #[test]

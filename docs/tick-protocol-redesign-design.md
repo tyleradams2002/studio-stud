@@ -1,6 +1,6 @@
 # Studio Stud — Core Sync Redesign (the `/tick` protocol)
 
-**Status:** Design — **complete and ready for review.** 15 decisions (D1–D15) locked via grill sessions 2026-06-05, log-validated. Not yet implemented; the only remaining open items are measure-during-implementation tuning values (§11).
+**Status:** **Implemented** (protocol v2, 0.4.20). 15 decisions (D1–D15) locked via grill sessions 2026-06-05, log-validated. Measured soak numbers: see **Measured (Phase 6)** below.
 **Scope:** The live communication core between the Studio plugin and the Rust daemon.
 **Goal:** Make the core *faster*, *lighter on the editor*, and *simpler* — collapse five
 overlapping traffic forms into one heartbeat packet, and remove the implementation waste
@@ -377,6 +377,23 @@ behind the v2 protocol bump (all land together at cutover).
 
 ---
 
+---
+
+## Measured (Phase 6)
+
+Post-soak numbers from a real Studio edit session (fill after human soak):
+
+| Metric | Target | Measured |
+|---|---|---|
+| `capture/complete` (full baseline via `/tick/bulk`) | < 1 s p50 | **TODO** ms |
+| Delta tick (`/tick` with ops) p50 | < 50 ms | **TODO** ms |
+| Idle tick cost (empty keepalive) | cheap / no DB write | **TODO** ms |
+| Drift frequency | telemetry-driven | **TODO** events / session |
+| Drift recovery bulk size | telemetry-driven | **TODO** instances avg |
+
+Run `scripts/soak-tick.ps1` after soak to parse `daemon.log` and print drift telemetry summary.
+
+---
+
 _Decisions D1–D15 locked 2026-06-05 across multiple grill sessions; log-validated against a real
-42h daemon.log. See project memory `tick-protocol-redesign`. The only open items are the §11
-measure-during-implementation tuning values._
+42h daemon.log. See project memory `tick-protocol-redesign`._

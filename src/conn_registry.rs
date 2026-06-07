@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -20,6 +21,8 @@ struct PlaceHandle {
 pub struct ConnRegistry {
     inner: Mutex<HashMap<String, Arc<PlaceHandle>>>,
     idle_timeout: Duration,
+    writer_acquires: AtomicU64,
+    reader_acquires: AtomicU64,
 }
 
 impl ConnRegistry {
@@ -27,7 +30,17 @@ impl ConnRegistry {
         Arc::new(Self {
             inner: Mutex::new(HashMap::new()),
             idle_timeout: DEFAULT_IDLE_TIMEOUT,
+            writer_acquires: AtomicU64::new(0),
+            reader_acquires: AtomicU64::new(0),
         })
+    }
+
+    pub fn writer_acquire_count(&self) -> u64 {
+        self.writer_acquires.load(Ordering::SeqCst)
+    }
+
+    pub fn reader_acquire_count(&self) -> u64 {
+        self.reader_acquires.load(Ordering::SeqCst)
     }
 
     fn key(db_path: &Path) -> String {
@@ -69,6 +82,7 @@ impl ConnRegistry {
     where
         F: FnOnce(&mut Connection) -> Result<T>,
     {
+        self.writer_acquires.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(db_path)?;
         *handle
             .last_used
@@ -86,6 +100,7 @@ impl ConnRegistry {
     where
         F: FnOnce(&Connection) -> Result<T>,
     {
+        self.reader_acquires.fetch_add(1, Ordering::SeqCst);
         let handle = self.handle(db_path)?;
         *handle
             .last_used

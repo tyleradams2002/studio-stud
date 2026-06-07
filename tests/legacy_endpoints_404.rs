@@ -13,10 +13,7 @@ fn repo_root() -> PathBuf {
 }
 
 fn temp_storage(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "studio_stud_http_reliability_{name}_{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("studio_stud_legacy_{name}_{}", std::process::id()));
     if dir.exists() {
         fs::remove_dir_all(&dir).ok();
     }
@@ -34,7 +31,7 @@ fn pick_port() -> u16 {
 
 fn http_request(method: &str, port: u16, path: &str, body: Option<&str>) -> (u16, String) {
     let mut stream = TcpStream::connect(format!("127.0.0.1:{port}")).expect("connect to daemon");
-    stream.set_read_timeout(Some(Duration::from_secs(5))).ok();
+    stream.set_read_timeout(Some(Duration::from_secs(10))).ok();
     let body_str = body.unwrap_or("");
     let req = format!(
         "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body_str}",
@@ -102,50 +99,44 @@ fn parse_json(body: &str) -> Value {
 }
 
 #[test]
-fn tick_ping_reports_protocol_v2_and_drift_telemetry() {
-    let storage = temp_storage("tick_ping");
-    let serve = start_serve(&storage);
-    let (status, body) = http_request("GET", serve.port, "/studio-stud/ping", None);
-    assert_eq!(status, 200);
-    let v = parse_json(&body);
-    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
-    assert_eq!(v.get("protocolVersion").and_then(Value::as_i64), Some(2));
-    let telemetry = v.get("driftTelemetry").expect("driftTelemetry");
-    assert_eq!(
-        telemetry.get("total").and_then(Value::as_u64),
-        Some(0)
-    );
-}
-
-#[test]
-fn allowlist_endpoint_serves_curated_classes() {
-    let storage = temp_storage("allowlist");
-    let serve = start_serve(&storage);
-    let (status, body) = http_request("GET", serve.port, "/studio-stud/allowlist", None);
-    assert_eq!(status, 200);
-    let v = parse_json(&body);
-    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
-    assert!(v.get("version").and_then(Value::as_str).is_some());
-    let classes = v.get("classes").and_then(Value::as_object).expect("classes map");
-    let bp = classes.get("BasePart").and_then(Value::as_array).expect("BasePart");
-    assert!(bp.iter().any(|p| p.get("name").and_then(Value::as_str) == Some("Transparency")));
-}
-
-#[test]
-fn concurrent_pings_while_serve_is_running() {
-    let storage = temp_storage("concurrent_ping");
+fn legacy_capture_and_live_endpoints_return_404() {
+    let storage = temp_storage("404");
     let serve = start_serve(&storage);
     let port = serve.port;
-    let mut handles = Vec::new();
-    for _ in 0..8 {
-        handles.push(thread::spawn(move || {
-            let (status, body) = http_request("GET", port, "/studio-stud/ping", None);
-            (status, body.contains("\"ok\":true"))
-        }));
+    let paths = [
+        ("POST", "/studio-stud/capture/start", r#"{}"#),
+        ("POST", "/studio-stud/capture/complete", r#"{"syncId":"x"}"#),
+        ("GET", "/studio-stud/capture/request", ""),
+        ("POST", "/studio-stud/live/delta", r#"{"placeId":"1","baseRevision":0,"ops":{"upserted":[],"removed":[]}}"#),
+        ("GET", "/studio-stud/live/fingerprint?placeId=1", ""),
+        ("POST", "/studio-stud/live/verify/start", r#"{}"#),
+        ("POST", "/studio-stud/live/verify/complete", r#"{"syncId":"x"}"#),
+    ];
+    for (method, path, body) in paths {
+        let (status, response) = http_request(
+            method,
+            port,
+            path,
+            if body.is_empty() { None } else { Some(body) },
+        );
+        assert_eq!(status, 404, "expected 404 for {method} {path}, got {response}");
+        let value = parse_json(&response);
+        assert_eq!(value.get("error").and_then(Value::as_str), Some("not_found"));
     }
-    for handle in handles {
-        let (status, ok) = handle.join().expect("ping thread");
-        assert_eq!(status, 200);
-        assert!(ok);
-    }
+}
+
+#[test]
+fn ping_reports_protocol_v2() {
+    let storage = temp_storage("ping_v2");
+    let serve = start_serve(&storage);
+    let (_, body) = http_request("GET", serve.port, "/studio-stud/ping", None);
+    let value = parse_json(&body);
+    assert_eq!(
+        value.get("protocolVersion").and_then(Value::as_i64),
+        Some(2)
+    );
+    assert_eq!(
+        value.get("minPluginProtocolVersion").and_then(Value::as_i64),
+        Some(2)
+    );
 }

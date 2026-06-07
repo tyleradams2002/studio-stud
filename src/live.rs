@@ -5,15 +5,15 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params, types::ValueRef};
 
 use serde_json::{Value, json};
 
 use crate::conn_registry::ConnRegistry;
 use crate::capture::{
-    canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_instance,
-    fingerprint_state, ingest_rows, recompute_critical_presence_from_db, recompute_findings,
-    service_of, upsert_instance,
+    canonical_instance_value, capture_meta, delete_instance_rows, fingerprint_state,
+    fp_digest_from_entry, ingest_rows, parse_fp_hex, read_stored_fp,
+    recompute_critical_presence_from_db, recompute_findings, service_of, upsert_instance,
 };
 
 use crate::storage::{
@@ -21,7 +21,10 @@ use crate::storage::{
     resolve_place, write_live_state,
 };
 
-use crate::util::{hex_bytes, make_id, normalize_query_path, now_utc, open_db, str_field};
+use base64::Engine as _;
+use base64::engine::general_purpose::STANDARD as B64;
+
+use crate::util::{hex_bytes, make_id, normalize_query_path, now_utc, open_db, open_db_readonly, str_field};
 
 pub(crate) struct DeltaRequest {
     pub place_id: String,
@@ -80,19 +83,7 @@ pub(crate) fn parse_delta_request(value: &Value) -> Result<DeltaRequest> {
 }
 
 fn parse_fingerprint_hex(hex: &str) -> Result<[u8; 32]> {
-    if hex.len() != 64 {
-        return Err(anyhow!("invalid fingerprint hex length"));
-    }
-
-    let mut out = [0u8; 32];
-
-    for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-        let s = std::str::from_utf8(chunk)?;
-
-        out[i] = u8::from_str_radix(s, 16)?;
-    }
-
-    Ok(out)
+    parse_fp_hex(hex)
 }
 
 fn fingerprint_hex(acc: [u8; 32]) -> String {
@@ -211,7 +202,7 @@ pub(crate) fn apply_delta(
     })
 }
 
-fn apply_delta_tx(
+pub(crate) fn apply_delta_tx(
     tx: &Transaction<'_>,
 
     capture_id: &str,
@@ -229,7 +220,7 @@ fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Ok(digest) = fingerprint_instance(tx, capture_id, removed_id) {
+        if let Some(digest) = read_stored_fp(tx, capture_id, removed_id)? {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -276,7 +267,7 @@ fn apply_delta_tx(
             )
             .optional()?;
 
-        if let Ok(digest) = fingerprint_instance(tx, capture_id, &id) {
+        if let Some(digest) = read_stored_fp(tx, capture_id, &id)? {
             for (i, byte) in digest.iter().enumerate() {
                 acc[i] ^= byte;
             }
@@ -297,7 +288,7 @@ fn apply_delta_tx(
 
         upsert_instance(tx, capture_id, inst)?;
 
-        let digest = fingerprint_instance(tx, capture_id, &id)?;
+        let digest = fp_digest_from_entry(inst)?;
 
         for (i, byte) in digest.iter().enumerate() {
             acc[i] ^= byte;
@@ -733,6 +724,26 @@ pub(crate) fn live_services(
     }))
 }
 
+fn read_source_bytes(row: &rusqlite::Row<'_>, idx: usize) -> rusqlite::Result<Vec<u8>> {
+    match row.get_ref(idx)? {
+        ValueRef::Blob(b) => Ok(b.to_vec()),
+        ValueRef::Text(t) => Ok(t.to_vec()),
+        other => Err(rusqlite::Error::InvalidColumnType(
+            idx,
+            "source_text".to_string(),
+            other.data_type(),
+        )),
+    }
+}
+
+fn script_source_text_json(bytes: &[u8], encoding: &str) -> Value {
+    if encoding == "base64" {
+        Value::from(B64.encode(bytes))
+    } else {
+        Value::from(String::from_utf8_lossy(bytes).into_owned())
+    }
+}
+
 pub(crate) fn script_source(
     storage_root: Option<PathBuf>,
     project_key: &str,
@@ -741,8 +752,7 @@ pub(crate) fn script_source(
 ) -> Result<Value> {
     let storage = Storage::new(storage_root, project_key)?;
     let place_storage = resolve_place(&storage, place)?;
-    let conn = open_db(&place_storage.db_path)?;
-    init_schema(&conn)?;
+    let conn = open_db_readonly(&place_storage.db_path)?;
 
     let live = current_state(&conn)?;
     let capture_id = live.capture_id.clone();
@@ -760,15 +770,22 @@ pub(crate) fn script_source(
         return Ok(json!({ "ok": false, "error": "not_found" }));
     };
 
-    let row: Option<(String, String)> = conn
+    let row: Option<(Vec<u8>, String, String)> = conn
         .query_row(
-            "SELECT source_text, source_hash FROM script_sources WHERE capture_id = ? AND instance_id = ?",
+            "SELECT source_text, source_hash, COALESCE(source_encoding, 'utf8')
+             FROM script_sources WHERE capture_id = ? AND instance_id = ?",
             params![capture_id, instance_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| {
+                Ok((
+                    read_source_bytes(row, 0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                ))
+            },
         )
         .optional()?;
 
-    let Some((source_text, source_hash)) = row else {
+    let Some((source_bytes, source_hash, source_encoding)) = row else {
         return Ok(json!({ "ok": false, "error": "no_source" }));
     };
 
@@ -776,8 +793,9 @@ pub(crate) fn script_source(
         "ok": true,
         "path": path,
         "instanceId": instance_id,
-        "sourceText": source_text,
+        "sourceText": script_source_text_json(&source_bytes, &source_encoding),
         "sourceHash": source_hash,
+        "sourceEncoding": source_encoding,
     }))
 }
 
@@ -788,8 +806,7 @@ pub(crate) fn script_sources(
 ) -> Result<Value> {
     let storage = Storage::new(storage_root, project_key)?;
     let place_storage = resolve_place(&storage, place)?;
-    let conn = open_db(&place_storage.db_path)?;
-    init_schema(&conn)?;
+    let conn = open_db_readonly(&place_storage.db_path)?;
 
     let live = current_state(&conn)?;
     let capture_id = live.capture_id.clone();
@@ -821,6 +838,7 @@ pub(crate) fn script_sources(
     }))
 }
 
+#[allow(dead_code)]
 pub(crate) fn live_fingerprint(
     storage_root: Option<PathBuf>,
 
@@ -906,6 +924,69 @@ pub(crate) fn promote_staging_baseline(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::storage::{init_schema, upsert_script_source, upsert_script_source_bytes};
+    use crate::util::open_db;
+    use serde_json::json;
+
+    #[test]
+    fn script_sources_readonly_on_wal_secondary_connection() {
+        let dir = std::env::temp_dir().join(format!("ss_script_ro_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db_path = dir.join("place.db");
+        let mut writer = open_db(&db_path).unwrap();
+        init_schema(&writer).unwrap();
+        let tx = writer.transaction().unwrap();
+        upsert_script_source(&tx, "cap1", "utf8mod", "return 1\n", "hash_utf8", "utf8").unwrap();
+        let raw = vec![1u8, 2, 3, 4, 5];
+        upsert_script_source_bytes(&tx, "cap1", "binmod", &raw, "hash_bin", "base64").unwrap();
+        tx.commit().unwrap();
+        // Writer stays open (simulates serve holding WAL).
+        let reader = open_db_readonly(&db_path).unwrap();
+        let utf8: (Vec<u8>, String, String) = reader
+            .query_row(
+                "SELECT source_text, source_hash, COALESCE(source_encoding, 'utf8')
+                 FROM script_sources WHERE capture_id = ? AND instance_id = ?",
+                params!["cap1", "utf8mod"],
+                |row| {
+                    Ok((
+                        read_source_bytes(row, 0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(utf8.0, b"return 1\n");
+        assert_eq!(utf8.1, "hash_utf8");
+        assert_eq!(utf8.2, "utf8");
+        let bin: (Vec<u8>, String, String) = reader
+            .query_row(
+                "SELECT source_text, source_hash, COALESCE(source_encoding, 'utf8')
+                 FROM script_sources WHERE capture_id = ? AND instance_id = ?",
+                params!["cap1", "binmod"],
+                |row| {
+                    Ok((
+                        read_source_bytes(row, 0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(bin.0, raw);
+        assert_eq!(bin.1, "hash_bin");
+        assert_eq!(bin.2, "base64");
+        assert_eq!(
+            script_source_text_json(&utf8.0, &utf8.2),
+            json!("return 1\n")
+        );
+        assert_eq!(
+            script_source_text_json(&bin.0, &bin.2),
+            json!(B64.encode(&raw))
+        );
+    }
+
     #[test]
     fn xor_fingerprint_fold_is_commutative() {
         let a = [1u8; 32];

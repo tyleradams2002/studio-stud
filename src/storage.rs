@@ -675,6 +675,10 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<()> {
 
     ensure_column(conn, "instances", "search_text", "TEXT")?;
 
+    ensure_column(conn, "instances", "fingerprint", "TEXT")?;
+
+    ensure_column(conn, "script_sources", "source_encoding", "TEXT")?;
+
     conn.execute_batch(
 
         r#"
@@ -810,11 +814,40 @@ pub(crate) fn upsert_script_source(
     instance_id: &str,
     source_text: &str,
     source_hash: &str,
+    source_encoding: &str,
 ) -> Result<()> {
     conn.execute(
-        "INSERT OR REPLACE INTO script_sources (capture_id, instance_id, source_text, source_hash, last_synced_hash)
-         VALUES (?, ?, ?, ?, NULL)",
-        params![capture_id, instance_id, source_text, source_hash],
+        "INSERT OR REPLACE INTO script_sources (capture_id, instance_id, source_text, source_hash, last_synced_hash, source_encoding)
+         VALUES (?, ?, ?, ?, NULL, ?)",
+        params![
+            capture_id,
+            instance_id,
+            source_text,
+            source_hash,
+            source_encoding
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn upsert_script_source_bytes(
+    conn: &Connection,
+    capture_id: &str,
+    instance_id: &str,
+    source_bytes: &[u8],
+    source_hash: &str,
+    source_encoding: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO script_sources (capture_id, instance_id, source_text, source_hash, last_synced_hash, source_encoding)
+         VALUES (?, ?, ?, ?, NULL, ?)",
+        params![
+            capture_id,
+            instance_id,
+            source_bytes,
+            source_hash,
+            source_encoding
+        ],
     )?;
     Ok(())
 }
@@ -918,7 +951,7 @@ mod tests {
             Some("0.659")
         );
 
-        upsert_script_source(&conn, "cap1", "inst1", "print('hi')", "abc123").unwrap();
+        upsert_script_source(&conn, "cap1", "inst1", "print('hi')", "abc123", "utf8").unwrap();
         let hash: String = conn
             .query_row(
                 "SELECT source_hash FROM script_sources WHERE capture_id = ? AND instance_id = ?",

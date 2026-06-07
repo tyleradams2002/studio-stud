@@ -13,9 +13,8 @@ use std::{
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 
-use crate::capture::{decode_raw_snapshot, inject_sync_metadata, materialize_snapshot};
 use crate::conn_registry::ConnRegistry;
-use crate::live::{apply_delta, live_fingerprint, parse_delta_request, verify_drift};
+use crate::tick::{handle_tick, parse_tick_request};
 use crate::stage3_cli::{run_write, write_outcome_to_json};
 use crate::storage::set_active_place;
 use crate::util::{
@@ -62,13 +61,6 @@ pub(crate) struct UploadState {
     chunks: BTreeMap<usize, Vec<u8>>,
 }
 
-#[derive(Clone)]
-pub(crate) enum CaptureFinalizeState {
-    Finalizing,
-    Done(Value),
-    Error(String),
-}
-
 /// How long a play-session heartbeat is trusted before the daemon assumes the plugin
 /// is gone (heartbeats arrive every ~3 s) and reverts to treating the session as edit.
 /// In-memory only: a daemon restart or a closed plugin must never leave writes frozen.
@@ -77,17 +69,16 @@ const SESSION_HEARTBEAT_TTL: Duration = Duration::from_secs(10);
 #[derive(Default)]
 pub(crate) struct DaemonState {
     pending_requests: VecDeque<Value>,
-    active_request_id: Option<String>,
-    uploads: HashMap<String, UploadState>,
-    verify_uploads: HashMap<String, UploadState>,
-    completions: HashMap<String, Value>,
-    finalize_by_sync: HashMap<String, CaptureFinalizeState>,
+    tick_uploads: HashMap<String, UploadState>,
+    staged_tick_bulks: HashMap<String, Vec<u8>>,
     /// Last session mode the plugin reported on its heartbeat ("edit" | "play").
     session_mode: String,
     /// Monotonic timestamp of that heartbeat, for freshness checks.
     session_heartbeat_at: Option<Instant>,
     /// Wall-clock timestamp of that heartbeat, surfaced as `staleSince` when aged out.
     last_heartbeat_utc: Option<String>,
+    /// Cumulative per-service drift detections (in-memory; reset on daemon restart).
+    drift_counts: HashMap<String, u64>,
 }
 
 impl DaemonState {
@@ -95,6 +86,35 @@ impl DaemonState {
         self.session_mode = if mode == "play" { "play" } else { "edit" }.to_string();
         self.session_heartbeat_at = Some(Instant::now());
         self.last_heartbeat_utc = Some(now_utc);
+    }
+
+    fn record_drift(&mut self, services: &[String]) {
+        for svc in services {
+            *self.drift_counts.entry(svc.clone()).or_insert(0) += 1;
+        }
+    }
+
+    fn drift_telemetry_json(&self) -> Value {
+        let mut services = serde_json::Map::new();
+        let mut total = 0u64;
+        let mut names: Vec<_> = self.drift_counts.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let count = self.drift_counts[&name];
+            total += count;
+            services.insert(name, json!(count));
+        }
+        json!({ "total": total, "services": services })
+    }
+
+    fn drift_summary_line(&self) -> String {
+        let mut parts: Vec<String> = self
+            .drift_counts
+            .iter()
+            .map(|(svc, n)| format!("{svc}={n}"))
+            .collect();
+        parts.sort();
+        format!("running counts: {}", parts.join(", "))
     }
 
     /// True only when the plugin reported a play session within the freshness window.
@@ -142,6 +162,22 @@ fn is_in_play(state: &Arc<Mutex<DaemonState>>) -> Result<bool> {
         .in_play_session())
 }
 
+/// Test-only delay hook (`STUDIO_STUD_TEST_TICK_DELAY_MS` + `_PLACE`).
+fn apply_test_tick_delay(place_id: &str) {
+    let Ok(ms) = std::env::var("STUDIO_STUD_TEST_TICK_DELAY_MS") else {
+        return;
+    };
+    let Ok(delay_ms) = ms.parse::<u64>() else {
+        return;
+    };
+    let Ok(delay_place) = std::env::var("STUDIO_STUD_TEST_TICK_DELAY_PLACE") else {
+        return;
+    };
+    if delay_place == place_id {
+        std::thread::sleep(Duration::from_millis(delay_ms));
+    }
+}
+
 pub(crate) fn handle_daemon_request(
     mut request: tiny_http::Request,
     state: Arc<Mutex<DaemonState>>,
@@ -167,85 +203,91 @@ pub(crate) fn handle_daemon_request(
             }
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
                 let mut manifest = manifest_json_with_update(config);
-                let (mode, stale_since) = {
+                let (mode, stale_since, drift_telemetry) = {
                     let guard = state
                         .lock()
                         .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                    guard.session_report()
+                    let (mode, stale_since) = guard.session_report();
+                    (mode, stale_since, guard.drift_telemetry_json())
                 };
                 if let Some(obj) = manifest.as_object_mut() {
                     obj.insert("sessionMode".to_string(), json!(mode));
                     obj.insert("staleSince".to_string(), stale_since);
+                    obj.insert("driftTelemetry".to_string(), drift_telemetry);
                 }
                 manifest
             }
             (tiny_http::Method::Get, "/studio-stud/manifest") => manifest_json_with_update(config),
-            (tiny_http::Method::Get, "/request-sync")
-            | (tiny_http::Method::Get, "/studio-stud/capture/request") => {
-                let mode = query.get("sessionMode").map(String::as_str).unwrap_or("edit");
+            (tiny_http::Method::Post, "/studio-stud/tick") => {
+                let payload = read_request_json(&mut request)?;
+                let tick = parse_tick_request(&payload)?;
+                apply_test_tick_delay(&tick.place_id);
                 let mut guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                guard.record_session_mode(mode, now_utc());
-                if guard.in_play_session() {
-                    // Studio is mid-playtest: heartbeat only, hand out no capture work.
-                    json!({ "ok": true, "request": Value::Null, "sessionMode": "play" })
+                guard.record_session_mode(&tick.session_mode, now_utc());
+                let ignore_ops = guard.in_play_session();
+                let pending_request = if ignore_ops {
+                    Value::Null
                 } else {
-                    let request = guard.pending_requests.pop_front();
-                    if let Some(request) = &request {
-                        guard.active_request_id = request
-                            .get("id")
-                            .and_then(Value::as_str)
-                            .map(str::to_string);
+                    guard.pending_requests.pop_front().unwrap_or(Value::Null)
+                };
+                let bulk_ref = tick.bulk_ref.clone();
+                let staged_bulk = bulk_ref
+                    .as_ref()
+                    .and_then(|id| guard.staged_tick_bulks.get(id).cloned());
+                drop(guard);
+                let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
+                set_active_place(&storage, &tick.place_id);
+                let result = handle_tick(
+                    storage_root.clone(),
+                    project_key,
+                    Some(tick.place_id.as_str()),
+                    &tick,
+                    staged_bulk.as_deref(),
+                    &config.registry_conns,
+                    pending_request,
+                    ignore_ops,
+                )?;
+                if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                    if let Some(drift) = result.get("driftServices").and_then(Value::as_array)
+                        && !drift.is_empty()
+                    {
+                        let names: Vec<String> = drift
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect();
+                        let mut guard = state
+                            .lock()
+                            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                        guard.record_drift(&names);
+                        crate::obs::event(
+                            "drift",
+                            &format!(
+                                "detected [{}]; {}",
+                                names.join(", "),
+                                guard.drift_summary_line()
+                            ),
+                        );
                     }
-                    json!({ "ok": true, "request": request })
-                }
-            }
-            (tiny_http::Method::Get, "/studio-stud/capture/status") => {
-                let guard = state
-                    .lock()
-                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                if let Some(sync_id) = query.get("syncId") {
-                    capture_finalize_status(&guard, sync_id)
-                } else {
-                    let request_id = query.get("requestId").cloned().unwrap_or_default();
-                    if let Some(done) = guard.completions.get(&request_id) {
-                        done.clone()
-                    } else if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
-                        json!({ "ok": true, "requestId": request_id, "status": "in_progress" })
-                    } else if guard.pending_requests.iter().any(|item| {
-                        item.get("id").and_then(Value::as_str) == Some(request_id.as_str())
-                    }) {
-                        json!({ "ok": true, "requestId": request_id, "status": "queued" })
-                    } else {
-                        json!({ "ok": true, "requestId": request_id, "status": "unknown" })
+                    if bulk_ref.is_some()
+                        && let Some(count) = result.get("instanceCount").and_then(Value::as_i64)
+                    {
+                        crate::obs::event(
+                            "drift",
+                            &format!("recovery materialized instances={count}"),
+                        );
+                    }
+                    if let Some(sync_id) = bulk_ref {
+                        let mut guard = state
+                            .lock()
+                            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                        guard.staged_tick_bulks.remove(&sync_id);
                     }
                 }
+                result
             }
-            (tiny_http::Method::Post, "/request-sync")
-            | (tiny_http::Method::Post, "/studio-stud/capture/request") => {
-                let payload = read_request_json(&mut request)?;
-                let request_id = payload
-                    .get("requestId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-                    .unwrap_or_else(|| make_id("request"));
-                let options = payload.get("options").cloned().unwrap_or_else(|| json!({}));
-                let request_payload = json!({
-                    "id": request_id,
-                    "reason": payload.get("reason").and_then(Value::as_str).unwrap_or("studio-stud-capture"),
-                    "createdAtUtc": now_utc(),
-                    "options": options,
-                });
-                state
-                    .lock()
-                    .map_err(|_| anyhow!("daemon state lock poisoned"))?
-                    .pending_requests
-                    .push_back(request_payload.clone());
-                json!({ "ok": true, "request": request_payload, "status": "queued" })
-            }
-            (tiny_http::Method::Post, "/live-sync/start")
-            | (tiny_http::Method::Post, "/studio-stud/capture/start") => {
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/start") => {
                 let metadata = read_request_json(&mut request)?;
                 let plugin_protocol = metadata
                     .get("protocolVersion")
@@ -263,18 +305,12 @@ pub(crate) fn handle_daemon_request(
                     .get("syncId")
                     .and_then(Value::as_str)
                     .map(str::to_string)
-                    .unwrap_or_else(|| make_id("capture"));
+                    .unwrap_or_else(|| make_id("tickbulk"));
                 state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?
-                    .uploads
-                    .insert(
-                        sync_id.clone(),
-                        UploadState {
-                            body: None,
-                            chunks: BTreeMap::new(),
-                        },
-                    );
+                    .tick_uploads
+                    .insert(sync_id.clone(), UploadState::default());
                 json!({
                     "ok": true,
                     "syncId": sync_id,
@@ -283,22 +319,7 @@ pub(crate) fn handle_daemon_request(
                     "protocolVersion": PROTOCOL_VERSION,
                 })
             }
-            (tiny_http::Method::Post, "/live-sync/body")
-            | (tiny_http::Method::Post, "/studio-stud/capture/body") => {
-                let sync_id = required_query(&query, "syncId")?;
-                let body = read_request_bytes(&mut request)?;
-                let received = body.len();
-                let mut guard = state
-                    .lock()
-                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                let Some(upload) = guard.uploads.get_mut(&sync_id) else {
-                    return Ok(unknown_sync_id_response());
-                };
-                upload.body = Some(body);
-                json!({ "ok": true, "syncId": sync_id, "receivedBytes": received })
-            }
-            (tiny_http::Method::Post, "/live-sync/chunk")
-            | (tiny_http::Method::Post, "/studio-stud/capture/chunk") => {
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/chunk") => {
                 let sync_id = required_query(&query, "syncId")?;
                 let index = required_query(&query, "index")?.parse::<usize>()?;
                 let body = read_request_bytes(&mut request)?;
@@ -306,14 +327,13 @@ pub(crate) fn handle_daemon_request(
                 let mut guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                let Some(upload) = guard.uploads.get_mut(&sync_id) else {
+                let Some(upload) = guard.tick_uploads.get_mut(&sync_id) else {
                     return Ok(unknown_sync_id_response());
                 };
                 upload.chunks.insert(index, body);
                 json!({ "ok": true, "syncId": sync_id, "chunkIndex": index, "receivedBytes": received })
             }
-            (tiny_http::Method::Post, "/live-sync/complete")
-            | (tiny_http::Method::Post, "/studio-stud/capture/complete") => {
+            (tiny_http::Method::Post, "/studio-stud/tick/bulk/complete") => {
                 let payload = read_request_json(&mut request)?;
                 let sync_id = payload
                     .get("syncId")
@@ -324,108 +344,15 @@ pub(crate) fn handle_daemon_request(
                     .get("expectedChunks")
                     .and_then(Value::as_u64)
                     .map(|value| value as usize);
-                complete_daemon_upload(
-                    &sync_id,
-                    expected_chunks,
-                    state,
-                    storage_root.clone(),
-                    project_key,
-                    Arc::clone(&config.registry_conns),
-                )?
-            }
-            (tiny_http::Method::Post, "/studio-stud/live/delta") => {
-                if is_in_play(&state)? {
-                    // Defense-in-depth: the plugin already gates deltas during play.
-                    play_session_block()
-                } else {
-                    let payload = read_request_json(&mut request)?;
-                    let delta = parse_delta_request(&payload)?;
-                    crate::obs::event(
-                        "live-delta",
-                        &format!(
-                            "RECV delta upserted={} removed={}",
-                            delta.upserted.len(),
-                            delta.removed.len()
-                        ),
-                    );
-                    let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
-                    set_active_place(&storage, &delta.place_id);
-                    apply_delta(
-                        storage_root.clone(),
-                        project_key,
-                        Some(delta.place_id.as_str()),
-                        &delta,
-                        &config.registry_conns,
-                    )?
-                }
-            }
-            (tiny_http::Method::Get, "/studio-stud/live/fingerprint") => {
-                let place_id = query.get("placeId").map(String::as_str);
-                live_fingerprint(storage_root.clone(), project_key, place_id)?
-            }
-            (tiny_http::Method::Post, "/studio-stud/live/verify/start") => {
-                let sync_id = make_id("verify");
-                state
-                    .lock()
-                    .map_err(|_| anyhow!("daemon state lock poisoned"))?
-                    .verify_uploads
-                    .insert(sync_id.clone(), UploadState::default());
-                json!({
-                    "ok": true,
-                    "syncId": sync_id,
-                    "maxChunkBytes": MAX_CHUNK_BYTES,
-                })
-            }
-            (tiny_http::Method::Post, "/studio-stud/live/verify/body") => {
-                let sync_id = required_query(&query, "syncId")?;
-                let body = read_request_bytes(&mut request)?;
-                let received = body.len();
                 let mut guard = state
                     .lock()
                     .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                let Some(upload) = guard.verify_uploads.get_mut(&sync_id) else {
+                let Some(upload) = guard.tick_uploads.remove(&sync_id) else {
                     return Ok(unknown_sync_id_response());
                 };
-                upload.body = Some(body);
-                json!({ "ok": true, "syncId": sync_id, "receivedBytes": received })
-            }
-            (tiny_http::Method::Post, "/studio-stud/live/verify/chunk") => {
-                let sync_id = required_query(&query, "syncId")?;
-                let index = required_query(&query, "index")?.parse::<usize>()?;
-                let body = read_request_bytes(&mut request)?;
-                let received = body.len();
-                let mut guard = state
-                    .lock()
-                    .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                let Some(upload) = guard.verify_uploads.get_mut(&sync_id) else {
-                    return Ok(unknown_sync_id_response());
-                };
-                upload.chunks.insert(index, body);
-                json!({ "ok": true, "syncId": sync_id, "chunkIndex": index, "receivedBytes": received })
-            }
-            (tiny_http::Method::Post, "/studio-stud/live/verify/complete") => {
-                let payload = read_request_json(&mut request)?;
-                let sync_id = payload
-                    .get("syncId")
-                    .and_then(Value::as_str)
-                    .ok_or_else(|| anyhow!("syncId is required"))?
-                    .to_string();
-                let place_id = payload
-                    .get("placeId")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                let expected_chunks = payload
-                    .get("expectedChunks")
-                    .and_then(Value::as_u64)
-                    .map(|value| value as usize);
-                complete_verify_upload(
-                    &sync_id,
-                    expected_chunks,
-                    place_id.as_deref(),
-                    state,
-                    storage_root.clone(),
-                    project_key,
-                )?
+                let bytes = assemble_upload(upload, expected_chunks)?;
+                guard.staged_tick_bulks.insert(sync_id.clone(), bytes);
+                json!({ "ok": true, "syncId": sync_id, "status": "staged" })
             }
             (tiny_http::Method::Get, "/studio-stud/write/token") => {
                 if is_in_play(&state)? {
@@ -741,165 +668,6 @@ fn handle_admin_shutdown(request: &mut tiny_http::Request, config: &ServeConfig)
         std::process::exit(0);
     });
     Ok(json!({ "ok": true, "shuttingDown": true }))
-}
-
-fn capture_finalize_status(guard: &DaemonState, sync_id: &str) -> Value {
-    match guard.finalize_by_sync.get(sync_id) {
-        Some(CaptureFinalizeState::Finalizing) => {
-            json!({ "ok": true, "syncId": sync_id, "status": "finalizing" })
-        }
-        Some(CaptureFinalizeState::Done(completion)) => {
-            let mut out = completion.clone();
-            if let Some(obj) = out.as_object_mut() {
-                obj.entry("syncId".to_string())
-                    .or_insert(json!(sync_id));
-                obj.entry("status".to_string())
-                    .or_insert(json!("done"));
-            }
-            out
-        }
-        Some(CaptureFinalizeState::Error(message)) => {
-            json!({ "ok": false, "syncId": sync_id, "status": "error", "error": message })
-        }
-        None => json!({ "ok": false, "syncId": sync_id, "status": "unknown" }),
-    }
-}
-
-fn materialize_capture_upload(
-    bytes: &[u8],
-    sync_id: &str,
-    active_request_id: Option<String>,
-    storage_root: Option<PathBuf>,
-    project_key: &str,
-    registry: Arc<ConnRegistry>,
-) -> Result<Value> {
-    let raw_json = decode_raw_snapshot(bytes)?;
-    let mut snapshot: Value = serde_json::from_str(&raw_json)?;
-    let request_id = snapshot
-        .get("sync")
-        .and_then(|sync| sync.get("requestId"))
-        .and_then(Value::as_str)
-        .map(str::to_string)
-        .or(active_request_id);
-    inject_sync_metadata(&mut snapshot, sync_id, request_id.as_deref());
-    let _span = crate::obs::span("capture", "materialize_snapshot");
-    let result = materialize_snapshot(&snapshot, storage_root.clone(), project_key, &registry)?;
-    if let Ok(storage) = crate::storage::Storage::new(storage_root.clone(), project_key)
-        && let Some(place_id) = result.get("placeId").and_then(Value::as_str)
-    {
-        set_active_place(&storage, place_id);
-        if let Ok(pid) = place_id.parse::<i64>() {
-            let resolver = crate::RepoResolver::load();
-            let _ = resolver.learn_place_from_cwd(pid);
-        }
-    }
-    Ok(json!({
-        "ok": true,
-        "status": "completed",
-        "requestId": request_id,
-        "result": result,
-    }))
-}
-
-fn record_capture_completion(guard: &mut DaemonState, completion: &Value) {
-    if let Some(request_id) = completion
-        .get("requestId")
-        .and_then(Value::as_str)
-        .map(str::to_string)
-    {
-        guard
-            .completions
-            .insert(request_id.clone(), completion.clone());
-        if guard.active_request_id.as_deref() == Some(request_id.as_str()) {
-            guard.active_request_id = None;
-        }
-    }
-}
-
-pub(crate) fn complete_daemon_upload(
-    sync_id: &str,
-    expected_chunks: Option<usize>,
-    state: Arc<Mutex<DaemonState>>,
-    storage_root: Option<PathBuf>,
-    project_key: &str,
-    registry: Arc<ConnRegistry>,
-) -> Result<Value> {
-    let (upload, active_request_id) = {
-        let mut guard = state
-            .lock()
-            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-        let Some(upload) = guard.uploads.remove(sync_id) else {
-            return Ok(unknown_sync_id_response());
-        };
-        (upload, guard.active_request_id.clone())
-    };
-    let bytes = assemble_upload(upload, expected_chunks)?;
-    {
-        let mut guard = state
-            .lock()
-            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-        guard
-            .finalize_by_sync
-            .insert(sync_id.to_string(), CaptureFinalizeState::Finalizing);
-    }
-    let sync_id_owned = sync_id.to_string();
-    let project_key_owned = project_key.to_string();
-    let state_worker = Arc::clone(&state);
-    std::thread::spawn(move || {
-        let outcome = materialize_capture_upload(
-            &bytes,
-            &sync_id_owned,
-            active_request_id,
-            storage_root,
-            &project_key_owned,
-            registry,
-        );
-        let Ok(mut guard) = state_worker.lock() else {
-            return;
-        };
-        match outcome {
-            Ok(completion) => {
-                record_capture_completion(&mut guard, &completion);
-                guard
-                    .finalize_by_sync
-                    .insert(sync_id_owned, CaptureFinalizeState::Done(completion));
-            }
-            Err(err) => {
-                guard.finalize_by_sync.insert(
-                    sync_id_owned,
-                    CaptureFinalizeState::Error(format!("{err:#}")),
-                );
-            }
-        }
-    });
-    Ok(json!({
-        "ok": true,
-        "status": "finalizing",
-        "syncId": sync_id,
-    }))
-}
-
-pub(crate) fn complete_verify_upload(
-    sync_id: &str,
-    expected_chunks: Option<usize>,
-    place_id: Option<&str>,
-    state: Arc<Mutex<DaemonState>>,
-    storage_root: Option<PathBuf>,
-    project_key: &str,
-) -> Result<Value> {
-    let upload = {
-        let mut guard = state
-            .lock()
-            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-        guard.verify_uploads.remove(sync_id)
-    };
-    let Some(upload) = upload else {
-        return Ok(unknown_sync_id_response());
-    };
-    let bytes = assemble_upload(upload, expected_chunks)?;
-    let raw_json = decode_raw_snapshot(&bytes)?;
-    let snapshot: Value = serde_json::from_str(&raw_json)?;
-    verify_drift(storage_root, project_key, place_id, &snapshot, &bytes)
 }
 
 pub(crate) fn assemble_upload(
