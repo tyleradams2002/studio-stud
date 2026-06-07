@@ -2963,9 +2963,14 @@ function CapturePanel.build(parent, ctx)
 	function Live.buildBaselineSnapshot(reason)
 		Live.resetFingerprints()
 		local snapshot = Capture.buildSnapshot({ reason = reason or "tick-baseline" })
+		local processed = 0
 		for _, entry in ipairs(snapshot.instances) do
 			entry.fp = Live.hashInstance(entry)
 			Live.applyFpUpsert(entry.id, entry, nil)
+			processed += 1
+			if Capture.shouldYield(processed, BASELINE_YIELD_EVERY) then
+				task.wait()
+			end
 		end
 		return snapshot
 	end
@@ -4223,6 +4228,9 @@ function SelfTest.run()
 			local h2 = live.hashInstance(sample)
 			SelfTest.assert("hashInstance stable", h1 == h2, failures)
 			SelfTest.assert("hashInstance 64 hex", #h1 == 64 and string.match(h1, "^[0-9a-f]+$") ~= nil, failures)
+
+			local snap = live.buildBaselineSnapshot("selftest")
+			SelfTest.assert("baseline snapshot has instances", #snap.instances > 0, failures)
 			local reordered = {
 				id = "a1",
 				className = "Part",
