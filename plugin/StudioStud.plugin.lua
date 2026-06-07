@@ -977,7 +977,7 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 
 
 
-local PLUGIN_VERSION = "0.4.24"
+local PLUGIN_VERSION = "0.4.25"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
