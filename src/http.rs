@@ -77,6 +77,8 @@ pub(crate) struct DaemonState {
     session_heartbeat_at: Option<Instant>,
     /// Wall-clock timestamp of that heartbeat, surfaced as `staleSince` when aged out.
     last_heartbeat_utc: Option<String>,
+    /// Cumulative per-service drift detections (in-memory; reset on daemon restart).
+    drift_counts: HashMap<String, u64>,
 }
 
 impl DaemonState {
@@ -84,6 +86,35 @@ impl DaemonState {
         self.session_mode = if mode == "play" { "play" } else { "edit" }.to_string();
         self.session_heartbeat_at = Some(Instant::now());
         self.last_heartbeat_utc = Some(now_utc);
+    }
+
+    fn record_drift(&mut self, services: &[String]) {
+        for svc in services {
+            *self.drift_counts.entry(svc.clone()).or_insert(0) += 1;
+        }
+    }
+
+    fn drift_telemetry_json(&self) -> Value {
+        let mut services = serde_json::Map::new();
+        let mut total = 0u64;
+        let mut names: Vec<_> = self.drift_counts.keys().cloned().collect();
+        names.sort();
+        for name in names {
+            let count = self.drift_counts[&name];
+            total += count;
+            services.insert(name, json!(count));
+        }
+        json!({ "total": total, "services": services })
+    }
+
+    fn drift_summary_line(&self) -> String {
+        let mut parts: Vec<String> = self
+            .drift_counts
+            .iter()
+            .map(|(svc, n)| format!("{svc}={n}"))
+            .collect();
+        parts.sort();
+        format!("running counts: {}", parts.join(", "))
     }
 
     /// True only when the plugin reported a play session within the freshness window.
@@ -172,15 +203,17 @@ pub(crate) fn handle_daemon_request(
             }
             (tiny_http::Method::Get, "/ping") | (tiny_http::Method::Get, "/studio-stud/ping") => {
                 let mut manifest = manifest_json_with_update(config);
-                let (mode, stale_since) = {
+                let (mode, stale_since, drift_telemetry) = {
                     let guard = state
                         .lock()
                         .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                    guard.session_report()
+                    let (mode, stale_since) = guard.session_report();
+                    (mode, stale_since, guard.drift_telemetry_json())
                 };
                 if let Some(obj) = manifest.as_object_mut() {
                     obj.insert("sessionMode".to_string(), json!(mode));
                     obj.insert("staleSince".to_string(), stale_since);
+                    obj.insert("driftTelemetry".to_string(), drift_telemetry);
                 }
                 manifest
             }
@@ -216,13 +249,41 @@ pub(crate) fn handle_daemon_request(
                     pending_request,
                     ignore_ops,
                 )?;
-                if result.get("ok").and_then(Value::as_bool) == Some(true)
-                    && let Some(sync_id) = bulk_ref
-                {
-                    let mut guard = state
-                        .lock()
-                        .map_err(|_| anyhow!("daemon state lock poisoned"))?;
-                    guard.staged_tick_bulks.remove(&sync_id);
+                if result.get("ok").and_then(Value::as_bool) == Some(true) {
+                    if let Some(drift) = result.get("driftServices").and_then(Value::as_array)
+                        && !drift.is_empty()
+                    {
+                        let names: Vec<String> = drift
+                            .iter()
+                            .filter_map(|v| v.as_str().map(str::to_string))
+                            .collect();
+                        let mut guard = state
+                            .lock()
+                            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                        guard.record_drift(&names);
+                        crate::obs::event(
+                            "drift",
+                            &format!(
+                                "detected [{}]; {}",
+                                names.join(", "),
+                                guard.drift_summary_line()
+                            ),
+                        );
+                    }
+                    if bulk_ref.is_some()
+                        && let Some(count) = result.get("instanceCount").and_then(Value::as_i64)
+                    {
+                        crate::obs::event(
+                            "drift",
+                            &format!("recovery materialized instances={count}"),
+                        );
+                    }
+                    if let Some(sync_id) = bulk_ref {
+                        let mut guard = state
+                            .lock()
+                            .map_err(|_| anyhow!("daemon state lock poisoned"))?;
+                        guard.staged_tick_bulks.remove(&sync_id);
+                    }
                 }
                 result
             }
