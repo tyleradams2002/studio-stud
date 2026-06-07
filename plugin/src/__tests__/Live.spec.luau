@@ -9,6 +9,7 @@
 --   lune run plugin/src/__tests__/Live.spec.luau
 
 local Live = require("../Live")
+local Transport = require("../Transport")
 
 local failures = 0
 local function check(label: string, cond: boolean)
@@ -194,6 +195,87 @@ do
 	check("C2: attach swaps host (isConnected now true)", Live.host.isConnected() == true)
 	Live.host.setStatus("connected", "live")
 	check("C2: injected setStatus is invoked", seen.status == true)
+end
+
+-- ============================================================================
+-- Tick resilience: no HTTP during baseline upload; no teardown during recovery.
+-- ============================================================================
+do
+	require("./testRoblox")()
+
+	local requestCount = 0
+	local fakeHost: any = {
+		transport = {
+			requestJson = function(): (boolean, any)
+				requestCount += 1
+				return true, { ok = true, revision = 0, instanceCount = 0 }
+			end,
+			requestBody = function(): (boolean, any)
+				return true, {}
+			end,
+		},
+		setStatus = function(_k: string, _m: string) end,
+		setStats = function(_t: string) end,
+		setConnected = function(_c: boolean) end,
+		isConnected = function(): boolean
+			return true
+		end,
+		setBaseline = function(_b: boolean) end,
+		setConnectButtonState = function() end,
+		reconnect = function() end,
+		isRunning = function(): boolean
+			return true
+		end,
+	}
+	Live:attach(fakeHost)
+
+	-- baselineInProgress=true -> runTick is a no-op (no requestJson, dirty untouched).
+	Live.liveRunning = true
+	Live.syncInFlight = false
+	Live.baselineInProgress = true
+	Live.historyDirty = false
+	Live.dirtyUpsert = {}
+	Live.dirtyRemoved = {}
+	local a = inst("tick-guard-A")
+	Live:markDirtyUpsert(a)
+	local countBefore = requestCount
+	Live:runTick("edit")
+	check("baselineInProgress: requestJson not called", requestCount == countBefore)
+	check("baselineInProgress: dirty set untouched", Live.dirtyUpsert[a] == true)
+
+	-- pendingBulkRef + ConnectFail -> no teardown; networkErrorCount still increments.
+	-- lune's HttpService lacks JSONEncode/UrlEncode; stub the wire helpers so runTick
+	-- reaches requestJson.
+	local savedEncode = Transport.safeEncode
+	local savedSuffix = Live.tickQuerySuffix
+	Transport.safeEncode = function(): (boolean, string)
+		return true, "{}"
+	end
+	Live.tickQuerySuffix = function(): string
+		return "placeId=0"
+	end
+	Live.baselineInProgress = false
+	Live.pendingBulkRef = "sync-test"
+	Live.networkErrorCount = 3
+	Live.syncInFlight = false
+	requestCount = 0
+	fakeHost.transport.requestJson = function(): (boolean, any)
+		requestCount += 1
+		return false, nil
+	end
+	Live:runTick("edit")
+	Transport.safeEncode = savedEncode
+	Live.tickQuerySuffix = savedSuffix
+	check("recovery: requestJson called once", requestCount == 1)
+	check("recovery: liveRunning stays true", Live.liveRunning == true)
+	check("recovery: networkErrorCount incremented to 4", Live.networkErrorCount == 4)
+
+	-- Reset module state so later specs (if any) see a clean slate.
+	Live.liveRunning = false
+	Live.pendingBulkRef = nil
+	Live.networkErrorCount = 0
+	Live.baselineInProgress = false
+	Live.syncInFlight = false
 end
 
 if failures == 0 then

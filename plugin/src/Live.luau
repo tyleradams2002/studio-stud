@@ -955,7 +955,7 @@ end
 -- bulkRef, clear sent dirty (stamp-based), and handle drift/no_baseline; on repeated
 -- failure (>=4) tear down and surface the offline status.
 local function runTick(self: LiveModule, sessionMode: SessionMode?): ()
-	if not self.liveRunning or self.syncInFlight then
+	if not self.liveRunning or self.syncInFlight or self.baselineInProgress then
 		return
 	end
 	if sessionMode == "edit" and self.historyDirty then
@@ -1034,7 +1034,7 @@ local function runTick(self: LiveModule, sessionMode: SessionMode?): ()
 			errText = "no response"
 		end
 		warn("[StudioStud] tick error:", errText)
-		if self.networkErrorCount >= 4 then
+		if self.networkErrorCount >= 4 and not self.pendingBulkRef and not self.baselineInProgress then
 			self:teardown()
 			self.host.setConnected(false)
 			self.host.setBaseline(false)
