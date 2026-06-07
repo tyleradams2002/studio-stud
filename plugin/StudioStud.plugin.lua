@@ -48,7 +48,7 @@ end
 
 -- == Config ==
 
-local PLUGIN_VERSION = "0.4.20"
+local PLUGIN_VERSION = "0.4.21"
 local PLUGIN_LOGO_ASSET_ID = ""
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
@@ -1574,6 +1574,12 @@ function CapturePanel.build(parent, ctx)
 	local responseNeedsRebaseline
 	local statusFn
 	local Live -- populated after syncFn/statusFn; captured as upvalue by both
+	-- Forward declarations: these are referenced inside functions defined ABOVE their assignment
+	-- (syncFn @~2068, startupConnectAndCapture @~2152). Without these decls the references bind to
+	-- nil globals (C2/C3). Keep the later definitions as plain assignments (no `local`).
+	local startupConnectAndCapture
+	local pausedBaseline
+	local onReturnToEdit
 
 	local resultLabel = Ui.makeLabel(parent, "Latest capture: none", Theme.PAD, 72, Theme.muted)
 	resultLabel.TextSize = 12
@@ -2129,7 +2135,7 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	-- Ping daemon; on first success this session, run baseline capture + live mode.
-	local function startupConnectAndCapture()
+	function startupConnectAndCapture()
 		-- Edit-session gate: do not connect/capture while Studio is in a play session.
 		if not Session.isEdit() then
 			return { ok = false, error = "studio_in_play_session" }
@@ -2345,7 +2351,7 @@ function CapturePanel.build(parent, ctx)
 	end
 
 	function Live.markDirtyUpsert(inst)
-		Live.markDirtyUpsert(inst)
+		Live.dirtyUpsert[inst] = true
 		Live.dirtyStamp += 1
 		Live.upsertStamp[inst] = Live.dirtyStamp
 	end
@@ -3270,8 +3276,8 @@ function CapturePanel.build(parent, ctx)
 		end
 	end
 
-	local pausedBaseline = { revision = 0, instanceCount = 0 }
-	local function onReturnToEdit()
+	pausedBaseline = { revision = 0, instanceCount = 0 }
+	function onReturnToEdit()
 		task.wait(1.5)
 		if not Session.isEdit() then
 			return
