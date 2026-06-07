@@ -489,7 +489,7 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 			row.Parent = addonsList
 			local nameLabel = Instance.new("TextLabel")
 			nameLabel.BackgroundTransparency = 1
-			nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+			nameLabel.Size = UDim2.fromScale(0.65, 1)
 			nameLabel.FontFace = Theme.UI_FONT
 			nameLabel.TextColor3 = Theme.body
 			nameLabel.TextSize = 13
@@ -497,8 +497,8 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 			nameLabel.Text = tostring(id)
 			nameLabel.Parent = row
 			local toggle = Ui.makeSecondaryButton(row, if enabled then "Enabled" else "Disabled")
-			toggle.Size = UDim2.new(0.32, 0, 1, 0)
-			toggle.Position = UDim2.new(0.68, 0, 0, 0)
+			toggle.Size = UDim2.fromScale(0.32, 1)
+			toggle.Position = UDim2.fromScale(0.68, 0)
 			toggle.MouseButton1Click:Connect(function()
 				local path = if enabled then "/studio-stud/addons/disable" else "/studio-stud/addons/enable"
 				local okW, res = Transport.requestJsonAuthed("POST", path, {
@@ -541,7 +541,7 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 
 			local nameLabel = Instance.new("TextLabel")
 			nameLabel.BackgroundTransparency = 1
-			nameLabel.Size = UDim2.new(0.65, 0, 1, 0)
+			nameLabel.Size = UDim2.fromScale(0.65, 1)
 			nameLabel.FontFace = Theme.UI_FONT
 			nameLabel.TextColor3 = Theme.body
 			nameLabel.TextSize = 13
@@ -551,8 +551,8 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 
 			local panelId = item.id
 			local toggle = Ui.makeSecondaryButton(row, if item.enabled then "Enabled" else "Disabled")
-			toggle.Size = UDim2.new(0.32, 0, 1, 0)
-			toggle.Position = UDim2.new(0.68, 0, 0, 0)
+			toggle.Size = UDim2.fromScale(0.32, 1)
+			toggle.Position = UDim2.fromScale(0.68, 0)
 			toggle.MouseButton1Click:Connect(function()
 				local newValue = not Settings.getPanelEnabled(panelId, item.defaultEnabled ~= false)
 				Registry.setEnabled(panelId, newValue)
@@ -651,7 +651,7 @@ function Shell.build(): ()
 
 	local settingsButton = Ui.makeSecondaryButton(header, "Settings")
 	settingsButton.AnchorPoint = Vector2.new(1, 0)
-	settingsButton.Position = UDim2.new(1, 0, 0, 0)
+	settingsButton.Position = UDim2.fromScale(1, 0)
 	settingsButton.Size = UDim2.fromOffset(72, 32)
 	settingsButton.MouseButton1Click:Connect(function()
 		Shell.openSettings()

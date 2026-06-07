@@ -27,10 +27,17 @@
 -- `panel.*` (a field read resolved at call time), so nothing is read before its
 -- field is assigned. `panel` is fully assembled before any handler can fire.
 --
--- GlobalApi (the monolith's GlobalApi.wireCapture / installNoOps) is NOT wired
--- here: that is the bootstrap's job (P6). The panel handle exports `sync` and
--- `status` so the bootstrap can register them on `_G`; the panel itself never
--- touches `_G`. See DEVIATIONS in the structured report.
+-- GlobalApi wiring is PER-BUILD / PER-DESTROY, faithful to the monolith
+-- (StudioStud.plugin.lua:3314 wired inside every CapturePanel.build, :3322
+-- unwired inside every destroy). `build` calls `GlobalApi.wireCapture(status, sync)`
+-- so `GlobalApi.statusFn`/`.syncFn` always track the currently-live panel, and
+-- `destroy` calls `GlobalApi.installNoOps()` so the handlers revert to the disabled
+-- state whenever the panel is torn down (tab toggle off, `Registry.teardownAll`,
+-- `Shell.build`). The S2 change is preserved: GlobalApi stores these INTERNALLY and
+-- never publishes raw `Sync`/`Capture`/`Status` onto `_G`. The panel itself never
+-- touches `_G`. (An earlier rewrite wired once at bootstrap; that left the handlers
+-- pointing at a destroyed panel after any rebuild and broke the ported
+-- '_G no-op while torn down' / '_G re-wire identity' SelfTest assertions.)
 
 local Theme = require("./Theme")
 local Ui = require("./Ui")
@@ -40,6 +47,7 @@ local Session = require("../Session")
 local AllowList = require("../AllowList")
 local Live = require("../Live")
 local Capture = require("../Capture")
+local GlobalApi = require("../GlobalApi")
 
 type ShellContext = Shell.ShellContext
 type LiveHost = Live.LiveHost
@@ -441,9 +449,24 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 	panel.pollGeneration += 1
 	local myGeneration = panel.pollGeneration
 
+	-- The handle's `sync`/`status` entry points, named so the SAME closures are both
+	-- returned on the handle AND wired into GlobalApi below — preserving the monolith's
+	-- `_G.StudioStud.Sync == handle.sync` identity (now `GlobalApi.syncFn == handle.sync`
+	-- under S2). They close over `panel` and route through its methods.
+	local syncEntry = function(options: any?): SyncResult
+		return panel:syncFn(options)
+	end
+	local statusEntry = function(): SyncResult
+		return panel:statusFn()
+	end
+
+	-- Per-build wire (monolith :3314): GlobalApi now tracks THIS live panel's handlers
+	-- internally (S2 — never published to `_G`).
+	GlobalApi.wireCapture(statusEntry, syncEntry)
+
 	-- VERBATIM port of the panel's destroy (monolith :3316): stop the loop, tear down
-	-- the engine, and disconnect the button. (GlobalApi.installNoOps is the bootstrap's
-	-- responsibility — see header.)
+	-- the engine, disconnect the button, and revert GlobalApi to the disabled state
+	-- (monolith :3322) so a torn-down panel never leaves stale handlers wired.
 	local function destroy(): ()
 		panel.running = false
 		Live:teardown()
@@ -452,18 +475,15 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			conn:Disconnect()
 			panel.connectConnection = nil
 		end
+		GlobalApi.installNoOps()
 	end
 
-	-- VERBATIM port of the panel handle (monolith :3325). `sync`/`status`/
-	-- `onConnectRequested` close over `panel` and route through its methods.
+	-- VERBATIM port of the panel handle (monolith :3325). `onConnectRequested` closes
+	-- over `panel`; `sync`/`status` reuse the wired entry closures.
 	return {
 		frame = parent,
-		sync = function(options: any?): SyncResult
-			return panel:syncFn(options)
-		end,
-		status = function(): SyncResult
-			return panel:statusFn()
-		end,
+		sync = syncEntry,
+		status = statusEntry,
 		isRunning = function(): boolean
 			return panel.running
 		end,

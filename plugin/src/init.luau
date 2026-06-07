@@ -11,7 +11,10 @@
 --      global exists, so an embedded copy pasted into a place never runs inside a
 --      live game DataModel and captures the running game.
 --   2. Install the minimal `_G.StudioStud` surface (S2: only RunSelfTest + token)
---      via GlobalApi, and wire the built panel's capture handlers internally.
+--      via GlobalApi. The per-panel capture handlers are wired INSIDE the panel
+--      lifecycle (CapturePanel.build wires, destroy unwires) — faithful to the
+--      monolith — not here, so they always track the currently-live panel across
+--      rebuilds/teardown rather than going stale at a destroyed panel.
 --   3. Register the CapturePanel descriptor, build the widget chrome (Shell), and
 --      auto-connect on widget-enable.
 --   4. The toolbar-button toggle, the Unloading reclaim, and the once-per-version
@@ -72,49 +75,36 @@ local SETTINGS = Config.SETTINGS
 
 -- == RunSelfTest binding ==
 
--- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`. The SelfTest
--- module is the last rewrite phase (P7) and is not yet present; until it lands the
--- bootstrap publishes a typed stand-in that reports the test harness is unavailable
--- rather than nil-calling. When SelfTest.luau exists this single binding is the only
--- line that changes (require it and pass `SelfTest.run`). The result shape matches
--- the SelfTest contract (`{ ok, ... }`) so callers reading `_G.StudioStud.RunSelfTest()`
--- never break.
-local function runSelfTest(): { [string]: any }
+-- The monolith published `_G.StudioStud.RunSelfTest = SelfTest.run`, and
+-- `SelfTest.run` returns a BARE BOOLEAN (StudioStud.plugin.lua:4566 `return true`
+-- on pass, :4569 `return false` on fail). The SelfTest module is the last rewrite
+-- phase (P7) and is not yet present; until it lands the bootstrap publishes a typed
+-- stand-in that returns `false` (the harness is unavailable, so it cannot pass) and
+-- warns — matching the monolith's boolean return shape so any caller branching on
+-- `_G.StudioStud.RunSelfTest()` as a boolean never silently breaks. When
+-- SelfTest.luau exists this single binding is the only line that changes (require it
+-- and pass `SelfTest.run`).
+local function runSelfTest(): boolean
 	warn("[StudioStud] SelfTest module is not installed in this build.")
-	return { ok = false, error = "selftest_unavailable", passed = 0, failed = 0 }
+	return false
 end
 
 -- == Public interface ==
 
 -- The bootstrap exports the small surface that drives load: `start` performs the
--- full bootstrap (register panel, build chrome, install the global, wire handlers,
--- arm the toolbar/unload hooks, schedule auto-connect, show the welcome). Exported
+-- full bootstrap (install the global, register panel, build chrome — the panel wires
+-- its own capture handlers as it builds — arm the toolbar/unload hooks, schedule
+-- auto-connect, show the welcome). Exported
 -- (rather than run at module load) so the darklua bundle root can call it once and
 -- so the in-engine SelfTest can assert the wiring is idempotent. `runSelfTest` and
 -- the captured `plugin` handle are exposed for the same test surface.
 export type InitModule = {
 	start: () -> (),
-	runSelfTest: () -> { [string]: any },
+	runSelfTest: () -> boolean,
 	plugin: Plugin,
 }
 
 -- == Bootstrap helpers ==
-
--- Wire the built CapturePanel's capture handlers into GlobalApi internally (S2): the
--- panel handle exposes `status`/`sync`; GlobalApi holds them for the SelfTest/panel
--- without ever publishing Sync/Capture/Status onto `_G`. Faithful in EFFECT to the
--- monolith's `GlobalApi.wireCapture(statusFn, syncFn)` (:1345) — the wiring still
--- happens, only the storage location changed (internal, not `_G`). No-op (installs
--- the disabled stand-ins) if the panel handle isn't built/shaped as expected, so a
--- panel that failed to build can never leave a live `_G` handler dangling.
-local function wirePanelHandlers(): ()
-	local handle = Registry.getHandle(CapturePanel.descriptor.id)
-	if handle and type(handle.status) == "function" and type(handle.sync) == "function" then
-		GlobalApi.wireCapture(handle.status, handle.sync)
-	else
-		GlobalApi.installNoOps()
-	end
-end
 
 -- Once-per-version welcome (verbatim port of showWelcomeOnce, :4600). Best-effort:
 -- the GetSetting read and the SetSetting write are each pcall-guarded exactly as the
@@ -151,18 +141,18 @@ local function start(): ()
 	started = true
 
 	-- Install the minimal global surface BEFORE building the panel, mirroring the
-	-- monolith's `_G.StudioStud = _G.StudioStud or {}` running ahead of the panel so
-	-- wireCapture has a slot to attach to. (S2: only RunSelfTest + token published.)
+	-- monolith's `_G.StudioStud = _G.StudioStud or {}` + `RunSelfTest` running ahead of
+	-- the panel. (S2: only RunSelfTest + the ownership token are published; the panel's
+	-- capture handlers are wired internally on GlobalApi during its own build, not here.)
 	GlobalApi.install(runSelfTest)
 
 	-- Register the one panel descriptor, then build the widget chrome. Shell.build
 	-- wires the Registry host and selects the first enabled tab, which lazily builds
-	-- the CapturePanel — so its handle (with status/sync) exists immediately after.
+	-- the CapturePanel — and CapturePanel.build itself wires its capture handlers into
+	-- GlobalApi (S2, internal-only) as part of that build, so no bootstrap-level wire
+	-- is needed and the handlers always track the live panel across rebuilds/teardown.
 	Registry.register(CapturePanel.descriptor)
 	Shell.build()
-
-	-- Wire the freshly-built panel's capture handlers internally (S2).
-	wirePanelHandlers()
 
 	-- Auto-connect on enable (verbatim port of the deferred Shell.onWidgetEnabled at
 	-- :4581): defer so the widget finishes laying out before the connect handshake.

@@ -1,4 +1,7 @@
 --!strict
+-- This test exercises GlobalApi's `_G.StudioStud` ownership contract, so it reads
+-- `_G` once by design (line below) — `global_usage` is allowed there for the same
+-- reason it is in GlobalApi.luau (the slot under test IS a `_G` slot).
 -- Headless test for GlobalApi. GlobalApi is pure: it touches only `_G`, `warn`,
 -- and `type` — all present under lune — so its entire surface (install / owns /
 -- reclaim ownership-token logic, wireCapture/installNoOps internal-handler
@@ -15,6 +18,7 @@ local GlobalApi = require("../GlobalApi")
 -- `_G` is untyped; read it once into a typed accessor so the assignments below are
 -- plain field writes (no `(_G :: any)...` statement-start ambiguity) and so the
 -- test annotates against an open table rather than `any` everywhere.
+-- selene: allow(global_usage)
 local g: { [string]: any } = _G :: any
 
 local failures = 0
@@ -56,10 +60,11 @@ local reclaimCleanOk = pcall(GlobalApi.reclaim)
 check("reclaim before install does not throw", reclaimCleanOk)
 
 -- == install: publishes ONLY RunSelfTest + token (S2) ==
+-- SelfTestFn returns a bare boolean (monolith-faithful: SelfTest.run -> true/false).
 local selfTestCalls = 0
-local function fakeSelfTest(): { [string]: any }
+local function fakeSelfTest(): boolean
 	selfTestCalls += 1
-	return { ok = true, passed = 1, failed = 0 }
+	return true
 end
 
 GlobalApi.install(fakeSelfTest)
@@ -70,7 +75,7 @@ check("RunSelfTest published", slot.RunSelfTest == fakeSelfTest)
 
 -- RunSelfTest is callable through the global and dispatches to our fn.
 local stResult = slot.RunSelfTest()
-check("RunSelfTest invoked via _G", selfTestCalls == 1 and stResult.ok == true)
+check("RunSelfTest invoked via _G", selfTestCalls == 1 and stResult == true)
 
 -- THE S2 ASSERTION: no raw capture handlers on the global.
 check("S2: no Sync on _G.StudioStud", slot.Sync == nil)

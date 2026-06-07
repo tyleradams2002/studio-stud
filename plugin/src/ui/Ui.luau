@@ -264,8 +264,8 @@ function Ui.makeMsSlider(
 	local function applyMs(ms: number, persist: boolean)
 		currentMs = math.clamp(math.floor(ms + 0.5), minMs, maxMs)
 		local alpha = alphaForMs(currentMs)
-		fill.Size = UDim2.new(alpha, 0, 1, 0)
-		knob.Position = UDim2.new(alpha, 0, 0.5, 0)
+		fill.Size = UDim2.fromScale(alpha, 1)
+		knob.Position = UDim2.fromScale(alpha, 0.5)
 		valueLabel.Text = tostring(currentMs) .. " ms"
 		if persist and onChanged then
 			onChanged(currentMs)

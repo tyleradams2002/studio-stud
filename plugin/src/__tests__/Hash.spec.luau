@@ -236,10 +236,7 @@ do
 		attributes = {},
 		tags = {},
 	}
-	local withSource: any = {}
-	for k, v in pairs(base) do
-		withSource[k] = v
-	end
+	local withSource: any = table.clone(base)
 	withSource.source = "print('hello world')"
 	withSource.sourceEncoding = "utf8"
 	check("source excluded :: source-bearing entry hashes equal to base", Hash.hashInstance(base) == Hash.hashInstance(withSource))

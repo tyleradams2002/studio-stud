@@ -1,4 +1,11 @@
 --!strict
+-- `global_usage` is allowed (via per-`_G`-access `-- selene: allow(global_usage)`
+-- comments below) for one deliberate reason: GlobalApi's entire contract IS owning
+-- the shared `_G.StudioStud` slot (the trust boundary documented below). Every `_G`
+-- access is a guarded read/write through the typed `globalSlot()` accessor + the
+-- ownership token — not the accidental global the lint guards against. Suppressing
+-- the rule at each site (vs. restructuring `_G` away) keeps the module faithful to
+-- its purpose while clearing the tree-wide zero-warnings gate.
 -- GlobalApi — the `_G.StudioStud` wiring, ported from the monolith's GlobalApi
 -- block (StudioStud.plugin.lua:1324-1353) and its bootstrap install/teardown
 -- (the `_G.StudioStud.RunSelfTest = SelfTest.run` line at :4574-4579 and the
@@ -41,9 +48,10 @@
 -- published to `_G` (S2). Mirrors the monolith's statusFn/syncFn shape.
 export type CaptureHandler = () -> { [string]: any }
 
--- The self-test entry point published as `_G.StudioStud.RunSelfTest`. Returns the
--- SelfTest result table (open: `{ ok, passed, failed, ... }`).
-export type SelfTestFn = () -> { [string]: any }
+-- The self-test entry point published as `_G.StudioStud.RunSelfTest`. Returns a bare
+-- boolean (true = all checks passed), faithful to the monolith's `SelfTest.run`
+-- (StudioStud.plugin.lua:4566/:4569 `return true`/`return false`).
+export type SelfTestFn = () -> boolean
 
 -- The published global table. Intentionally minimal (S2): the self-test entry point
 -- plus the ownership token. NO `Sync`/`Capture`/`Status`. `[string]: any` keeps it
@@ -120,11 +128,21 @@ local OWNER_TOKEN: {} = {}
 local function globalSlot(): StudioStudGlobal?
 	-- luau-lsp does not model `_G` as a typed table; treat the lookup as `any` once,
 	-- here, rather than disabling checks (M1).
+	-- selene: allow(global_usage)
 	local slot = (_G :: any).StudioStud
 	if type(slot) == "table" then
 		return slot :: StudioStudGlobal
 	end
 	return nil
+end
+
+-- The write side of the same trust boundary: assign `_G.StudioStud` through one
+-- typed accessor (a clean, non-`;`-prefixed statement) so install/reclaim never
+-- inline a `_G` write and the `global_usage` suppression lives in exactly one place.
+local function setGlobalSlot(value: StudioStudGlobal?): ()
+	-- selene: allow(global_usage)
+	local globals = _G :: any
+	globals.StudioStud = value
 end
 
 function GlobalApi.makeDisabledFn(): CaptureHandler
@@ -157,7 +175,7 @@ function GlobalApi.install(runSelfTest: SelfTestFn): ()
 	-- non-optional local so the analyzer can prove the field writes below are safe
 	-- (no giant closure, no nilable narrowing dance).
 	local slot: StudioStudGlobal = globalSlot() or {} :: StudioStudGlobal
-	;(_G :: any).StudioStud = slot
+	setGlobalSlot(slot)
 	slot.__studioStudOwner = OWNER_TOKEN
 	slot.RunSelfTest = runSelfTest
 end
@@ -172,7 +190,7 @@ function GlobalApi.reclaim(): ()
 	-- monolith's `RunSelfTest == SelfTest.run` ownership identity guard — a later
 	-- plugin that overwrote `_G.StudioStud` keeps its slot.
 	if GlobalApi.owns() then
-		(_G :: any).StudioStud = nil
+		setGlobalSlot(nil)
 	end
 end
 
