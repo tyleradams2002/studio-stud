@@ -8,8 +8,8 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::Duration;
+use std::process::{Child, Command};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
@@ -93,7 +93,7 @@ pub fn fetch_latest(url: &str) -> Result<Value> {
 }
 
 /// `studio-stud.exe` -> `studio-stud.exe.new`
-fn staged_exe_path(exe: &Path) -> PathBuf {
+pub fn staged_exe_path(exe: &Path) -> PathBuf {
     let name = exe
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
@@ -207,6 +207,73 @@ pub fn check(url: &str) -> Result<UpdateReport> {
     })
 }
 
+/// Best-effort channel update check at `serve` boot: spawn `studio-stud-setup update --stage`
+/// with a backstop timeout. Any failure is logged and ignored — startup always continues.
+pub fn stage_update_via_setup() {
+    if let Err(reason) = stage_update_via_setup_inner() {
+        crate::obs::event("update", &format!("skipped: {reason}"));
+    }
+}
+
+fn stage_update_via_setup_inner() -> Result<(), String> {
+    let install_root = crate::setup_core::config::infer_install_root_from_exe()
+        .unwrap_or_else(crate::setup_core::install::default_install_root);
+    let daemon_exe = crate::setup_core::install::canonical_daemon_exe(&install_root);
+    let setup = crate::setup_core::install::resolve_setup_src(&daemon_exe)
+        .ok_or_else(|| "studio-stud-setup.exe not found".to_string())?;
+
+    let mut child = Command::new(&setup)
+        .args(["update", "--stage"])
+        .spawn()
+        .map_err(|e| format!("spawn failed: {e}"))?;
+
+    wait_with_timeout(&mut child, Duration::from_secs(120))
+        .map_err(|e| format!("{e}"))?;
+
+    let status = child
+        .wait()
+        .map_err(|e| format!("wait failed: {e}"))?;
+    if !status.success() {
+        return Err(format!(
+            "setup exited with {}",
+            status.code().unwrap_or(-1)
+        ));
+    }
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let staged = staged_exe_path(&exe);
+    if staged.exists() {
+        let meta = read_version_json(&exe);
+        let staged_version = meta
+            .get("stagedDaemonVersion")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        crate::obs::event("update", &format!("staged v{staged_version}"));
+    } else {
+        crate::obs::event("update", "up to date");
+    }
+    Ok(())
+}
+
+/// Poll `child.try_wait()` until it exits or `timeout` elapses; kills on timeout.
+pub fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<(), String> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("timed out after 120s".to_string());
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            Err(e) => return Err(format!("try_wait failed: {e}")),
+        }
+    }
+}
+
 /// Run at `serve` startup: apply a previously staged update only.
 /// Remote check/download is owned by `studio-stud-setup update` (no race on latest.json).
 pub fn apply_staged_on_boot() {
@@ -240,4 +307,71 @@ fn reexec_target_exe() -> PathBuf {
 /// Legacy entry — kept for `studio-stud update` CLI until setup binary owns it fully.
 pub fn run_on_serve(_url: &str, _enabled: bool) {
     apply_staged_on_boot();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::process::Stdio;
+
+    #[test]
+    fn wait_with_timeout_returns_on_fast_exit() {
+        let mut child = if cfg!(windows) {
+            Command::new("cmd")
+                .args(["/C", "exit", "0"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            Command::new("true")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        wait_with_timeout(&mut child, Duration::from_secs(5)).unwrap();
+        assert!(child.wait().unwrap().success());
+    }
+
+    #[test]
+    fn wait_with_timeout_kills_slow_child() {
+        let mut child = if cfg!(windows) {
+            Command::new("ping")
+                .args(["127.0.0.1", "-n", "60"])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        } else {
+            Command::new("sleep")
+                .arg("30")
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap()
+        };
+        let err = wait_with_timeout(&mut child, Duration::from_millis(200)).unwrap_err();
+        assert!(err.contains("timed out"));
+    }
+
+    #[test]
+    fn resolve_setup_src_finds_sibling_setup_exe() {
+        let base = std::env::temp_dir().join(format!(
+            "studio-stud-setup-locate-{}",
+            std::process::id()
+        ));
+        let bin_dir = base.join("bin");
+        fs::create_dir_all(&bin_dir).unwrap();
+        let daemon = bin_dir.join("studio-stud.exe");
+        let setup = bin_dir.join("studio-stud-setup.exe");
+        fs::write(&daemon, b"daemon").unwrap();
+        fs::write(&setup, b"setup").unwrap();
+
+        let found = crate::setup_core::install::resolve_setup_src(&daemon).unwrap();
+        assert_eq!(found, setup);
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

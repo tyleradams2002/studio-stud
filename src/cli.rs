@@ -805,10 +805,13 @@ fn cmd_serve(
     port: u16,
     read_pool_size_flag: Option<usize>,
     common: &CommonArgs,
-    _no_update: bool,
+    no_update: bool,
     profile: bool,
     verbose: bool,
 ) -> Result<()> {
+    if !no_update {
+        crate::update::stage_update_via_setup();
+    }
     crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
