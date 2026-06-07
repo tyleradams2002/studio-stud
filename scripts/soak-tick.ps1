@@ -69,23 +69,23 @@ Write-Section "Assertions"
 $failures = @()
 
 if ($tickCount -lt 10) {
-    $failures += "Expected >=10 tick POST lines in tail (got $tickCount) — soak may be too short"
+    $failures += "Expected >=10 tick POST lines in tail (got $tickCount) - soak may be too short"
 }
 
 if ($bulkCount -gt 0 -and $tickCount -gt 0) {
     $bulkRatio = $bulkCount / $tickCount
     Write-Host "bulk/tick ratio: $([math]::Round($bulkRatio, 3)) (max $MaxBulkRatio)"
     if ($bulkRatio -gt $MaxBulkRatio) {
-        $failures += "bulk/tick ratio $bulkRatio exceeds $MaxBulkRatio — possible periodic full-rebaseline pattern"
+        $failures += "bulk/tick ratio $bulkRatio exceeds $MaxBulkRatio - possible periodic full-rebaseline pattern"
     }
 }
 
 if ($matCount -gt 5) {
-    $failures += "materialize telemetry count $matCount > 5 — investigate unexpected full rebaselines"
+    $failures += "materialize telemetry count $matCount > 5 - investigate unexpected full rebaselines"
 }
 
 if ($deltaCount -eq 0 -and $tickCount -gt 50) {
-    Write-Host "NOTE: no [live-delta] lines — tick path may log under [http] only (protocol v2)." -ForegroundColor Yellow
+    Write-Host "NOTE: no [live-delta] lines - tick path may log under [http] only (protocol v2)." -ForegroundColor Yellow
 }
 
 if ($failures.Count -gt 0) {
