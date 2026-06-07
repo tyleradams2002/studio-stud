@@ -747,7 +747,6 @@ type LiveHost__DARKLUA_TYPE_ah = {
 	setConnected: (connected: boolean) -> (),
 	isConnected: () -> boolean,
 	setBaseline: (hasBaseline: boolean) -> (),
-	setConnectButtonState: () -> (),
 	reconnect: () -> (),
 	isRunning: () -> boolean,
 }
@@ -864,6 +863,8 @@ type PanelHandle__DARKLUA_TYPE_ap = {
 	frame: Frame,
 	sync: (options: any?) -> SyncResult__DARKLUA_TYPE_ao,
 	status: () -> SyncResult__DARKLUA_TYPE_ao,
+	probe: () -> boolean,
+	setAutoPolling: (enabled: boolean) -> (),
 	isRunning: () -> boolean,
 	pollGeneration: number,
 	onConnectRequested: () -> SyncResult__DARKLUA_TYPE_ao,
@@ -893,17 +894,16 @@ type PanelState__DARKLUA_TYPE_ar = {
 	parent: Frame,
 	resultLabel: TextLabel,
 	errorLabel: TextLabel,
-	connectButton: TextButton,
-	connectConnection: RBXScriptConnection?,
 	syncing: boolean,
 	running: boolean,
+	autoPolling: boolean,
 	pollGeneration: number,
 	sessionHasBaseline: boolean,
 	pausedBaseline: { revision: number, instanceCount: number },
 
 	formatError: (self: PanelState__DARKLUA_TYPE_ar, prefix: string, result: any) -> string,
-	setConnectButtonState: (self: PanelState__DARKLUA_TYPE_ar) -> (),
-	statusFn: (self: PanelState__DARKLUA_TYPE_ar) -> SyncResult__DARKLUA_TYPE_ao,
+	probe: (self: PanelState__DARKLUA_TYPE_ar) -> boolean,
+	statusFn: (self: PanelState__DARKLUA_TYPE_ar, options: { silent: boolean }?) -> SyncResult__DARKLUA_TYPE_ao,
 	syncFn: (self: PanelState__DARKLUA_TYPE_ar, options: any?) -> SyncResult__DARKLUA_TYPE_ao,
 	startupConnectAndCapture: (self: PanelState__DARKLUA_TYPE_ar) -> SyncResult__DARKLUA_TYPE_ao,
 	onReturnToEdit: (self: PanelState__DARKLUA_TYPE_ar) -> (),
@@ -977,7 +977,7 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 
 
 
-local PLUGIN_VERSION = "0.4.23"
+local PLUGIN_VERSION = "0.4.24"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -1006,7 +1006,7 @@ local SETTINGS = {
 
 local DEBOUNCE_MS_MIN = 100
 local DEBOUNCE_MS_MAX = 1000
-local DEBOUNCE_MS_DEFAULT = 300
+local DEBOUNCE_MS_DEFAULT = 500
 
 -- == Tick thresholds / intervals ==
 
@@ -4208,7 +4208,7 @@ function Ui.makeStatusCard(parent: Instance, y: number): StatusCard__DARKLUA_TYP
 			dot.BackgroundColor3 = Theme.copper
 			stripe.BackgroundColor3 = Theme.copper
 			statusLabel.TextColor3 = Theme.body
-		elseif state == "error" then
+		elseif state == "error" or state == "waiting" then
 			dot.BackgroundColor3 = Theme.warn
 			stripe.BackgroundColor3 = Theme.warn
 			statusLabel.TextColor3 = Theme.warn
@@ -4742,86 +4742,6 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 	end)
 	y += 48
 
-	Ui.makeSectionLabel(scroll, "Addon plugins", y)
-	y += 18
-	local addonsNote = Ui.makeLabel(
-		scroll,
-		"Bundled addons install into your Roblox Plugins folder for this repo. Reload Studio if a panel does not appear.",
-		y,
-		36,
-		Theme.muted
-	)
-	addonsNote.TextSize = 11
-	y += 40
-	local addonsList = Instance.new("Frame")
-	addonsList.Name = "AddonsList"
-	addonsList.BackgroundTransparency = 1
-	addonsList.Position = UDim2.fromOffset(Theme.PAD, y)
-	addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 28)
-	addonsList.Parent = scroll
-
-	local function renderAddons()
-		for _, child in ipairs(addonsList:GetChildren()) do
-			child:Destroy()
-		end
-		local placeId = 0
-		pcall(function()
-			placeId = game.PlaceId
-		end)
-		local okCtx, ctx = Transport.requestJson("GET", "/studio-stud/context?placeId=" .. tostring(placeId), nil)
-		if okCtx and type(ctx) == "table" and ctx.status == "unbound" then
-			local hint = Ui.makeLabel(addonsList, "Place not bound to a repo — open installer or bind in daemon.", 0, 40, Theme.muted)
-			hint.TextSize = 11
-			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 44)
-			return
-		end
-		local ok, result = Transport.requestJson("GET", "/studio-stud/addons?placeId=" .. tostring(placeId), nil)
-		if not ok or type(result) ~= "table" or type(result.addons) ~= "table" then
-			local err = Ui.makeLabel(addonsList, "Could not load addons (is `studio-stud serve` running?)", 0, 32, Theme.muted)
-			err.TextSize = 11
-			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
-			return
-		end
-		local rowY = 0
-		for _, addon in ipairs(result.addons) do
-			local id = addon.id
-			local enabled = addon.enabled == true
-			local row = Instance.new("Frame")
-			row.BackgroundTransparency = 1
-			row.Size = UDim2.new(1, 0, 0, 28)
-			row.Position = UDim2.fromOffset(0, rowY)
-			row.Parent = addonsList
-			local nameLabel = Instance.new("TextLabel")
-			nameLabel.BackgroundTransparency = 1
-			nameLabel.Size = UDim2.fromScale(0.65, 1)
-			nameLabel.FontFace = Theme.UI_FONT
-			nameLabel.TextColor3 = Theme.body
-			nameLabel.TextSize = 13
-			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-			nameLabel.Text = tostring(id)
-			nameLabel.Parent = row
-			local toggle = Ui.makeSecondaryButton(row, if enabled then "Enabled" else "Disabled")
-			toggle.Size = UDim2.fromScale(0.32, 1)
-			toggle.Position = UDim2.fromScale(0.68, 0)
-			toggle.MouseButton1Click:Connect(function()
-				local path = if enabled then "/studio-stud/addons/disable" else "/studio-stud/addons/enable"
-				local okW, res = Transport.requestJsonAuthed("POST", path, {
-					id = id,
-					placeId = placeId,
-				})
-				if not okW then
-					warn("[StudioStud] addon toggle failed:", res)
-				end
-				renderAddons()
-			end)
-			toggle.Parent = row
-			rowY += 32
-		end
-		addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, math.max(rowY, 28))
-	end
-	renderAddons()
-	y += 120
-
 	Ui.makeSectionLabel(scroll, "Tabs", y)
 	y += 18
 	local tabsList = Instance.new("Frame")
@@ -4995,50 +4915,64 @@ end
 
 -- == Widget-enabled hook ==
 
+local WAITING_FOR_SERVE_MSG = "Waiting for studio-stud serve…"
+
 function Shell.onWidgetEnabled(): ()
 	Shell.autoConnectGeneration += 1
 	local myGeneration = Shell.autoConnectGeneration
 
-	local function requestConnect(): any
+	local function resolveConnectHandle(): any?
 		local selectedId = Registry.selected()
-		if selectedId then
-			local handle = Registry.getHandle(selectedId)
-			if handle and handle.onConnectRequested then
-				return handle.onConnectRequested()
-			end
-		else
+		local handle = if selectedId then Registry.getHandle(selectedId) else nil
+		if not handle then
 			local firstId = Registry.firstEnabledId()
 			if firstId then
 				Registry.select(firstId)
-				local handle = Registry.getHandle(firstId)
-				if handle and handle.onConnectRequested then
-					return handle.onConnectRequested()
-				end
+				handle = Registry.getHandle(firstId)
 			end
+		end
+		if handle and handle.probe and handle.onConnectRequested then
+			return handle
 		end
 		return nil
 	end
 
-	local result = requestConnect()
-	if result and result.ok then
-		return
-	end
-
-	-- Daemon may start after the plugin; retry with backoff without blocking the frame.
 	task.spawn(function()
-		local delays = { 2, 2, 2, 2, 2 }
-		for _, delay in delays do
-			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
-				return
+		local waitingShown = false
+		local handle = resolveConnectHandle()
+		if handle and handle.setAutoPolling then
+			handle.setAutoPolling(true)
+		end
+
+		while Shell.autoConnectGeneration == myGeneration and Shell.widget.Enabled do
+			if Shell.connected then
+				waitingShown = false
+				task.wait(1)
+				continue
 			end
-			task.wait(delay)
-			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
-				return
+
+			handle = resolveConnectHandle()
+			if not handle then
+				task.wait(1)
+				continue
 			end
-			local retryResult = requestConnect()
-			if retryResult and retryResult.ok then
-				return
+
+			if not waitingShown then
+				local card = Shell.statusCard
+				if card then
+					card.setState("waiting", WAITING_FOR_SERVE_MSG)
+				end
+				waitingShown = true
 			end
+
+			if handle.probe() then
+				handle.onConnectRequested()
+			end
+			task.wait(1)
+		end
+
+		if handle and handle.setAutoPolling then
+			handle.setAutoPolling(false)
 		end
 	end)
 end
@@ -6969,7 +6903,7 @@ end function __DARKLUA_BUNDLE_MODULES.o():typeof(__modImpl())local v=__DARKLUA_B
 -- Here Live is an explicit module table with typed fields and methods; every method
 -- reaches state and siblings through `self`/module references, never a forward upvalue.
 -- The orchestrator/UI seam the monolith reached through closure upvalues (`ctx`,
--- `running`, `sessionHasBaseline`, `setConnectButtonState`, `startupConnectAndCapture`)
+-- `running`, `sessionHasBaseline`, `startupConnectAndCapture`)
 -- is now an INJECTED, typed `LiveHost` the bootstrap hands in via `Live.attach(host)`;
 -- the engine calls back through it instead of capturing a closure. Until attached,
 -- the host is a no-op stub, so a pre-live call (the C3 path) is a safe no-op, not a
@@ -7170,8 +7104,6 @@ end
 
 
 
-
-
 local Live: LiveModule__DARKLUA_TYPE_ai
 
 -- == No-op host stub (the C3 cure) ==
@@ -7196,7 +7128,6 @@ local NOOP_HOST: LiveHost__DARKLUA_TYPE_ah = {
 		return false
 	end,
 	setBaseline = function(_hasBaseline: boolean) end,
-	setConnectButtonState = function() end,
 	reconnect = function() end,
 	isRunning = function(): boolean
 		return true
@@ -7894,7 +7825,6 @@ local function triggerRebaseline(self: LiveModule__DARKLUA_TYPE_ai, reason: stri
 		end
 		self.host.setConnected(false)
 		self.host.setBaseline(false)
-		self.host.setConnectButtonState()
 		self.host.setStatus("syncing", "Re-baselining...")
 		warn("[StudioStud] re-baseline:", reason or "live-rebaseline")
 		self.host.reconnect()
@@ -7993,7 +7923,6 @@ local function runTick(self: LiveModule__DARKLUA_TYPE_ai, sessionMode: SessionMo
 			self:teardown()
 			self.host.setConnected(false)
 			self.host.setBaseline(false)
-			self.host.setConnectButtonState()
 			self.host.setStatus("error", "Daemon offline — reconnecting automatically")
 			self.host.setStats("")
 		end
@@ -8272,11 +8201,10 @@ end function __DARKLUA_BUNDLE_MODULES.p():typeof(__modImpl())local v=__DARKLUA_B
 -- monolith's CapturePanel block (StudioStud.plugin.lua:1564-3346) MINUS the live
 -- engine and the capture serializer, which now live in their own modules (Live /
 -- Capture / Fingerprints / Hash). What remains here is exactly what the rewrite
--- assigns to this module: the panel chrome (result/error labels + the Connect
--- button), the Connect-button state machine, the daemon ping/handshake (statusFn),
--- the connect+baseline orchestration (syncFn / startupConnectAndCapture), the
--- play->edit resume (onReturnToEdit — the C2 path), and the LiveHost the engine
--- calls back through.
+-- assigns to this module: the panel chrome (result/error labels), the daemon
+-- ping/handshake (statusFn), the connect+baseline orchestration (syncFn /
+-- startupConnectAndCapture), the play->edit resume (onReturnToEdit — the C2 path),
+-- and the LiveHost the engine calls back through.
 --
 -- VIEW-ONLY, ENGINE LIVES IN Live: this module owns no dirty sets, no tick loop,
 -- no fingerprints — it BUILDS the ctx the engine needs (setStatus/setStats/
@@ -8288,17 +8216,17 @@ end function __DARKLUA_BUNDLE_MODULES.p():typeof(__modImpl())local v=__DARKLUA_B
 -- bug class.
 --
 -- Structure note (the bug class this rewrite kills): the monolith held statusFn /
--- syncFn / startupConnectAndCapture / onReturnToEdit / responseNeedsRebaseline /
--- setConnectButtonState as forward-declared build-closure LOCALS referenced before
--- assignment — the exact before-local window that produced C2 (a nil onReturnToEdit
--- captured into startTickLoop) and C3 (Sync() before live nil-calls). Here they are
--- fields on a per-build `panel` state table; every cross-call goes through
--- `panel.*` (a field read resolved at call time), so nothing is read before its
--- field is assigned. `panel` is fully assembled before any handler can fire.
+-- syncFn / startupConnectAndCapture / onReturnToEdit / responseNeedsRebaseline as
+-- forward-declared build-closure LOCALS referenced before assignment — the exact
+-- before-local window that produced C2 (a nil onReturnToEdit captured into
+-- startTickLoop) and C3 (Sync() before live nil-calls). Here they are fields on a
+-- per-build `panel` state table; every cross-call goes through `panel.*` (a field
+-- read resolved at call time), so nothing is read before its field is assigned.
+-- `panel` is fully assembled before any handler can fire.
 --
 -- GlobalApi wiring is PER-BUILD / PER-DESTROY, faithful to the monolith
 -- (StudioStud.plugin.lua:3314 wired inside every CapturePanel.build, :3322
--- unwired inside every destroy). `build` calls `GlobalApi.wireCapture(status, sync)`
+-- unwired inside destroy). `build` calls `GlobalApi.wireCapture(status, sync)`
 -- so `GlobalApi.statusFn`/`.syncFn` always track the currently-live panel, and
 -- `destroy` calls `GlobalApi.installNoOps()` so the handlers revert to the disabled
 -- state whenever the panel is torn down (tab toggle off, `Registry.teardownAll`,
@@ -8459,6 +8387,7 @@ end
 
 
 
+
 local CapturePanel = {} :: CapturePanelModule__DARKLUA_TYPE_aq
 
 -- == build ==
@@ -8472,20 +8401,15 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 	local errorLabel = Ui.makeLabel(parent, "", Theme.PAD + 80, 80, Theme.warn)
 	errorLabel.TextSize = 12
 
-	local connectButton = Ui.makePrimaryButton(parent, "Connect")
-	connectButton.Position = UDim2.fromOffset(Theme.PAD, Theme.PAD + 168)
-	connectButton.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
-
 	-- The state record; fields assigned below before any handler can fire.
 	local panel: PanelState__DARKLUA_TYPE_ar = {
 		ctx = ctx,
 		parent = parent,
 		resultLabel = resultLabel,
 		errorLabel = errorLabel,
-		connectButton = connectButton,
-		connectConnection = nil,
 		syncing = false,
 		running = true,
+		autoPolling = false,
 		pollGeneration = 0,
 		sessionHasBaseline = false,
 		pausedBaseline = { revision = 0, instanceCount = 0 },
@@ -8503,28 +8427,16 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 		return message
 	end
 
-	-- VERBATIM port of setConnectButtonState (monolith :1605). Three states, driven
-	-- by `syncing` and ctx.isConnected().
-	function panel.setConnectButtonState(self: PanelState__DARKLUA_TYPE_ar): ()
-		if self.syncing then
-			self.connectButton.Text = "Capturing..."
-			self.connectButton.BackgroundColor3 = Theme.teal
-			self.connectButton.AutoButtonColor = false
-		elseif self.ctx.isConnected() then
-			self.connectButton.Text = "Capture / Query"
-			self.connectButton.BackgroundColor3 = Theme.copper
-			self.connectButton.AutoButtonColor = true
-		else
-			self.connectButton.Text = "Connect"
-			self.connectButton.BackgroundColor3 = Theme.copper
-			self.connectButton.AutoButtonColor = true
-		end
+	-- Lightweight reachability check: ping only, no status or error-label mutation.
+	function panel.probe(self: PanelState__DARKLUA_TYPE_ar): boolean
+		local ok, result = self.ctx.transport.requestJson("GET", "/studio-stud/ping", nil)
+		return ok and type(result) == "table" and result.ok == true
 	end
 
 	-- VERBATIM port of statusFn (monolith :2077): ping the daemon, run the mutual
 	-- protocol handshake, set the connection LED/status, and (on success) prime the
 	-- write token. Returns the loose result shape the monolith returned.
-	function panel.statusFn(self: PanelState__DARKLUA_TYPE_ar): SyncResult__DARKLUA_TYPE_ao
+	function panel.statusFn(self: PanelState__DARKLUA_TYPE_ar, options: { silent: boolean }?): SyncResult__DARKLUA_TYPE_ao
 		self.ctx.setStatus("syncing", "Checking daemon...")
 		local ok, result = self.ctx.transport.requestJson("GET", "/studio-stud/ping", nil)
 		if ok and result.ok then
@@ -8533,7 +8445,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 			-- Mutual handshake: name whichever side is behind.
 			if daemonProtocol < MIN_DAEMON_PROTOCOL_VERSION then
 				self.ctx.setConnected(false)
-				self:setConnectButtonState()
 				self.ctx.setStatus("error", "Daemon outdated — update it")
 				self.errorLabel.Text = ("Daemon protocol %d < plugin requires %d. Update: %s"):format(
 					daemonProtocol,
@@ -8550,7 +8461,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 			end
 			if PROTOCOL_VERSION < daemonMinPlugin then
 				self.ctx.setConnected(false)
-				self:setConnectButtonState()
 				self.ctx.setStatus("error", "Plugin outdated — reinstall plugin")
 				self.errorLabel.Text = ("Plugin protocol %d < daemon requires %d. Reinstall from .studio-stud-tool/plugin/StudioStud.plugin.lua"):format(
 					PROTOCOL_VERSION,
@@ -8565,7 +8475,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 				}
 			end
 			self.ctx.setConnected(true)
-			self:setConnectButtonState()
 			local updateNote = checkRemoteUpdate(result)
 			if updateNote ~= "" then
 				self.ctx.setStatus(
@@ -8584,7 +8493,11 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 			return { ok = true, daemon = result, placeId = game.PlaceId, placeName = game.Name }
 		end
 		self.ctx.setConnected(false)
-		self:setConnectButtonState()
+		local silent = self.autoPolling or (options and options.silent == true)
+		if silent then
+			self.errorLabel.Text = ""
+			return { ok = false, error = result.error, placeId = game.PlaceId, placeName = game.Name }
+		end
 		self.ctx.setStatus("idle", "Run studio-stud serve, then Connect")
 		self.errorLabel.Text = self:formatError("Connect failed", result)
 		return { ok = false, error = result.error, placeId = game.PlaceId, placeName = game.Name }
@@ -8637,7 +8550,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 			end)
 			self.ctx.setConnected(true)
 			self.sessionHasBaseline = true
-			self:setConnectButtonState()
 			self.resultLabel.Text = "Connected — first tick will baseline via /tick"
 			return { ok = true, daemon = ping.daemon }
 		end
@@ -8661,7 +8573,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 			end)
 			self.ctx.setConnected(true)
 			self.sessionHasBaseline = true
-			self:setConnectButtonState()
 			self.ctx.setStatus("connected", "Live resumed — tick sync active")
 			debugLog("session: resumed live after play (rev ", Live.currentRevision, ")")
 		else
@@ -8690,9 +8601,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 		setBaseline = function(hasBaseline: boolean)
 			panel.sessionHasBaseline = hasBaseline
 		end,
-		setConnectButtonState = function()
-			panel:setConnectButtonState()
-		end,
 		reconnect = function()
 			panel:startupConnectAndCapture()
 		end,
@@ -8701,20 +8609,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 		end,
 	}
 	Live:attach(host)
-
-	-- == Connect button wiring (verbatim port, monolith :3299) ==
-
-	panel.connectConnection = connectButton.MouseButton1Click:Connect(function()
-		if ctx.isConnected() then
-			if Live.liveRunning then
-				Live:triggerFullBaseline("manual")
-			else
-				panel:startupConnectAndCapture()
-			end
-		else
-			panel:startupConnectAndCapture()
-		end
-	end)
 
 	panel.pollGeneration += 1
 	local myGeneration = panel.pollGeneration
@@ -8729,22 +8623,23 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 	local statusEntry = function(): SyncResult__DARKLUA_TYPE_ao
 		return panel:statusFn()
 	end
+	local probeEntry = function(): boolean
+		return panel:probe()
+	end
+	local setAutoPollingEntry = function(enabled: boolean)
+		panel.autoPolling = enabled
+	end
 
 	-- Per-build wire (monolith :3314): GlobalApi now tracks THIS live panel's handlers
 	-- internally (S2 — never published to `_G`).
 	GlobalApi.wireCapture(statusEntry, syncEntry)
 
 	-- VERBATIM port of the panel's destroy (monolith :3316): stop the loop, tear down
-	-- the engine, disconnect the button, and revert GlobalApi to the disabled state
-	-- (monolith :3322) so a torn-down panel never leaves stale handlers wired.
+	-- the engine, and revert GlobalApi to the disabled state (monolith :3322) so a
+	-- torn-down panel never leaves stale handlers wired.
 	local function destroy(): ()
 		panel.running = false
 		Live:teardown()
-		local conn = panel.connectConnection
-		if conn then
-			conn:Disconnect()
-			panel.connectConnection = nil
-		end
 		GlobalApi.installNoOps()
 	end
 
@@ -8754,6 +8649,8 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 		frame = parent,
 		sync = syncEntry,
 		status = statusEntry,
+		probe = probeEntry,
+		setAutoPolling = setAutoPollingEntry,
 		isRunning = function(): boolean
 			return panel.running
 		end,

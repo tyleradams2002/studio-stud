@@ -19,7 +19,7 @@ local function check(label: string, cond: boolean)
 end
 
 -- == Version / protocol handshake (must not drift) ==
-check("PLUGIN_VERSION 0.4.23", Config.PLUGIN_VERSION == "0.4.23")
+check("PLUGIN_VERSION 0.4.24", Config.PLUGIN_VERSION == "0.4.24")
 check("PROTOCOL_VERSION 2", Config.PROTOCOL_VERSION == 2)
 check("MIN_DAEMON_PROTOCOL_VERSION 2", Config.MIN_DAEMON_PROTOCOL_VERSION == 2)
 
@@ -40,7 +40,7 @@ check("SETTINGS.writeToken", Config.SETTINGS.writeToken == "StudioStudWriteToken
 -- == Debounce bounds ==
 check("DEBOUNCE_MS_MIN 100", Config.DEBOUNCE_MS_MIN == 100)
 check("DEBOUNCE_MS_MAX 1000", Config.DEBOUNCE_MS_MAX == 1000)
-check("DEBOUNCE_MS_DEFAULT 300", Config.DEBOUNCE_MS_DEFAULT == 300)
+check("DEBOUNCE_MS_DEFAULT 500", Config.DEBOUNCE_MS_DEFAULT == 500)
 
 -- == Tick thresholds / intervals ==
 check("TICK_INLINE_THRESHOLD 256KiB", Config.TICK_INLINE_THRESHOLD == 256 * 1024)

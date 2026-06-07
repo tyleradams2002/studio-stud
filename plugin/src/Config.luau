@@ -71,7 +71,7 @@ export type ConfigModule = {
 
 -- == Version / protocol ==
 
-local PLUGIN_VERSION = "0.4.23"
+local PLUGIN_VERSION = "0.4.24"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -100,7 +100,7 @@ local SETTINGS = {
 
 local DEBOUNCE_MS_MIN = 100
 local DEBOUNCE_MS_MAX = 1000
-local DEBOUNCE_MS_DEFAULT = 300
+local DEBOUNCE_MS_DEFAULT = 500
 
 -- == Tick thresholds / intervals ==
 

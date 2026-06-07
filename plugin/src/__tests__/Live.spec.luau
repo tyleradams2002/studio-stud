@@ -156,7 +156,6 @@ do
 		Live.host.setStats("")
 		Live.host.setConnected(false)
 		Live.host.setBaseline(false)
-		Live.host.setConnectButtonState()
 	end)
 	check("C3: pre-attach host calls do not throw", okStatus)
 	check("C3: stub isConnected() == false", Live.host.isConnected() == false)
@@ -185,7 +184,6 @@ do
 			return true
 		end,
 		setBaseline = function(_b: boolean) end,
-		setConnectButtonState = function() end,
 		reconnect = function() end,
 		isRunning = function(): boolean
 			return true
@@ -221,7 +219,6 @@ do
 			return true
 		end,
 		setBaseline = function(_b: boolean) end,
-		setConnectButtonState = function() end,
 		reconnect = function() end,
 		isRunning = function(): boolean
 			return true

@@ -3,11 +3,10 @@
 -- monolith's CapturePanel block (StudioStud.plugin.lua:1564-3346) MINUS the live
 -- engine and the capture serializer, which now live in their own modules (Live /
 -- Capture / Fingerprints / Hash). What remains here is exactly what the rewrite
--- assigns to this module: the panel chrome (result/error labels + the Connect
--- button), the Connect-button state machine, the daemon ping/handshake (statusFn),
--- the connect+baseline orchestration (syncFn / startupConnectAndCapture), the
--- play->edit resume (onReturnToEdit — the C2 path), and the LiveHost the engine
--- calls back through.
+-- assigns to this module: the panel chrome (result/error labels), the daemon
+-- ping/handshake (statusFn), the connect+baseline orchestration (syncFn /
+-- startupConnectAndCapture), the play->edit resume (onReturnToEdit — the C2 path),
+-- and the LiveHost the engine calls back through.
 --
 -- VIEW-ONLY, ENGINE LIVES IN Live: this module owns no dirty sets, no tick loop,
 -- no fingerprints — it BUILDS the ctx the engine needs (setStatus/setStats/
@@ -19,17 +18,17 @@
 -- bug class.
 --
 -- Structure note (the bug class this rewrite kills): the monolith held statusFn /
--- syncFn / startupConnectAndCapture / onReturnToEdit / responseNeedsRebaseline /
--- setConnectButtonState as forward-declared build-closure LOCALS referenced before
--- assignment — the exact before-local window that produced C2 (a nil onReturnToEdit
--- captured into startTickLoop) and C3 (Sync() before live nil-calls). Here they are
--- fields on a per-build `panel` state table; every cross-call goes through
--- `panel.*` (a field read resolved at call time), so nothing is read before its
--- field is assigned. `panel` is fully assembled before any handler can fire.
+-- syncFn / startupConnectAndCapture / onReturnToEdit / responseNeedsRebaseline as
+-- forward-declared build-closure LOCALS referenced before assignment — the exact
+-- before-local window that produced C2 (a nil onReturnToEdit captured into
+-- startTickLoop) and C3 (Sync() before live nil-calls). Here they are fields on a
+-- per-build `panel` state table; every cross-call goes through `panel.*` (a field
+-- read resolved at call time), so nothing is read before its field is assigned.
+-- `panel` is fully assembled before any handler can fire.
 --
 -- GlobalApi wiring is PER-BUILD / PER-DESTROY, faithful to the monolith
 -- (StudioStud.plugin.lua:3314 wired inside every CapturePanel.build, :3322
--- unwired inside every destroy). `build` calls `GlobalApi.wireCapture(status, sync)`
+-- unwired inside destroy). `build` calls `GlobalApi.wireCapture(status, sync)`
 -- so `GlobalApi.statusFn`/`.syncFn` always track the currently-live panel, and
 -- `destroy` calls `GlobalApi.installNoOps()` so the handlers revert to the disabled
 -- state whenever the panel is torn down (tab toggle off, `Registry.teardownAll`,
@@ -142,6 +141,8 @@ export type PanelHandle = {
 	frame: Frame,
 	sync: (options: any?) -> SyncResult,
 	status: () -> SyncResult,
+	probe: () -> boolean,
+	setAutoPolling: (enabled: boolean) -> (),
 	isRunning: () -> boolean,
 	pollGeneration: number,
 	onConnectRequested: () -> SyncResult,
@@ -173,17 +174,16 @@ type PanelState = {
 	parent: Frame,
 	resultLabel: TextLabel,
 	errorLabel: TextLabel,
-	connectButton: TextButton,
-	connectConnection: RBXScriptConnection?,
 	syncing: boolean,
 	running: boolean,
+	autoPolling: boolean,
 	pollGeneration: number,
 	sessionHasBaseline: boolean,
 	pausedBaseline: { revision: number, instanceCount: number },
 
 	formatError: (self: PanelState, prefix: string, result: any) -> string,
-	setConnectButtonState: (self: PanelState) -> (),
-	statusFn: (self: PanelState) -> SyncResult,
+	probe: (self: PanelState) -> boolean,
+	statusFn: (self: PanelState, options: { silent: boolean }?) -> SyncResult,
 	syncFn: (self: PanelState, options: any?) -> SyncResult,
 	startupConnectAndCapture: (self: PanelState) -> SyncResult,
 	onReturnToEdit: (self: PanelState) -> (),
@@ -202,20 +202,15 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 	local errorLabel = Ui.makeLabel(parent, "", Theme.PAD + 80, 80, Theme.warn)
 	errorLabel.TextSize = 12
 
-	local connectButton = Ui.makePrimaryButton(parent, "Connect")
-	connectButton.Position = UDim2.fromOffset(Theme.PAD, Theme.PAD + 168)
-	connectButton.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
-
 	-- The state record; fields assigned below before any handler can fire.
 	local panel: PanelState = {
 		ctx = ctx,
 		parent = parent,
 		resultLabel = resultLabel,
 		errorLabel = errorLabel,
-		connectButton = connectButton,
-		connectConnection = nil,
 		syncing = false,
 		running = true,
+		autoPolling = false,
 		pollGeneration = 0,
 		sessionHasBaseline = false,
 		pausedBaseline = { revision = 0, instanceCount = 0 },
@@ -233,28 +228,16 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 		return message
 	end
 
-	-- VERBATIM port of setConnectButtonState (monolith :1605). Three states, driven
-	-- by `syncing` and ctx.isConnected().
-	function panel.setConnectButtonState(self: PanelState): ()
-		if self.syncing then
-			self.connectButton.Text = "Capturing..."
-			self.connectButton.BackgroundColor3 = Theme.teal
-			self.connectButton.AutoButtonColor = false
-		elseif self.ctx.isConnected() then
-			self.connectButton.Text = "Capture / Query"
-			self.connectButton.BackgroundColor3 = Theme.copper
-			self.connectButton.AutoButtonColor = true
-		else
-			self.connectButton.Text = "Connect"
-			self.connectButton.BackgroundColor3 = Theme.copper
-			self.connectButton.AutoButtonColor = true
-		end
+	-- Lightweight reachability check: ping only, no status or error-label mutation.
+	function panel.probe(self: PanelState): boolean
+		local ok, result = self.ctx.transport.requestJson("GET", "/studio-stud/ping", nil)
+		return ok and type(result) == "table" and result.ok == true
 	end
 
 	-- VERBATIM port of statusFn (monolith :2077): ping the daemon, run the mutual
 	-- protocol handshake, set the connection LED/status, and (on success) prime the
 	-- write token. Returns the loose result shape the monolith returned.
-	function panel.statusFn(self: PanelState): SyncResult
+	function panel.statusFn(self: PanelState, options: { silent: boolean }?): SyncResult
 		self.ctx.setStatus("syncing", "Checking daemon...")
 		local ok, result = self.ctx.transport.requestJson("GET", "/studio-stud/ping", nil)
 		if ok and result.ok then
@@ -263,7 +246,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			-- Mutual handshake: name whichever side is behind.
 			if daemonProtocol < MIN_DAEMON_PROTOCOL_VERSION then
 				self.ctx.setConnected(false)
-				self:setConnectButtonState()
 				self.ctx.setStatus("error", "Daemon outdated — update it")
 				self.errorLabel.Text = ("Daemon protocol %d < plugin requires %d. Update: %s"):format(
 					daemonProtocol,
@@ -280,7 +262,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			end
 			if PROTOCOL_VERSION < daemonMinPlugin then
 				self.ctx.setConnected(false)
-				self:setConnectButtonState()
 				self.ctx.setStatus("error", "Plugin outdated — reinstall plugin")
 				self.errorLabel.Text = ("Plugin protocol %d < daemon requires %d. Reinstall from .studio-stud-tool/plugin/StudioStud.plugin.lua"):format(
 					PROTOCOL_VERSION,
@@ -295,7 +276,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 				}
 			end
 			self.ctx.setConnected(true)
-			self:setConnectButtonState()
 			local updateNote = checkRemoteUpdate(result)
 			if updateNote ~= "" then
 				self.ctx.setStatus(
@@ -314,7 +294,11 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			return { ok = true, daemon = result, placeId = game.PlaceId, placeName = game.Name }
 		end
 		self.ctx.setConnected(false)
-		self:setConnectButtonState()
+		local silent = self.autoPolling or (options and options.silent == true)
+		if silent then
+			self.errorLabel.Text = ""
+			return { ok = false, error = result.error, placeId = game.PlaceId, placeName = game.Name }
+		end
 		self.ctx.setStatus("idle", "Run studio-stud serve, then Connect")
 		self.errorLabel.Text = self:formatError("Connect failed", result)
 		return { ok = false, error = result.error, placeId = game.PlaceId, placeName = game.Name }
@@ -367,7 +351,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			end)
 			self.ctx.setConnected(true)
 			self.sessionHasBaseline = true
-			self:setConnectButtonState()
 			self.resultLabel.Text = "Connected — first tick will baseline via /tick"
 			return { ok = true, daemon = ping.daemon }
 		end
@@ -391,7 +374,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 			end)
 			self.ctx.setConnected(true)
 			self.sessionHasBaseline = true
-			self:setConnectButtonState()
 			self.ctx.setStatus("connected", "Live resumed — tick sync active")
 			debugLog("session: resumed live after play (rev ", Live.currentRevision, ")")
 		else
@@ -420,9 +402,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 		setBaseline = function(hasBaseline: boolean)
 			panel.sessionHasBaseline = hasBaseline
 		end,
-		setConnectButtonState = function()
-			panel:setConnectButtonState()
-		end,
 		reconnect = function()
 			panel:startupConnectAndCapture()
 		end,
@@ -431,20 +410,6 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 		end,
 	}
 	Live:attach(host)
-
-	-- == Connect button wiring (verbatim port, monolith :3299) ==
-
-	panel.connectConnection = connectButton.MouseButton1Click:Connect(function()
-		if ctx.isConnected() then
-			if Live.liveRunning then
-				Live:triggerFullBaseline("manual")
-			else
-				panel:startupConnectAndCapture()
-			end
-		else
-			panel:startupConnectAndCapture()
-		end
-	end)
 
 	panel.pollGeneration += 1
 	local myGeneration = panel.pollGeneration
@@ -459,22 +424,23 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 	local statusEntry = function(): SyncResult
 		return panel:statusFn()
 	end
+	local probeEntry = function(): boolean
+		return panel:probe()
+	end
+	local setAutoPollingEntry = function(enabled: boolean)
+		panel.autoPolling = enabled
+	end
 
 	-- Per-build wire (monolith :3314): GlobalApi now tracks THIS live panel's handlers
 	-- internally (S2 — never published to `_G`).
 	GlobalApi.wireCapture(statusEntry, syncEntry)
 
 	-- VERBATIM port of the panel's destroy (monolith :3316): stop the loop, tear down
-	-- the engine, disconnect the button, and revert GlobalApi to the disabled state
-	-- (monolith :3322) so a torn-down panel never leaves stale handlers wired.
+	-- the engine, and revert GlobalApi to the disabled state (monolith :3322) so a
+	-- torn-down panel never leaves stale handlers wired.
 	local function destroy(): ()
 		panel.running = false
 		Live:teardown()
-		local conn = panel.connectConnection
-		if conn then
-			conn:Disconnect()
-			panel.connectConnection = nil
-		end
 		GlobalApi.installNoOps()
 	end
 
@@ -484,6 +450,8 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 		frame = parent,
 		sync = syncEntry,
 		status = statusEntry,
+		probe = probeEntry,
+		setAutoPolling = setAutoPollingEntry,
 		isRunning = function(): boolean
 			return panel.running
 		end,

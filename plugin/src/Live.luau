@@ -15,7 +15,7 @@
 -- Here Live is an explicit module table with typed fields and methods; every method
 -- reaches state and siblings through `self`/module references, never a forward upvalue.
 -- The orchestrator/UI seam the monolith reached through closure upvalues (`ctx`,
--- `running`, `sessionHasBaseline`, `setConnectButtonState`, `startupConnectAndCapture`)
+-- `running`, `sessionHasBaseline`, `startupConnectAndCapture`)
 -- is now an INJECTED, typed `LiveHost` the bootstrap hands in via `Live.attach(host)`;
 -- the engine calls back through it instead of capturing a closure. Until attached,
 -- the host is a no-op stub, so a pre-live call (the C3 path) is a safe no-op, not a
@@ -98,7 +98,6 @@ end
 --   setStatus/setStats — UI status/stat text (ctx.setStatus / ctx.setStats).
 --   setConnected/isConnected — connection LED state (ctx.setConnected / ctx.isConnected).
 --   setBaseline        — persist sessionHasBaseline (the build-closure local).
---   setConnectButtonState — re-render the Connect button (the closure function).
 --   reconnect          — startupConnectAndCapture: the full connect+baseline+loop
 --                        bootstrap. Used by triggerRebaseline; injected so Live does
 --                        not own the connect handshake (that's the orchestrator's job).
@@ -113,7 +112,6 @@ export type LiveHost = {
 	setConnected: (connected: boolean) -> (),
 	isConnected: () -> boolean,
 	setBaseline: (hasBaseline: boolean) -> (),
-	setConnectButtonState: () -> (),
 	reconnect: () -> (),
 	isRunning: () -> boolean,
 }
@@ -241,7 +239,6 @@ local NOOP_HOST: LiveHost = {
 		return false
 	end,
 	setBaseline = function(_hasBaseline: boolean) end,
-	setConnectButtonState = function() end,
 	reconnect = function() end,
 	isRunning = function(): boolean
 		return true
@@ -939,7 +936,6 @@ local function triggerRebaseline(self: LiveModule, reason: string?): ()
 		end
 		self.host.setConnected(false)
 		self.host.setBaseline(false)
-		self.host.setConnectButtonState()
 		self.host.setStatus("syncing", "Re-baselining...")
 		warn("[StudioStud] re-baseline:", reason or "live-rebaseline")
 		self.host.reconnect()
@@ -1038,7 +1034,6 @@ local function runTick(self: LiveModule, sessionMode: SessionMode?): ()
 			self:teardown()
 			self.host.setConnected(false)
 			self.host.setBaseline(false)
-			self.host.setConnectButtonState()
 			self.host.setStatus("error", "Daemon offline — reconnecting automatically")
 			self.host.setStats("")
 		end

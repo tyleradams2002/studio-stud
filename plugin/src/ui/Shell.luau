@@ -440,86 +440,6 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 	end)
 	y += 48
 
-	Ui.makeSectionLabel(scroll, "Addon plugins", y)
-	y += 18
-	local addonsNote = Ui.makeLabel(
-		scroll,
-		"Bundled addons install into your Roblox Plugins folder for this repo. Reload Studio if a panel does not appear.",
-		y,
-		36,
-		Theme.muted
-	)
-	addonsNote.TextSize = 11
-	y += 40
-	local addonsList = Instance.new("Frame")
-	addonsList.Name = "AddonsList"
-	addonsList.BackgroundTransparency = 1
-	addonsList.Position = UDim2.fromOffset(Theme.PAD, y)
-	addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 28)
-	addonsList.Parent = scroll
-
-	local function renderAddons()
-		for _, child in ipairs(addonsList:GetChildren()) do
-			child:Destroy()
-		end
-		local placeId = 0
-		pcall(function()
-			placeId = game.PlaceId
-		end)
-		local okCtx, ctx = Transport.requestJson("GET", "/studio-stud/context?placeId=" .. tostring(placeId), nil)
-		if okCtx and type(ctx) == "table" and ctx.status == "unbound" then
-			local hint = Ui.makeLabel(addonsList, "Place not bound to a repo — open installer or bind in daemon.", 0, 40, Theme.muted)
-			hint.TextSize = 11
-			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 44)
-			return
-		end
-		local ok, result = Transport.requestJson("GET", "/studio-stud/addons?placeId=" .. tostring(placeId), nil)
-		if not ok or type(result) ~= "table" or type(result.addons) ~= "table" then
-			local err = Ui.makeLabel(addonsList, "Could not load addons (is `studio-stud serve` running?)", 0, 32, Theme.muted)
-			err.TextSize = 11
-			addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, 36)
-			return
-		end
-		local rowY = 0
-		for _, addon in ipairs(result.addons) do
-			local id = addon.id
-			local enabled = addon.enabled == true
-			local row = Instance.new("Frame")
-			row.BackgroundTransparency = 1
-			row.Size = UDim2.new(1, 0, 0, 28)
-			row.Position = UDim2.fromOffset(0, rowY)
-			row.Parent = addonsList
-			local nameLabel = Instance.new("TextLabel")
-			nameLabel.BackgroundTransparency = 1
-			nameLabel.Size = UDim2.fromScale(0.65, 1)
-			nameLabel.FontFace = Theme.UI_FONT
-			nameLabel.TextColor3 = Theme.body
-			nameLabel.TextSize = 13
-			nameLabel.TextXAlignment = Enum.TextXAlignment.Left
-			nameLabel.Text = tostring(id)
-			nameLabel.Parent = row
-			local toggle = Ui.makeSecondaryButton(row, if enabled then "Enabled" else "Disabled")
-			toggle.Size = UDim2.fromScale(0.32, 1)
-			toggle.Position = UDim2.fromScale(0.68, 0)
-			toggle.MouseButton1Click:Connect(function()
-				local path = if enabled then "/studio-stud/addons/disable" else "/studio-stud/addons/enable"
-				local okW, res = Transport.requestJsonAuthed("POST", path, {
-					id = id,
-					placeId = placeId,
-				})
-				if not okW then
-					warn("[StudioStud] addon toggle failed:", res)
-				end
-				renderAddons()
-			end)
-			toggle.Parent = row
-			rowY += 32
-		end
-		addonsList.Size = UDim2.new(1, -Theme.PAD * 2, 0, math.max(rowY, 28))
-	end
-	renderAddons()
-	y += 120
-
 	Ui.makeSectionLabel(scroll, "Tabs", y)
 	y += 18
 	local tabsList = Instance.new("Frame")
@@ -693,50 +613,64 @@ end
 
 -- == Widget-enabled hook ==
 
+local WAITING_FOR_SERVE_MSG = "Waiting for studio-stud serve…"
+
 function Shell.onWidgetEnabled(): ()
 	Shell.autoConnectGeneration += 1
 	local myGeneration = Shell.autoConnectGeneration
 
-	local function requestConnect(): any
+	local function resolveConnectHandle(): any?
 		local selectedId = Registry.selected()
-		if selectedId then
-			local handle = Registry.getHandle(selectedId)
-			if handle and handle.onConnectRequested then
-				return handle.onConnectRequested()
-			end
-		else
+		local handle = if selectedId then Registry.getHandle(selectedId) else nil
+		if not handle then
 			local firstId = Registry.firstEnabledId()
 			if firstId then
 				Registry.select(firstId)
-				local handle = Registry.getHandle(firstId)
-				if handle and handle.onConnectRequested then
-					return handle.onConnectRequested()
-				end
+				handle = Registry.getHandle(firstId)
 			end
+		end
+		if handle and handle.probe and handle.onConnectRequested then
+			return handle
 		end
 		return nil
 	end
 
-	local result = requestConnect()
-	if result and result.ok then
-		return
-	end
-
-	-- Daemon may start after the plugin; retry with backoff without blocking the frame.
 	task.spawn(function()
-		local delays = { 2, 2, 2, 2, 2 }
-		for _, delay in delays do
-			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
-				return
+		local waitingShown = false
+		local handle = resolveConnectHandle()
+		if handle and handle.setAutoPolling then
+			handle.setAutoPolling(true)
+		end
+
+		while Shell.autoConnectGeneration == myGeneration and Shell.widget.Enabled do
+			if Shell.connected then
+				waitingShown = false
+				task.wait(1)
+				continue
 			end
-			task.wait(delay)
-			if Shell.autoConnectGeneration ~= myGeneration or not Shell.widget.Enabled then
-				return
+
+			handle = resolveConnectHandle()
+			if not handle then
+				task.wait(1)
+				continue
 			end
-			local retryResult = requestConnect()
-			if retryResult and retryResult.ok then
-				return
+
+			if not waitingShown then
+				local card = Shell.statusCard
+				if card then
+					card.setState("waiting", WAITING_FOR_SERVE_MSG)
+				end
+				waitingShown = true
 			end
+
+			if handle.probe() then
+				handle.onConnectRequested()
+			end
+			task.wait(1)
+		end
+
+		if handle and handle.setAutoPolling then
+			handle.setAutoPolling(false)
 		end
 	end)
 end

@@ -395,7 +395,7 @@ function Ui.makeStatusCard(parent: Instance, y: number): StatusCard
 			dot.BackgroundColor3 = Theme.copper
 			stripe.BackgroundColor3 = Theme.copper
 			statusLabel.TextColor3 = Theme.body
-		elseif state == "error" then
+		elseif state == "error" or state == "waiting" then
 			dot.BackgroundColor3 = Theme.warn
 			stripe.BackgroundColor3 = Theme.warn
 			statusLabel.TextColor3 = Theme.warn
