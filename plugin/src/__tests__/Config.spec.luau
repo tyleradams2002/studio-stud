@@ -19,7 +19,7 @@ local function check(label: string, cond: boolean)
 end
 
 -- == Version / protocol handshake (must not drift) ==
-check("PLUGIN_VERSION 0.4.25", Config.PLUGIN_VERSION == "0.4.25")
+check("PLUGIN_VERSION 0.4.26", Config.PLUGIN_VERSION == "0.4.26")
 check("PROTOCOL_VERSION 2", Config.PROTOCOL_VERSION == 2)
 check("MIN_DAEMON_PROTOCOL_VERSION 2", Config.MIN_DAEMON_PROTOCOL_VERSION == 2)
 
@@ -34,6 +34,7 @@ check("SETTINGS.welcomeVersion", Config.SETTINGS.welcomeVersion == "StudioStudWe
 check("SETTINGS.liveCaptureEnabled", Config.SETTINGS.liveCaptureEnabled == "StudioStudLiveCaptureEnabled")
 check("SETTINGS.debounceMs", Config.SETTINGS.debounceMs == "StudioStudDebounceMs")
 check("SETTINGS.debugLogging", Config.SETTINGS.debugLogging == "StudioStudDebugLogging")
+check("SETTINGS.settingsRev", Config.SETTINGS.settingsRev == "StudioStudSettingsRev")
 check("SETTINGS.panelEnabled", Config.SETTINGS.panelEnabled == "StudioStudPanelEnabled")
 check("SETTINGS.writeToken", Config.SETTINGS.writeToken == "StudioStudWriteToken")
 

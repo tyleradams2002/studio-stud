@@ -17,6 +17,7 @@ type ConfigModule__DARKLUA_TYPE_a = {
 		liveCaptureEnabled: string,
 		debounceMs: string,
 		debugLogging: string,
+		settingsRev: string,
 		panelEnabled: string,
 		writeToken: string,
 	},
@@ -83,6 +84,10 @@ type SettingsModule__DARKLUA_TYPE_c = {
 
 	-- Debug logging gate: warn(...) iff the debugLogging setting is true.
 	debugLog: (...any) -> (),
+
+	-- One-time defaults migration: brings a pre-revision install onto the current
+	-- default debounce + debug-off the user expects. Idempotent (guarded by settingsRev).
+	applyDefaultsMigration: () -> (),
 }
 
 type PanelDescriptor__DARKLUA_TYPE_d = {
@@ -977,7 +982,8 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 
 
 
-local PLUGIN_VERSION = "0.4.25"
+
+local PLUGIN_VERSION = "0.4.26"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -998,6 +1004,7 @@ local SETTINGS = {
 	liveCaptureEnabled = "StudioStudLiveCaptureEnabled",
 	debounceMs = "StudioStudDebounceMs",
 	debugLogging = "StudioStudDebugLogging",
+	settingsRev = "StudioStudSettingsRev",
 	panelEnabled = "StudioStudPanelEnabled",
 	writeToken = "StudioStudWriteToken",
 }
@@ -1531,6 +1538,10 @@ local DEBOUNCE_MS_DEFAULT = Config.DEBOUNCE_MS_DEFAULT
 
 
 
+
+
+
+
 local pluginHandle: Plugin = plugin
 
 local httpService: HttpService? = nil
@@ -1697,6 +1708,22 @@ local function debugLog(...: any): ()
 	end
 end
 
+-- == One-time defaults migration ==
+
+-- Persisted settings survive plugin upgrades (they're keyed in Studio's plugin settings),
+-- so a pre-0.4.26 install still shows the old 300ms debounce and debug-on after updating.
+-- Run ONCE per revision to bring those onto the defaults the user now expects; afterwards
+-- the user's own changes persist normally. Guarded by `settingsRev` so it never re-clobbers.
+local SETTINGS_REV = "0.4.26"
+local function applyDefaultsMigration(): ()
+	if getString(SETTINGS.settingsRev, "") == SETTINGS_REV then
+		return
+	end
+	setDebounceMs(DEBOUNCE_MS_DEFAULT)
+	setBool(SETTINGS.debugLogging, false)
+	setString(SETTINGS.settingsRev, SETTINGS_REV)
+end
+
 -- == Module table ==
 
 local Settings: SettingsModule__DARKLUA_TYPE_c = {
@@ -1718,6 +1745,8 @@ local Settings: SettingsModule__DARKLUA_TYPE_c = {
 	clearPanelEnabled = clearPanelEnabled,
 
 	debugLog = debugLog,
+
+	applyDefaultsMigration = applyDefaultsMigration,
 }
 
 return Settings
@@ -4500,6 +4529,19 @@ function Shell.renderTabStrip(): ()
 		end
 	end
 
+	-- With a single enabled panel the tab selector is pointless chrome; hide the strip so
+	-- the panel body owns the surface. Only show tabs when there's a real choice (>1).
+	local enabledCount = 0
+	for _, item in ipairs(Registry.list()) do
+		if item.enabled then
+			enabledCount += 1
+		end
+	end
+	tabStrip.Visible = enabledCount > 1
+	if enabledCount <= 1 then
+		return
+	end
+
 	local selectedId = Registry.selected()
 	local x = 0
 	for _, item in ipairs(Registry.list()) do
@@ -4705,7 +4747,7 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 	y += 40
 	local liveNote = Ui.makeLabel(
 		scroll,
-		"Auto-starts on plugin load. Signals track changes; full verify every 3 min. Reconnects automatically if daemon restarts.",
+		"Auto-starts on plugin load. Signals stream changes to the daemon each tick and self-heal on drift. Reconnects automatically if the daemon restarts.",
 		y,
 		36,
 		Theme.muted
@@ -8670,7 +8712,7 @@ end
 -- registers with Registry.
 CapturePanel.descriptor = {
 	id = "capture",
-	title = "Capture / Query",
+	title = "Live Sync",
 	defaultEnabled = true,
 	build = CapturePanel.build,
 }
@@ -8743,6 +8785,7 @@ end
 local pluginHandle: Plugin = pluginGlobal
 
 local Config = __DARKLUA_BUNDLE_MODULES.a()
+local Settings = __DARKLUA_BUNDLE_MODULES.b()
 local Registry = __DARKLUA_BUNDLE_MODULES.c()
 local GlobalApi = __DARKLUA_BUNDLE_MODULES.d()
 local SelfTest = __DARKLUA_BUNDLE_MODULES.n()
@@ -8809,6 +8852,11 @@ local function start(): ()
 		return
 	end
 	started = true
+
+	-- One-time: bring a pre-revision install onto the current default debounce (500ms) and
+	-- debug-off BEFORE the settings overlay reads them, so the UI shows the expected state.
+	-- Idempotent (guarded by settingsRev), so this is a no-op on every subsequent load.
+	Settings.applyDefaultsMigration()
 
 	-- Install the minimal global surface BEFORE building the panel, mirroring the
 	-- monolith's `_G.StudioStud = _G.StudioStud or {}` + `RunSelfTest` running ahead of

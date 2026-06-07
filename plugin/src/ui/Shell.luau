@@ -198,6 +198,19 @@ function Shell.renderTabStrip(): ()
 		end
 	end
 
+	-- With a single enabled panel the tab selector is pointless chrome; hide the strip so
+	-- the panel body owns the surface. Only show tabs when there's a real choice (>1).
+	local enabledCount = 0
+	for _, item in ipairs(Registry.list()) do
+		if item.enabled then
+			enabledCount += 1
+		end
+	end
+	tabStrip.Visible = enabledCount > 1
+	if enabledCount <= 1 then
+		return
+	end
+
 	local selectedId = Registry.selected()
 	local x = 0
 	for _, item in ipairs(Registry.list()) do
@@ -403,7 +416,7 @@ function Shell.buildSettingsOverlay(parent: Instance): ()
 	y += 40
 	local liveNote = Ui.makeLabel(
 		scroll,
-		"Auto-starts on plugin load. Signals track changes; full verify every 3 min. Reconnects automatically if daemon restarts.",
+		"Auto-starts on plugin load. Signals stream changes to the daemon each tick and self-heal on drift. Reconnects automatically if the daemon restarts.",
 		y,
 		36,
 		Theme.muted

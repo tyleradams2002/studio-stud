@@ -471,7 +471,7 @@ end
 -- registers with Registry.
 CapturePanel.descriptor = {
 	id = "capture",
-	title = "Capture / Query",
+	title = "Live Sync",
 	defaultEnabled = true,
 	build = CapturePanel.build,
 }

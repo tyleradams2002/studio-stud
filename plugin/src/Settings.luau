@@ -68,6 +68,10 @@ export type SettingsModule = {
 
 	-- Debug logging gate: warn(...) iff the debugLogging setting is true.
 	debugLog: (...any) -> (),
+
+	-- One-time defaults migration: brings a pre-revision install onto the current
+	-- default debounce + debug-off the user expects. Idempotent (guarded by settingsRev).
+	applyDefaultsMigration: () -> (),
 }
 
 -- == Engine handles ==
@@ -242,6 +246,22 @@ local function debugLog(...: any): ()
 	end
 end
 
+-- == One-time defaults migration ==
+
+-- Persisted settings survive plugin upgrades (they're keyed in Studio's plugin settings),
+-- so a pre-0.4.26 install still shows the old 300ms debounce and debug-on after updating.
+-- Run ONCE per revision to bring those onto the defaults the user now expects; afterwards
+-- the user's own changes persist normally. Guarded by `settingsRev` so it never re-clobbers.
+local SETTINGS_REV = "0.4.26"
+local function applyDefaultsMigration(): ()
+	if getString(SETTINGS.settingsRev, "") == SETTINGS_REV then
+		return
+	end
+	setDebounceMs(DEBOUNCE_MS_DEFAULT)
+	setBool(SETTINGS.debugLogging, false)
+	setString(SETTINGS.settingsRev, SETTINGS_REV)
+end
+
 -- == Module table ==
 
 local Settings: SettingsModule = {
@@ -263,6 +283,8 @@ local Settings: SettingsModule = {
 	clearPanelEnabled = clearPanelEnabled,
 
 	debugLog = debugLog,
+
+	applyDefaultsMigration = applyDefaultsMigration,
 }
 
 return Settings

@@ -64,6 +64,7 @@ end
 local pluginHandle: Plugin = pluginGlobal
 
 local Config = require("@src/Config")
+local Settings = require("@src/Settings")
 local Registry = require("@src/Registry")
 local GlobalApi = require("@src/GlobalApi")
 local SelfTest = require("@src/SelfTest")
@@ -130,6 +131,11 @@ local function start(): ()
 		return
 	end
 	started = true
+
+	-- One-time: bring a pre-revision install onto the current default debounce (500ms) and
+	-- debug-off BEFORE the settings overlay reads them, so the UI shows the expected state.
+	-- Idempotent (guarded by settingsRev), so this is a no-op on every subsequent load.
+	Settings.applyDefaultsMigration()
 
 	-- Install the minimal global surface BEFORE building the panel, mirroring the
 	-- monolith's `_G.StudioStud = _G.StudioStud or {}` + `RunSelfTest` running ahead of

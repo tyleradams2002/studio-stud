@@ -34,6 +34,7 @@ export type ConfigModule = {
 		liveCaptureEnabled: string,
 		debounceMs: string,
 		debugLogging: string,
+		settingsRev: string,
 		panelEnabled: string,
 		writeToken: string,
 	},
@@ -71,7 +72,7 @@ export type ConfigModule = {
 
 -- == Version / protocol ==
 
-local PLUGIN_VERSION = "0.4.25"
+local PLUGIN_VERSION = "0.4.26"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -92,6 +93,7 @@ local SETTINGS = {
 	liveCaptureEnabled = "StudioStudLiveCaptureEnabled",
 	debounceMs = "StudioStudDebounceMs",
 	debugLogging = "StudioStudDebugLogging",
+	settingsRev = "StudioStudSettingsRev",
 	panelEnabled = "StudioStudPanelEnabled",
 	writeToken = "StudioStudWriteToken",
 }
