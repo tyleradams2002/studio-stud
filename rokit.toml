@@ -7,3 +7,4 @@
 darklua = "seaofvoices/darklua@0.18.0"
 selene = "Kampfkarren/selene@0.31.0"
 luau-lsp = "JohnnyMorganz/luau-lsp@1.68.0"
+lune = "lune-org/lune@0.10.4"
