@@ -39,10 +39,12 @@ local Config = require("../Config")
 local Session = require("../Session")
 local AllowList = require("../AllowList")
 local Live = require("../Live")
+local Capture = require("../Capture")
 
 type ShellContext = Shell.ShellContext
 type LiveHost = Live.LiveHost
 type LiveModule = Live.LiveModule
+type CaptureModule = Capture.CaptureModule
 
 local PLUGIN_VERSION = Config.PLUGIN_VERSION
 local PROTOCOL_VERSION = Config.PROTOCOL_VERSION
@@ -137,6 +139,7 @@ export type PanelHandle = {
 	onConnectRequested: () -> SyncResult,
 	destroy: () -> (),
 	live: LiveModule,
+	capture: CaptureModule,
 	[string]: any,
 }
 
@@ -470,6 +473,7 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext): PanelHandle
 		end,
 		destroy = destroy,
 		live = Live, -- exposed for self-tests and _G.StudioStud.Live
+		capture = Capture, -- Phase 3: exposed for self-tests (SelfTest reaches Capture only via this field)
 	}
 end
 
