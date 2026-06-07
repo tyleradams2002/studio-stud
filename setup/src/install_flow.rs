@@ -139,6 +139,30 @@ pub fn install_version_json(
     obj
 }
 
+/// version.json for a staged in-daemon update: running exe stays at `current_daemon_version`
+/// until `apply_staged` promotes `stagedDaemonVersion`.
+pub fn stage_version_json(
+    current_daemon_version: &str,
+    staged_daemon_version: &str,
+    plugin_version: &str,
+    channel: Option<&str>,
+    last_channel_sequence: Option<&Map<String, Value>>,
+) -> Value {
+    let mut obj = json!({
+        "daemonVersion": current_daemon_version,
+        "stagedDaemonVersion": staged_daemon_version,
+        "pluginVersion": plugin_version,
+        "installedAt": studio_stud::util::now_utc(),
+    });
+    if let Some(ch) = channel {
+        obj["channel"] = json!(ch);
+    }
+    if let Some(seq) = last_channel_sequence {
+        obj["lastChannelSequence"] = Value::Object(seq.clone());
+    }
+    obj
+}
+
 fn sync_version_json_channel(install_root: &Path, cfg: &StudioStudConfig) -> Result<()> {
     let path = install_root.join("version.json");
     let mut v: Value = if path.is_file() {
