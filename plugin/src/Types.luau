@@ -49,6 +49,7 @@ export type InstanceEntry = {
 	id: string,
 	parentId: string?, -- nil at a captured root
 	path: string,
+	displayPath: string, -- inst:GetFullName(); rides the wire (consumed by daemon for display_path/search_text), NOT in the drift hash
 	name: string,
 	className: string,
 	depth: number,

@@ -801,6 +801,7 @@ local function buildUpsertedEntry(inst: Instance, memo: SiblingMemo?): (Instance
 		id = id,
 		parentId = parentId,
 		path = path,
+		displayPath = inst:GetFullName(),
 		name = inst.Name,
 		className = inst.ClassName,
 		depth = slashCount,

@@ -40,6 +40,7 @@ local scriptEntry: InstanceEntry = {
 	id = "ref-1",
 	parentId = "ref-0",
 	path = "Workspace[1]/Part[1]",
+	displayPath = "Workspace.Part",
 	name = "Part",
 	className = "Part",
 	depth = 1,
@@ -54,6 +55,7 @@ local scriptEntry: InstanceEntry = {
 	sourceEncoding = "utf8",
 }
 check("entry has wire fp", scriptEntry.fp == fp)
+check("entry has displayPath", scriptEntry.displayPath == "Workspace.Part")
 check("entry source present", scriptEntry.source == "print('hi')")
 check("entry sourceEncoding utf8", scriptEntry.sourceEncoding == "utf8")
 
@@ -62,6 +64,7 @@ local rootEntry: InstanceEntry = {
 	id = "ref-0",
 	parentId = nil,
 	path = "Workspace[1]",
+	displayPath = "Workspace",
 	name = "Workspace",
 	className = "Workspace",
 	depth = 0,
