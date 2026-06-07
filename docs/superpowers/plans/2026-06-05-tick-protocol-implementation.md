@@ -636,6 +636,11 @@ ticks empty/cheap, deltas < 50 ms, **no** periodic full re-baselines (contrast t
 
 # PHASE 6 — Verify & soak
 
+**Closeout prereqs (land before the soak):** the Q1 yield fix (Merkle plan Phase 0 / Task 1 — yield
+`Live.buildBaselineSnapshot`'s fp-rebuild loop so full baselines/drift recovery don't freeze) and the
+`script-source`/`script-sources` debug-CLI read fix (open the live WAL DB read-only; handle base64
+source rows stored as BLOB) so the gate's script-source hash check works while `serve` is running.
+
 **Tasks:**
 1. **Update `tests/http_reliability.rs` + `tests/live_convergence.rs`** for protocol v2 (new
    endpoints, removed legacy). Add: large-place capture timing assertion (sanity, generous bound),
@@ -643,10 +648,34 @@ ticks empty/cheap, deltas < 50 ms, **no** periodic full re-baselines (contrast t
 2. **Soak script** (`scripts/validate-live-capture.ps1` exists — extend it) driving a long edit
    session and asserting the daemon log shows no constant-bulk pattern.
 3. **Update docs:** mark the design doc Status → Implemented; note the measured before/after.
+4. **Drift telemetry (feeds Phase 7):** the daemon counts/logs each drift event — which service, how
+   often, and (cheap) the changed-instance count — so the soak produces the data that decides whether
+   to build the Phase 7 drift-recovery optimization. Surface it in `daemon.log` and/or a
+   `live-services`-style summary.
 
 ### ✅ PHASE 6 GATE
 Full `cargo test` green; soak run shows delta-dominated traffic and stable revision growth; design
-doc updated with real measured numbers (capture/complete, delta p50, idle traffic).
+doc updated with real measured numbers (capture/complete, delta p50, idle traffic). **Drift telemetry
+recorded** (frequency / service / changed-size) → this is the input that decides Phase 7.
+
+---
+
+# PHASE 7 — Drift-recovery optimization (gated on Phase 6 soak)
+
+**Plan:** [`docs/superpowers/plans/2026-06-06-merkle-drift-recovery.md`](2026-06-06-merkle-drift-recovery.md).
+**Gate to start:** Phase 6 soak shows full re-baselines firing often enough to matter (drift frequent
+and/or on a large service). If drift is rare, **skip this phase** — today's full-rebaseline-on-drift is
+correct and fine.
+
+- **Phase 1 (surgical recovery):** on drift, exchange per-instance fps for the drifted service
+  (`/tick/fps`), diff vs `instFp`, ship only the differing instances as a delta (no `materialize`,
+  no wipe). High value / moderate cost.
+- **Phase 2 (Merkle):** XOR-Merkle `subtree_fingerprint` on both sides + a `/tick/merkle/children`
+  descent endpoint to localize recovery to the changed subtree without walking the whole service.
+  Heaviest piece (continuous subtree maintenance incl. reparent) — build only if Phase 1 proves
+  insufficient on a large, frequently-drifting service.
+
+This realizes the deferred "Merkle escalation" / drift-telemetry decision from design doc §6.
 
 ---
 
