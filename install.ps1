@@ -92,9 +92,15 @@ if ($manifest.bundleEncUrl) {
     Expand-Archive -Path $zip -DestinationPath $work -Force
     # Forward the password to setup.exe (inherited by the child process) so it can store the
     # DPAPI-protected key for self-update. Cleared immediately after the installer returns.
+    if ($manifest.channelSequence) {
+        $env:STUDIO_STUD_CHANNEL_SEQUENCE = [string]$manifest.channelSequence
+    }
     $env:STUDIO_STUD_CHANNEL_PASSWORD = $password
     try { Invoke-Setup $work }
-    finally { Remove-Item Env:\STUDIO_STUD_CHANNEL_PASSWORD -ErrorAction SilentlyContinue }
+    finally {
+        Remove-Item Env:\STUDIO_STUD_CHANNEL_PASSWORD -ErrorAction SilentlyContinue
+        Remove-Item Env:\STUDIO_STUD_CHANNEL_SEQUENCE -ErrorAction SilentlyContinue
+    }
     exit 0
 }
 if ($manifest.bundleUrl) {
@@ -102,7 +108,11 @@ if ($manifest.bundleUrl) {
     Write-Host "Downloading bundle..."
     Invoke-WebRequest $manifest.bundleUrl -OutFile $zip -UseBasicParsing
     Expand-Archive -Path $zip -DestinationPath $work -Force
-    Invoke-Setup $work
+    if ($manifest.channelSequence) {
+        $env:STUDIO_STUD_CHANNEL_SEQUENCE = [string]$manifest.channelSequence
+    }
+    try { Invoke-Setup $work }
+    finally { Remove-Item Env:\STUDIO_STUD_CHANNEL_SEQUENCE -ErrorAction SilentlyContinue }
     exit 0
 }
 # Legacy fallback: setup-only artifact (pre-bundle manifests)
