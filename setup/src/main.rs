@@ -69,6 +69,9 @@ enum Commands {
         /// Shorthand for `--channel dev`
         #[arg(long)]
         dev: bool,
+        /// Stage daemon exe + plugin for the running daemon to apply on next boot (no daemon stop)
+        #[arg(long)]
+        stage: bool,
     },
     /// Verify installation; runs repair on failure
     Health,
@@ -110,7 +113,8 @@ fn main() -> Result<()> {
             check,
             channel,
             dev,
-        } => cmd_update(check, channel, dev, cli.json)?,
+            stage,
+        } => cmd_update(check, channel, dev, stage, cli.json)?,
         Commands::Health => cmd_health(cli.json)?,
         Commands::Repair => cmd_repair(cli.json)?,
         Commands::RepoHealth { path } => cmd_repo_health(&path, cli.json)?,
@@ -245,6 +249,7 @@ fn cmd_update(
     check: bool,
     channel_override: Option<String>,
     dev: bool,
+    stage: bool,
     as_json: bool,
 ) -> Result<()> {
     let cfg = load_config_or_default();
@@ -313,7 +318,11 @@ fn cmd_update(
         );
     }
     if !check && update_available {
-        update_apply::apply_channel_update(&cfg, &manifest, resolved)?;
+        if stage {
+            update_apply::stage_channel_update(&cfg, &manifest, resolved)?;
+        } else {
+            update_apply::apply_channel_update(&cfg, &manifest, resolved)?;
+        }
     }
     Ok(())
 }

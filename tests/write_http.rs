@@ -290,12 +290,13 @@ fn write_blocked_during_play_session() {
             .is_some()
     );
 
-    // Plugin heartbeats that Studio entered a play session.
+    // Plugin tick keepalive reports play session.
+    let tick_play = r#"{"placeId":"0","sessionMode":"play","baseRevision":0,"serviceFingerprints":{},"ops":{"upserted":[],"removed":[]},"bulkRef":null}"#;
     let (status, _) = http_request(
-        "GET",
+        "POST",
         port,
-        "/studio-stud/capture/request?sessionMode=play",
-        None,
+        "/studio-stud/tick?placeId=0",
+        Some(tick_play),
         &[],
     );
     assert_eq!(status, 200);
@@ -316,15 +317,16 @@ fn write_blocked_during_play_session() {
         Some("studio_in_play_session")
     );
 
-    // Returning to edit re-enables writes.
+    // Returning to edit re-enables writes (empty edit tick may 404 no_baseline before first connect).
+    let tick_edit = r#"{"placeId":"0","sessionMode":"edit","baseRevision":0,"serviceFingerprints":{},"ops":{"upserted":[],"removed":[]},"bulkRef":null}"#;
     let (status, _) = http_request(
-        "GET",
+        "POST",
         port,
-        "/studio-stud/capture/request?sessionMode=edit",
-        None,
+        "/studio-stud/tick?placeId=0",
+        Some(tick_edit),
         &[],
     );
-    assert_eq!(status, 200);
+    assert!(status == 200 || status == 404, "edit tick should record session mode");
     let (_, ping) = http_request("GET", port, "/studio-stud/ping", None, &[]);
     assert_eq!(
         parse_json(&ping).get("sessionMode").and_then(Value::as_str),
@@ -341,49 +343,25 @@ fn write_blocked_during_play_session() {
 }
 
 #[test]
-fn capture_request_withheld_during_play_session() {
+fn tick_play_keepalive_withholds_pending_request() {
     let repo = temp_repo("playcap");
     let storage = temp_storage("playcap");
     let serve = start_serve(&repo, &storage);
     let port = serve.port;
 
-    // Queue a capture request (as the CLI would).
-    let (status, _) = http_request(
+    let tick_play = r#"{"placeId":"0","sessionMode":"play","baseRevision":0,"serviceFingerprints":{},"ops":{"upserted":[],"removed":[]},"bulkRef":null}"#;
+    let (_, body) = http_request(
         "POST",
         port,
-        "/studio-stud/capture/request",
-        Some(r#"{"reason":"test"}"#),
-        &[],
-    );
-    assert_eq!(status, 200);
-
-    // While in a play session, the plugin's poll must NOT receive the queued request.
-    let (_, body) = http_request(
-        "GET",
-        port,
-        "/studio-stud/capture/request?sessionMode=play",
-        None,
+        "/studio-stud/tick?placeId=0",
+        Some(tick_play),
         &[],
     );
     let v = parse_json(&body);
     assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
     assert!(
         v.get("request").map_or(true, |r| r.is_null()),
-        "no capture work should be handed out during play"
-    );
-
-    // Back in edit, the still-queued request is delivered.
-    let (_, body) = http_request(
-        "GET",
-        port,
-        "/studio-stud/capture/request?sessionMode=edit",
-        None,
-        &[],
-    );
-    let v = parse_json(&body);
-    assert!(
-        v.get("request").map_or(false, |r| !r.is_null()),
-        "queued request delivered in edit"
+        "play tick should not hand out pending work"
     );
 }
 

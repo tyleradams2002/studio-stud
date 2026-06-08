@@ -1,0 +1,8 @@
+{
+  "placeId": "999001",
+  "baseRevision": 1,
+  "ops": {
+    "removed": ["mod1"],
+    "upserted": []
+  }
+}

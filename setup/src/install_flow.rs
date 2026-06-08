@@ -76,10 +76,16 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
             let _ = migrate_legacy_repo(&p, &mut cfg);
         }
     }
-    // Record the channel's current published sequence as the update baseline so the next publish
-    // triggers an update even when the semver is unchanged (F1). Best-effort: a pre-existing
-    // baseline is preserved (repair/reinstall) and offline installs degrade to the semver fallback.
-    studio_stud::setup_core::channels::record_install_baseline_seq(&mut cfg);
+    // Record the installed build's channelSequence when install.ps1 forwards it; otherwise
+    // fall through to the offline-safe baseline fetch (unchanged repair/reinstall behavior).
+    let channel_sequence = std::env::var("STUDIO_STUD_CHANNEL_SEQUENCE").ok();
+    if !studio_stud::setup_core::channels::record_install_sequence_from_env(
+        &mut cfg,
+        &channel,
+        channel_sequence.as_deref(),
+    ) {
+        studio_stud::setup_core::channels::record_install_baseline_seq(&mut cfg);
+    }
     sync_version_json_channel(&params.install_root, &cfg)?;
     save_config(&cfg)?;
     Ok(())
@@ -121,6 +127,30 @@ pub fn install_version_json(
 ) -> Value {
     let mut obj = json!({
         "daemonVersion": daemon_version,
+        "pluginVersion": plugin_version,
+        "installedAt": studio_stud::util::now_utc(),
+    });
+    if let Some(ch) = channel {
+        obj["channel"] = json!(ch);
+    }
+    if let Some(seq) = last_channel_sequence {
+        obj["lastChannelSequence"] = Value::Object(seq.clone());
+    }
+    obj
+}
+
+/// version.json for a staged in-daemon update: running exe stays at `current_daemon_version`
+/// until `apply_staged` promotes `stagedDaemonVersion`.
+pub fn stage_version_json(
+    current_daemon_version: &str,
+    staged_daemon_version: &str,
+    plugin_version: &str,
+    channel: Option<&str>,
+    last_channel_sequence: Option<&Map<String, Value>>,
+) -> Value {
+    let mut obj = json!({
+        "daemonVersion": current_daemon_version,
+        "stagedDaemonVersion": staged_daemon_version,
         "pluginVersion": plugin_version,
         "installedAt": studio_stud::util::now_utc(),
     });

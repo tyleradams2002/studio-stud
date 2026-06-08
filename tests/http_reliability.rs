@@ -102,28 +102,33 @@ fn parse_json(body: &str) -> Value {
 }
 
 #[test]
-fn verify_complete_unknown_sync_id_returns_soft_rebaseline() {
-    let storage = temp_storage("unknown_sync");
+fn tick_ping_reports_protocol_v2_and_drift_telemetry() {
+    let storage = temp_storage("tick_ping");
     let serve = start_serve(&storage);
-    let port = serve.port;
-    let body = r#"{"syncId":"verify_nonexistent_000","placeId":"123"}"#;
-    let (status, response) = http_request(
-        "POST",
-        port,
-        "/studio-stud/live/verify/complete",
-        Some(body),
-    );
+    let (status, body) = http_request("GET", serve.port, "/studio-stud/ping", None);
     assert_eq!(status, 200);
-    let value = parse_json(&response);
-    assert_eq!(value.get("ok").and_then(Value::as_bool), Some(false));
+    let v = parse_json(&body);
+    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
+    assert_eq!(v.get("protocolVersion").and_then(Value::as_i64), Some(2));
+    let telemetry = v.get("driftTelemetry").expect("driftTelemetry");
     assert_eq!(
-        value.get("error").and_then(Value::as_str),
-        Some("unknownSyncId")
+        telemetry.get("total").and_then(Value::as_u64),
+        Some(0)
     );
-    assert_eq!(
-        value.get("needsRebaseline").and_then(Value::as_bool),
-        Some(true)
-    );
+}
+
+#[test]
+fn allowlist_endpoint_serves_curated_classes() {
+    let storage = temp_storage("allowlist");
+    let serve = start_serve(&storage);
+    let (status, body) = http_request("GET", serve.port, "/studio-stud/allowlist", None);
+    assert_eq!(status, 200);
+    let v = parse_json(&body);
+    assert_eq!(v.get("ok").and_then(Value::as_bool), Some(true));
+    assert!(v.get("version").and_then(Value::as_str).is_some());
+    let classes = v.get("classes").and_then(Value::as_object).expect("classes map");
+    let bp = classes.get("BasePart").and_then(Value::as_array).expect("BasePart");
+    assert!(bp.iter().any(|p| p.get("name").and_then(Value::as_str) == Some("Transparency")));
 }
 
 #[test]

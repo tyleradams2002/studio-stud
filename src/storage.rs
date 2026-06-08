@@ -540,6 +540,20 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<()> {
 
         );
 
+        CREATE TABLE IF NOT EXISTS service_fingerprints (
+
+            capture_id TEXT NOT NULL,
+
+            service_name TEXT NOT NULL,
+
+            fingerprint TEXT NOT NULL,
+
+            instance_count INTEGER NOT NULL,
+
+            PRIMARY KEY (capture_id, service_name)
+
+        );
+
         CREATE TABLE IF NOT EXISTS keyword_hits (
 
             capture_id TEXT NOT NULL,
@@ -598,6 +612,22 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<()> {
 
         );
 
+        CREATE TABLE IF NOT EXISTS script_sources (
+
+            capture_id TEXT NOT NULL,
+
+            instance_id TEXT NOT NULL,
+
+            source_text TEXT NOT NULL,
+
+            source_hash TEXT NOT NULL,
+
+            last_synced_hash TEXT,
+
+            PRIMARY KEY (capture_id, instance_id)
+
+        );
+
         CREATE TABLE IF NOT EXISTS live_state (
 
             id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -644,6 +674,10 @@ pub(crate) fn init_schema(conn: &Connection) -> Result<()> {
     ensure_column(conn, "instances", "display_path_norm", "TEXT")?;
 
     ensure_column(conn, "instances", "search_text", "TEXT")?;
+
+    ensure_column(conn, "instances", "fingerprint", "TEXT")?;
+
+    ensure_column(conn, "script_sources", "source_encoding", "TEXT")?;
 
     conn.execute_batch(
 
@@ -754,6 +788,70 @@ pub(crate) fn backfill_normalized_columns(conn: &mut Connection) -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
+pub(crate) fn read_reflection_version(conn: &Connection) -> Result<Option<String>> {
+    conn.query_row(
+        "SELECT value FROM meta WHERE key = 'reflection_version'",
+        [],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+#[allow(dead_code)]
+pub(crate) fn write_reflection_version(conn: &Connection, version: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('reflection_version', ?)",
+        params![version],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn upsert_script_source(
+    conn: &Connection,
+    capture_id: &str,
+    instance_id: &str,
+    source_text: &str,
+    source_hash: &str,
+    source_encoding: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO script_sources (capture_id, instance_id, source_text, source_hash, last_synced_hash, source_encoding)
+         VALUES (?, ?, ?, ?, NULL, ?)",
+        params![
+            capture_id,
+            instance_id,
+            source_text,
+            source_hash,
+            source_encoding
+        ],
+    )?;
+    Ok(())
+}
+
+pub(crate) fn upsert_script_source_bytes(
+    conn: &Connection,
+    capture_id: &str,
+    instance_id: &str,
+    source_bytes: &[u8],
+    source_hash: &str,
+    source_encoding: &str,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO script_sources (capture_id, instance_id, source_text, source_hash, last_synced_hash, source_encoding)
+         VALUES (?, ?, ?, ?, NULL, ?)",
+        params![
+            capture_id,
+            instance_id,
+            source_bytes,
+            source_hash,
+            source_encoding
+        ],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn delete_all_tables(tx: &rusqlite::Transaction<'_>) -> Result<()> {
     for table in [
         "finding_samples",
@@ -761,6 +859,8 @@ pub(crate) fn delete_all_tables(tx: &rusqlite::Transaction<'_>) -> Result<()> {
         "critical_presence",
         "keyword_hits",
         "class_counts",
+        "service_fingerprints",
+        "script_sources",
         "instance_tags",
         "instance_attributes",
         "instance_properties",
@@ -829,5 +929,36 @@ mod tests {
         init_schema(&conn).unwrap();
 
         assert!(current_state(&conn).is_err());
+    }
+
+    #[test]
+    fn script_sources_table_and_reflection_version_round_trip() {
+        let conn = Connection::open_in_memory().unwrap();
+        init_schema(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='script_sources'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        write_reflection_version(&conn, "0.659").unwrap();
+        assert_eq!(
+            read_reflection_version(&conn).unwrap().as_deref(),
+            Some("0.659")
+        );
+
+        upsert_script_source(&conn, "cap1", "inst1", "print('hi')", "abc123", "utf8").unwrap();
+        let hash: String = conn
+            .query_row(
+                "SELECT source_hash FROM script_sources WHERE capture_id = ? AND instance_id = ?",
+                params!["cap1", "inst1"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(hash, "abc123");
     }
 }

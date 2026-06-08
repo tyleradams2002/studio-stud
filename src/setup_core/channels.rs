@@ -251,6 +251,29 @@ pub fn record_channel_sequence(
         .insert(resolved.as_str().into(), json!(seq));
 }
 
+/// When `env_sequence` is present and parses to `u64 > 0`, records it unconditionally
+/// for `channel` (install-time overwrite of an existing baseline). Returns `true` when
+/// recorded; `false` when absent/invalid so the caller can fall through to
+/// `record_install_baseline_seq`.
+pub fn record_install_sequence_from_env(
+    cfg: &mut StudioStudConfig,
+    channel: &str,
+    env_sequence: Option<&str>,
+) -> bool {
+    let Some(raw) = env_sequence else {
+        return false;
+    };
+    let Ok(seq) = raw.parse::<u64>() else {
+        return false;
+    };
+    if seq == 0 {
+        return false;
+    }
+    let resolved = Channel::from_str(channel);
+    record_channel_sequence(cfg, resolved, seq);
+    true
+}
+
 /// Best-effort install-time baseline: record the configured channel's current published
 /// `channelSequence` so the NEXT publish (seq+1) triggers an update even when the semver is
 /// unchanged (the headline dev workflow). No-op when a baseline already exists (repair/reinstall
@@ -388,6 +411,28 @@ mod tests {
         let mut cfg = StudioStudConfig::default();
         record_channel_sequence(&mut cfg, Channel::Beta, 7);
         assert_eq!(cfg.last_channel_sequence["beta"], json!(7));
+    }
+
+    #[test]
+    fn install_sequence_from_env_overwrites_existing_baseline() {
+        let mut cfg = StudioStudConfig {
+            channel: "release".into(),
+            ..StudioStudConfig::default()
+        };
+        record_channel_sequence(&mut cfg, Channel::Release, 5);
+        assert!(record_install_sequence_from_env(&mut cfg, "release", Some("42")));
+        assert_eq!(cfg.last_channel_sequence["release"], json!(42));
+    }
+
+    #[test]
+    fn install_sequence_from_env_absent_leaves_existing_baseline() {
+        let mut cfg = StudioStudConfig {
+            channel: "release".into(),
+            ..StudioStudConfig::default()
+        };
+        record_channel_sequence(&mut cfg, Channel::Release, 5);
+        assert!(!record_install_sequence_from_env(&mut cfg, "release", None));
+        assert_eq!(cfg.last_channel_sequence["release"], json!(5));
     }
 
     #[test]

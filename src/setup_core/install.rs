@@ -79,7 +79,7 @@ pub fn lay_tool_payload(
 }
 
 /// Locate `studio-stud-setup.exe` relative to the daemon source or current exe.
-fn resolve_setup_src(daemon_exe: &Path) -> Option<PathBuf> {
+pub fn resolve_setup_src(daemon_exe: &Path) -> Option<PathBuf> {
     // Same dir as daemon_exe (e.g. dist/ or bin/)
     if let Some(dir) = daemon_exe.parent() {
         let p = dir.join("studio-stud-setup.exe");

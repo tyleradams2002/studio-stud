@@ -1,0 +1,24 @@
+{
+  "placeId": "999001",
+  "baseRevision": 0,
+  "ops": {
+    "removed": [],
+    "upserted": [
+      {
+        "id": "sub_child",
+        "parentId": "sub",
+        "path": "Workspace/Sub/Child",
+        "name": "Child",
+        "className": "Part",
+        "depth": 2,
+        "childCount": 0,
+        "siblingIndex": 0,
+        "duplicateSiblingName": false,
+        "properties": {},
+        "attributes": {},
+        "tags": [],
+        "source": "this must not affect fingerprint"
+      }
+    ]
+  }
+}

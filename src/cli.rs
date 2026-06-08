@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, mpsc},
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant},
 };
@@ -13,8 +13,13 @@ use serde_json::{Value, json};
 use crate::analyze::cmd_analyze;
 use crate::bench::cmd_bench;
 use crate::capture::{decode_raw_snapshot, materialize_snapshot};
-use crate::http::{DaemonState, ServeConfig, daemon_json, handle_daemon_request};
-use crate::live::{apply_delta, live_dump, parse_delta_request, verify_drift};
+use crate::conn_registry::ConnRegistry;
+use crate::http::{DaemonState, ServeConfig, daemon_json};
+use crate::serve_workers::{ServeDispatcher, read_pool_size};
+use crate::live::{
+    apply_delta, live_dump, live_services, parse_delta_request, script_source, script_sources,
+    verify_drift,
+};
 use crate::output::live_state_compact_json;
 use crate::policy::resolve_repo_root;
 use crate::query::cmd_query;
@@ -145,6 +150,9 @@ pub(crate) enum Commands {
         host: String,
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
+        /// Shared read-pool worker count (default 3; also `STUDIO_STUD_READ_POOL_SIZE`).
+        #[arg(long)]
+        read_pool_size: Option<usize>,
         /// Emit timing spans for daemon operations (also logs per-request latency).
         #[arg(long)]
         profile: bool,
@@ -158,6 +166,8 @@ pub(crate) enum Commands {
         #[command(flatten)]
         common: CommonArgs,
     },
+    /// Gracefully stop the running Studio Stud daemon.
+    Stop,
     /// Deprecated alias for `serve`.
     #[command(hide = true)]
     Daemon {
@@ -215,6 +225,32 @@ pub(crate) enum Commands {
     /// Dump canonical live state (hidden).
     #[command(name = "live-dump", hide = true)]
     LiveDump {
+        #[arg(value_name = "PLACE_ID_OR_KEY")]
+        place: Option<String>,
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+    /// Dump per-service fingerprints (hidden).
+    #[command(name = "live-services", hide = true)]
+    LiveServices {
+        #[arg(value_name = "PLACE_ID_OR_KEY")]
+        place: Option<String>,
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+    /// Read script source for one instance path (hidden).
+    #[command(name = "script-source", hide = true)]
+    ScriptSource {
+        #[arg(value_name = "PLACE_ID_OR_KEY")]
+        place: String,
+        #[arg(value_name = "PATH")]
+        path: String,
+        #[command(flatten)]
+        common: CommonArgs,
+    },
+    /// List all script sources for a place (hidden).
+    #[command(name = "script-sources", hide = true)]
+    ScriptSources {
         #[arg(value_name = "PLACE_ID_OR_KEY")]
         place: Option<String>,
         #[command(flatten)]
@@ -383,21 +419,31 @@ fn dispatch(cli: Cli) -> Result<()> {
             &common,
         ),
         Some(Commands::Capture { timeout, no_wait }) => cmd_capture(timeout, no_wait),
+        Some(Commands::Stop) => cmd_stop(),
         Some(Commands::Update { check }) => cmd_update(check),
         Some(Commands::Serve {
             host,
             port,
+            read_pool_size,
             profile,
             verbose,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, profile, verbose),
+        }) => cmd_serve(
+            &host,
+            port,
+            read_pool_size,
+            &common,
+            no_update,
+            profile,
+            verbose,
+        ),
         Some(Commands::Daemon {
             host,
             port,
             no_update,
             common,
-        }) => cmd_serve(&host, port, &common, no_update, false, false),
+        }) => cmd_serve(&host, port, None, &common, no_update, false, false),
         Some(Commands::Bench {
             raw,
             baseline,
@@ -418,6 +464,15 @@ fn dispatch(cli: Cli) -> Result<()> {
             cmd_live_verify(&raw, place.as_deref(), &common)
         }
         Some(Commands::LiveDump { place, common }) => cmd_live_dump(place.as_deref(), &common),
+        Some(Commands::LiveServices { place, common }) => {
+            cmd_live_services(place.as_deref(), &common)
+        }
+        Some(Commands::ScriptSource { place, path, common }) => {
+            cmd_script_source(Some(place.as_str()), &path, &common)
+        }
+        Some(Commands::ScriptSources { place, common }) => {
+            cmd_script_sources(place.as_deref(), &common)
+        }
         Some(Commands::Policy { args }) => cmd_policy(args),
         Some(Commands::ProjectCmd { args }) => cmd_project(args),
         Some(Commands::WriteValidate { args }) => cmd_write_validate(args),
@@ -748,14 +803,44 @@ fn cmd_update(check: bool) -> Result<()> {
     Ok(())
 }
 
+/// Gracefully stop the running daemon: read its lock port + the local write token, POST the
+/// authed shutdown, and confirm the lock is gone. Reuses the same path the installer uses to
+/// stop the daemon before an update.
+fn cmd_stop() -> Result<()> {
+    let Some(port) = crate::setup_core::install::read_daemon_lock_port() else {
+        println!("Studio Stud daemon is not running.");
+        return Ok(());
+    };
+    let token = std::fs::read_to_string(crate::setup_core::config::write_token_path())
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    if token.is_empty() {
+        return Err(anyhow!(
+            "write token not found — cannot authenticate shutdown"
+        ));
+    }
+    crate::setup_core::install::stop_daemon_graceful(&token, port)?;
+    if crate::setup_core::install::read_daemon_lock_port().is_some() {
+        return Err(anyhow!(
+            "daemon did not stop (still on port {port}); force-stop with: Get-Process studio-stud | Stop-Process"
+        ));
+    }
+    println!("Studio Stud daemon stopped.");
+    Ok(())
+}
+
 fn cmd_serve(
     host: &str,
     port: u16,
+    read_pool_size_flag: Option<usize>,
     common: &CommonArgs,
-    _no_update: bool,
+    no_update: bool,
     profile: bool,
     verbose: bool,
 ) -> Result<()> {
+    if !no_update {
+        crate::update::stage_update_via_setup();
+    }
     crate::update::apply_staged_on_boot();
     if host != "127.0.0.1" && host != "localhost" {
         return Err(anyhow!(
@@ -829,6 +914,45 @@ fn cmd_serve(
     std::thread::spawn(move || {
         let _ = cu.ping_fields();
     });
+    let registry_conns = ConnRegistry::new();
+    let allowlist = Arc::new(std::sync::RwLock::new(crate::reflection::generate_allowlist()));
+    {
+        // Background idle-eviction: close per-place connections left unused past
+        // the registry's idle timeout so a long session over many places doesn't
+        // leak handles. Detached; checks the shutdown flag each tick.
+        let evict_registry = Arc::clone(&registry_conns);
+        let evict_shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60));
+                if evict_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                evict_registry.evict_idle(std::time::Instant::now());
+            }
+        });
+    }
+    {
+        let refresh_allowlist = Arc::clone(&allowlist);
+        let refresh_root = Some(storage.root.clone());
+        std::thread::spawn(move || {
+            crate::reflection::refresh(&refresh_allowlist, refresh_root.as_deref());
+        });
+    }
+    {
+        let refresh_allowlist = Arc::clone(&allowlist);
+        let refresh_root = Some(storage.root.clone());
+        let refresh_shutdown = Arc::clone(&shutdown);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(60 * 60));
+                if refresh_shutdown.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                crate::reflection::refresh(&refresh_allowlist, refresh_root.as_deref());
+            }
+        });
+    }
     let config = ServeConfig {
         storage_root: common.storage_root.clone(),
         project_key: common.project_key.clone(),
@@ -839,6 +963,8 @@ fn cmd_serve(
         port,
         shutdown: Arc::clone(&shutdown),
         channel_update,
+        registry_conns,
+        allowlist,
     };
     let _ = crate::setup_core::config::write_daemon_lock(std::process::id(), port);
     let state = Arc::new(Mutex::new(DaemonState::default()));
@@ -857,44 +983,14 @@ fn cmd_serve(
     );
     println!("Install root: {}", install_root.display());
     println!("Write token issued");
-    const SERVE_WORKERS: usize = 4;
-    let (request_tx, request_rx) = mpsc::channel();
-    let acceptor = thread::spawn(move || {
-        for request in server.incoming_requests() {
-            if request_tx.send(request).is_err() {
-                break;
-            }
-        }
-    });
-    let request_rx = Arc::new(Mutex::new(request_rx));
-    let mut handles = Vec::with_capacity(SERVE_WORKERS);
-    for _ in 0..SERVE_WORKERS {
-        let request_rx = Arc::clone(&request_rx);
-        let state = Arc::clone(&state);
-        let config = config.clone();
-        handles.push(thread::spawn(move || {
-            loop {
-                let request = match request_rx.lock() {
-                    Ok(rx) => match rx.recv() {
-                        Ok(request) => request,
-                        Err(_) => break,
-                    },
-                    Err(_) => break,
-                };
-                if let Err(err) = handle_daemon_request(request, Arc::clone(&state), &config) {
-                    crate::obs::event("http-error", &format!("request failed: {err:#}"));
-                }
-            }
-        }));
+    let pool_size = read_pool_size_flag
+        .filter(|&n| n > 0)
+        .unwrap_or_else(read_pool_size);
+    let dispatcher = ServeDispatcher::start(Arc::clone(&state), config, pool_size);
+    for request in server.incoming_requests() {
+        dispatcher.route(request);
     }
-    for handle in handles {
-        handle
-            .join()
-            .map_err(|_| anyhow!("daemon worker thread panicked"))?;
-    }
-    acceptor
-        .join()
-        .map_err(|_| anyhow!("daemon acceptor thread panicked"))?;
+    dispatcher.shutdown();
     Ok(())
 }
 
@@ -902,7 +998,13 @@ fn cmd_ingest(raw_path: &Path, common: &CommonArgs) -> Result<()> {
     let raw_bytes = fs::read(raw_path).with_context(|| format!("read {}", raw_path.display()))?;
     let raw_json = decode_raw_snapshot(&raw_bytes)?;
     let snapshot: Value = serde_json::from_str(&raw_json)?;
-    let result = materialize_snapshot(&snapshot, common.storage_root.clone(), &common.project_key)?;
+    let registry = ConnRegistry::new();
+    let result = materialize_snapshot(
+        &snapshot,
+        common.storage_root.clone(),
+        &common.project_key,
+        &registry,
+    )?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }
@@ -912,11 +1014,13 @@ fn cmd_live_delta(raw_path: &Path, place: Option<&str>, common: &CommonArgs) -> 
     let raw_json = decode_raw_snapshot(&raw_bytes)?;
     let value: Value = serde_json::from_str(&raw_json)?;
     let request = parse_delta_request(&value)?;
+    let registry = ConnRegistry::new();
     let result = apply_delta(
         common.storage_root.clone(),
         &common.project_key,
         place,
         &request,
+        &registry,
     )?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
@@ -939,6 +1043,29 @@ fn cmd_live_verify(raw_path: &Path, place: Option<&str>, common: &CommonArgs) ->
 
 fn cmd_live_dump(place: Option<&str>, common: &CommonArgs) -> Result<()> {
     let result = live_dump(common.storage_root.clone(), &common.project_key, place)?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
+}
+
+fn cmd_live_services(place: Option<&str>, common: &CommonArgs) -> Result<()> {
+    let result = live_services(common.storage_root.clone(), &common.project_key, place)?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
+}
+
+fn cmd_script_source(place: Option<&str>, path: &str, common: &CommonArgs) -> Result<()> {
+    let result = script_source(
+        common.storage_root.clone(),
+        &common.project_key,
+        place,
+        path,
+    )?;
+    println!("{}", serde_json::to_string(&result)?);
+    Ok(())
+}
+
+fn cmd_script_sources(place: Option<&str>, common: &CommonArgs) -> Result<()> {
+    let result = script_sources(common.storage_root.clone(), &common.project_key, place)?;
     println!("{}", serde_json::to_string(&result)?);
     Ok(())
 }
