@@ -977,10 +977,17 @@ fn cmd_serve(
         "Studio Stud v{version} serving plugin capture requests on http://{address}"
     );
     println!("Storage root: {}", storage.root.display());
+    let repo_count = config.registry.config_snapshot().repos.len();
     println!(
-        "Registry: {} repo(s); PlaceId resolves per request",
-        config.registry.config_snapshot().repos.len()
+        "Registry: {repo_count} repo(s); PlaceId resolves per request"
     );
+    if repo_count == 0 {
+        eprintln!();
+        eprintln!("⚠ No repo registered — studio-stud cannot bind any Studio place or create a database");
+        eprintln!("  until you run:");
+        eprintln!("    studio-stud-setup add-repo \"C:\\path\\to\\your\\project\"");
+        eprintln!();
+    }
     println!("Install root: {}", install_root.display());
     println!("Write token issued");
     let pool_size = read_pool_size_flag

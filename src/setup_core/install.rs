@@ -164,9 +164,21 @@ pub fn install_path_shim(install_root: &Path) -> Result<()> {
 
     // Write via .NET SetEnvironmentVariable (mirror of uninstall_path_shim): preserves the full
     // value (setx truncates at 1024 chars) and broadcasts the change to new processes.
-    write_user_path_registry(&new_path);
+    write_user_path_registry(&new_path)?;
 
     Ok(())
+}
+
+/// Returns true when `entry` appears in the user-level PATH (case-insensitive).
+pub fn user_path_contains(entry: &str) -> bool {
+    let Some(user_path) = read_user_path_registry() else {
+        return false;
+    };
+    let key = norm_path_key(entry);
+    user_path
+        .split(';')
+        .filter(|p| !p.is_empty())
+        .any(|p| norm_path_key(p) == key)
 }
 
 /// Returns true when a PATH `entry` directory should be removed because it
@@ -219,7 +231,7 @@ pub fn uninstall_path_shim(known_bin: Option<&Path>) -> Result<()> {
     };
     let known = known_bin.map(|p| p.display().to_string());
     if let Some(new_path) = path_without_studio_stud(&user_path, known.as_deref()) {
-        write_user_path_registry(&new_path);
+        write_user_path_registry(&new_path)?;
     }
     Ok(())
 }
@@ -281,22 +293,33 @@ fn is_studio_stud_path_entry(entry: &str) -> bool {
 }
 
 #[cfg(windows)]
-fn write_user_path_registry(new_path: &str) {
+fn write_user_path_registry(new_path: &str) -> Result<()> {
     // Write via .NET so the full value is preserved (setx truncates at 1024 chars)
     // and the change is broadcast to new processes. The value is passed through an
     // env var to avoid any quoting/escaping pitfalls.
-    let _ = Command::new("powershell")
+    let status = Command::new("powershell")
         .env("SS_NEW_PATH", new_path)
         .args([
             "-NoProfile",
             "-Command",
             "[Environment]::SetEnvironmentVariable('PATH', $env:SS_NEW_PATH, 'User')",
         ])
-        .status();
+        .status()
+        .map_err(|e| anyhow!("PATH registry write failed to spawn PowerShell: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(anyhow!(
+            "PATH registry write failed (PowerShell exit {:?})",
+            status.code()
+        ))
+    }
 }
 
 #[cfg(not(windows))]
-fn write_user_path_registry(_new_path: &str) {}
+fn write_user_path_registry(_new_path: &str) -> Result<()> {
+    Ok(())
+}
 
 pub fn stop_daemon_graceful(write_token: &str, port: u16) -> Result<()> {
     let url = format!("http://127.0.0.1:{port}/studio-stud/admin/shutdown");

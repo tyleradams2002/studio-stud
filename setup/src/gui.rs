@@ -1,4 +1,6 @@
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::theme;
 
@@ -1066,13 +1068,20 @@ impl UninstallApp {
     }
 }
 
+#[derive(Default)]
+struct UserRemovalReport {
+    removed: Vec<String>,
+    orphans: Vec<String>,
+}
+
 fn run_uninstall(app: &UninstallInputs) -> anyhow::Result<String> {
     // Snapshot the config up front: every app-owned path we delete is read from it
     // before anything is removed (the config file itself goes during user removal).
     let cfg = load_config_or_default();
 
+    let mut user_report = UserRemovalReport::default();
     if app.remove_user {
-        remove_user_install(&cfg);
+        user_report = remove_user_install(&cfg);
     }
 
     let mut repos_cleaned = 0usize;
@@ -1100,11 +1109,32 @@ fn run_uninstall(app: &UninstallInputs) -> anyhow::Result<String> {
 
     let mut parts = Vec::new();
     if app.remove_user {
-        parts.push(
-            "Removed the Studio Stud install, core plugin, add-ons, PATH entry, and all app \
-             data (config and captured snapshots)."
-                .to_string(),
-        );
+        if user_report.removed.is_empty() && user_report.orphans.is_empty() {
+            parts.push("Nothing was removed from the user install.".to_string());
+        } else {
+            if !user_report.removed.is_empty() {
+                parts.push(format!(
+                    "Removed:\n{}",
+                    user_report
+                        .removed
+                        .iter()
+                        .map(|p| format!("  • {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+            if !user_report.orphans.is_empty() {
+                parts.push(format!(
+                    "Left behind (remove manually if needed):\n{}",
+                    user_report
+                        .orphans
+                        .iter()
+                        .map(|p| format!("  • {p}"))
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                ));
+            }
+        }
     }
     if repos_cleaned > 0 {
         parts.push(format!(
@@ -1114,55 +1144,87 @@ fn run_uninstall(app: &UninstallInputs) -> anyhow::Result<String> {
     if parts.is_empty() {
         parts.push("Nothing was selected to remove.".to_string());
     }
+    if !user_report.orphans.is_empty() {
+        anyhow::bail!(parts.join("\n\n"));
+    }
     Ok(parts.join("\n\n"))
 }
 
-/// Remove everything the installer created at the user level. Each step is
-/// best-effort and independently guarded so one failure can't strand the rest,
-/// and only paths this app creates are ever touched — the shared Roblox Plugins
-/// folder and unrelated PATH entries are preserved.
-fn remove_user_install(cfg: &StudioStudConfig) {
-    // 1. Stop a running daemon first so its exe (inside the install root) isn't
-    //    locked when we try to delete it. Best-effort; no-op if nothing is running.
+/// Stop the daemon and poll until the lock file is gone (or timeout).
+fn stop_daemon_and_wait() -> Result<(), String> {
     if let Some(port) = read_daemon_lock_port() {
         let token = std::fs::read_to_string(write_token_path()).unwrap_or_default();
-        let _ = stop_daemon_graceful(token.trim(), port);
+        stop_daemon_graceful(token.trim(), port).map_err(|e| format!("{e:#}"))?;
+    }
+    let lock = studio_stud::setup_core::config::daemon_lock_path();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while lock.is_file() {
+        if Instant::now() >= deadline {
+            return Err(format!("daemon still running (lock: {})", lock.display()));
+        }
+        thread::sleep(Duration::from_millis(250));
+    }
+    Ok(())
+}
+
+/// Remove everything the installer created at the user level. Each step records
+/// what was removed vs left behind; only paths this app creates are ever touched.
+fn remove_user_install(cfg: &StudioStudConfig) -> UserRemovalReport {
+    let mut report = UserRemovalReport::default();
+
+    if let Err(e) = stop_daemon_and_wait() {
+        report.orphans.push(format!("daemon: {e}"));
+    } else {
+        report.removed.push("daemon stopped".into());
     }
 
-    // 2. Strip our bin directory from the user PATH (mirror of install_path_shim).
     let known_bin = if cfg.install_root.trim().is_empty() {
         None
     } else {
         Some(PathBuf::from(&cfg.install_root).join("bin"))
     };
-    let _ = uninstall_path_shim(known_bin.as_deref());
+    match uninstall_path_shim(known_bin.as_deref()) {
+        Ok(()) => report.removed.push("user PATH entry".into()),
+        Err(e) => report.orphans.push(format!("PATH entry: {e:#}")),
+    }
 
-    // 3. Plugins folder: remove only the files/folders we placed there — never the
-    //    folder itself, which belongs to Roblox and holds the user's other plugins.
     if !cfg.plugins_dir.trim().is_empty() {
         let plugins_dir = PathBuf::from(&cfg.plugins_dir);
         let core = plugins_dir.join("StudioStud.plugin.lua");
         if core.is_file() {
-            let _ = std::fs::remove_file(&core);
+            match std::fs::remove_file(&core) {
+                Ok(()) => report.removed.push(core.display().to_string()),
+                Err(e) => report.orphans.push(format!("{}: {e}", core.display())),
+            }
         }
         for addon_id in known_addon_ids(cfg) {
-            remove_app_addon_dir(&plugins_dir, &addon_id);
+            if let Some(path) = remove_app_addon_dir(&plugins_dir, &addon_id) {
+                if path.removed {
+                    report.removed.push(path.detail);
+                } else {
+                    report.orphans.push(path.detail);
+                }
+            }
         }
     }
 
-    // 4. Install root — guarded so a corrupted config can't aim the deleter at an
-    //    unrelated directory.
     if let Some(root) = our_install_root(cfg) {
-        let _ = std::fs::remove_dir_all(&root);
+        let display = root.display().to_string();
+        match std::fs::remove_dir_all(&root) {
+            Ok(()) => report.removed.push(display),
+            Err(e) => report.orphans.push(format!("{display}: {e}")),
+        }
     }
 
-    // 5. The app data directory (config.json, daemon.lock, write.token, and every
-    //    captured place snapshot). This whole directory is created and owned by
-    //    Studio Stud, at a fixed location — safe to remove wholesale.
     let app_data = config_dir();
     if app_data.is_dir() {
-        let _ = std::fs::remove_dir_all(&app_data);
+        let display = app_data.display().to_string();
+        match std::fs::remove_dir_all(&app_data) {
+            Ok(()) => report.removed.push(display),
+            Err(e) => report.orphans.push(format!("{display}: {e}")),
+        }
     }
+    report
 }
 
 /// The configured install root, but only when it exists and actually contains a
@@ -1209,16 +1271,32 @@ fn known_addon_ids(cfg: &StudioStudConfig) -> Vec<String> {
     ids
 }
 
+struct AddonRemoval {
+    removed: bool,
+    detail: String,
+}
+
 /// Remove an addon folder from the Plugins dir, but only when it carries an
 /// `addon.json` marker — that proves Studio Stud laid it down, so an unrelated
 /// user plugin that merely shares the name is never deleted.
-fn remove_app_addon_dir(plugins_dir: &Path, addon_id: &str) {
+fn remove_app_addon_dir(plugins_dir: &Path, addon_id: &str) -> Option<AddonRemoval> {
     if addon_id.is_empty() {
-        return;
+        return None;
     }
     let dir = plugins_dir.join(addon_id);
-    if dir.join("addon.json").is_file() {
-        let _ = std::fs::remove_dir_all(&dir);
+    if !dir.join("addon.json").is_file() {
+        return None;
+    }
+    let detail = dir.display().to_string();
+    match std::fs::remove_dir_all(&dir) {
+        Ok(()) => Some(AddonRemoval {
+            removed: true,
+            detail,
+        }),
+        Err(e) => Some(AddonRemoval {
+            removed: false,
+            detail: format!("{detail}: {e}"),
+        }),
     }
 }
 

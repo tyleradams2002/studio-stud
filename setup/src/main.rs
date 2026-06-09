@@ -183,8 +183,17 @@ fn cmd_install_silent(
         (Some(d), Some(p)) => (d, p),
         _ => update_apply::fetch_channel_bundle(&cfg)?,
     };
-    let repo_paths: Vec<String> = cfg.repos.iter().map(|r| r.path.clone()).collect();
+    let mut repo_paths: Vec<String> = cfg.repos.iter().map(|r| r.path.clone()).collect();
+    let mut install_repos = false;
+    if let Some(env_repo) = install_flow::install_repo_from_env() {
+        let key = env_repo.display().to_string();
+        if !repo_paths.iter().any(|p| p.eq_ignore_ascii_case(&key)) {
+            repo_paths.push(key);
+        }
+        install_repos = true;
+    }
     let daemon_version = update::installed_version();
+    let plugin_version = install_flow::read_plugin_version_from_lua(&plugin_src);
     run_install_headless(&HeadlessInstallParams {
         install_root,
         plugins_dir,
@@ -193,9 +202,19 @@ fn cmd_install_silent(
         repo_paths,
         channel,
         daemon_version,
-        plugin_version: String::new(),
-        install_repos: false,
+        plugin_version,
+        install_repos,
     })?;
+    let cfg = load_config_or_default();
+    let checks = user_health_checks(&cfg);
+    let failed: Vec<_> = checks.iter().filter(|c| c.status == "fail").collect();
+    if !failed.is_empty() {
+        eprintln!("Install health gate FAILED:");
+        for c in &checks {
+            eprintln!("  {}: {} — {}", c.name, c.status, c.detail);
+        }
+        anyhow::bail!("install health gate failed ({} check(s))", failed.len());
+    }
     Ok(())
 }
 
@@ -339,7 +358,10 @@ fn cmd_health(as_json: bool) -> Result<()> {
         }
     }
     if failed {
-        cmd_repair(as_json)?;
+        if !as_json {
+            eprintln!("Health check failed — run studio-stud-setup repair or reinstall.");
+        }
+        std::process::exit(1);
     }
     Ok(())
 }

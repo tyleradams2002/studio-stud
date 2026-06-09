@@ -54,6 +54,11 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
         .channel
         .clone()
         .unwrap_or_else(|| cfg.channel.clone());
+    let plugin_version = if params.plugin_version.is_empty() {
+        read_plugin_version_from_lua(&params.plugin_src)
+    } else {
+        params.plugin_version.clone()
+    };
     populate_install_fields(
         &mut cfg,
         &params.install_root,
@@ -61,8 +66,9 @@ pub fn run_install_headless(params: &HeadlessInstallParams) -> Result<()> {
         &channel,
         env!("CARGO_PKG_VERSION"),
         &params.daemon_version,
-        &params.plugin_version,
+        &plugin_version,
     );
+    cfg.path_shim_installed = true;
     // Persist the channel password so self-update can decrypt the bundle later. install.ps1
     // captures the password and forwards it via this env var; both the GUI and silent install
     // paths funnel through here, so this is the single seam that needs it.
@@ -199,6 +205,31 @@ pub fn resolve_daemon_src() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// When `STUDIO_STUD_REPO` points at a valid project root, return it for headless install.
+pub fn install_repo_from_env() -> Option<PathBuf> {
+    let path = std::env::var("STUDIO_STUD_REPO").ok()?;
+    let p = PathBuf::from(path);
+    if studio_stud::setup_core::install::is_valid_repo_root(&p) {
+        Some(p.canonicalize().unwrap_or(p))
+    } else {
+        None
+    }
+}
+
+/// Read `PLUGIN_VERSION = "x.y.z"` from the bundled plugin source.
+pub fn read_plugin_version_from_lua(plugin_src: &Path) -> String {
+    let Ok(text) = std::fs::read_to_string(plugin_src) else {
+        return String::new();
+    };
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("local PLUGIN_VERSION = ") {
+            return rest.trim_matches('"').to_string();
+        }
+    }
+    String::new()
+}
+
 pub fn resolve_plugin_src() -> Option<PathBuf> {
     let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
@@ -210,4 +241,50 @@ pub fn resolve_plugin_src() -> Option<PathBuf> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     candidates.push(root.join("plugin").join("StudioStud.plugin.lua"));
     candidates.into_iter().find(|p| p.is_file())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn install_repo_from_env_returns_none_when_unset() {
+        unsafe {
+            std::env::remove_var("STUDIO_STUD_REPO");
+        }
+        assert!(install_repo_from_env().is_none());
+    }
+
+    #[test]
+    fn install_repo_from_env_returns_valid_repo_root() {
+        let base = std::env::temp_dir().join(format!(
+            "studio-stud-env-repo-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&base).unwrap();
+        fs::write(base.join("default.project.json"), "{}").unwrap();
+        unsafe {
+            std::env::set_var("STUDIO_STUD_REPO", base.display().to_string());
+        }
+        let got = install_repo_from_env().expect("valid repo from env");
+        assert!(got.join("default.project.json").is_file());
+        unsafe {
+            std::env::remove_var("STUDIO_STUD_REPO");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn read_plugin_version_from_lua_parses_constant() {
+        let base = std::env::temp_dir().join(format!(
+            "studio-stud-plugin-ver-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&base).unwrap();
+        let path = base.join("StudioStud.plugin.lua");
+        fs::write(&path, "local PLUGIN_VERSION = \"0.5.1\"\n").unwrap();
+        assert_eq!(read_plugin_version_from_lua(&path), "0.5.1");
+        let _ = fs::remove_dir_all(&base);
+    }
 }
