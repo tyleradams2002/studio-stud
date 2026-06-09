@@ -237,6 +237,16 @@ pub(crate) fn handle_daemon_request(
                     .as_ref()
                     .and_then(|id| guard.staged_tick_bulks.get(id).cloned());
                 drop(guard);
+                if let Ok(pid) = tick.place_id.parse::<i64>() {
+                    if let Err(RepoResolveError::Unbound { place_id, .. }) =
+                        config.registry.resolve_repo_root(Some(pid))
+                    {
+                        eprintln!(
+                            "Studio Stud: place {place_id} is not bound to any registered repo — \
+                             run: studio-stud-setup add-repo \"C:\\path\\to\\your\\project\""
+                        );
+                    }
+                }
                 let storage = crate::storage::Storage::new(storage_root.clone(), project_key)?;
                 set_active_place(&storage, &tick.place_id);
                 let result = handle_tick(

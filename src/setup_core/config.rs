@@ -370,17 +370,34 @@ mod tests {
             Path::new("C:/Programs/StudioStud"),
             Path::new("C:/Roblox/Plugins"),
             "dev",
-            "0.4.10",
-            "0.4.10",
-            "0.4.10",
+            "0.5.1",
+            "0.5.1",
+            "0.5.1",
         );
         assert!(!cfg.install_root.is_empty());
         assert!(!cfg.plugins_dir.is_empty());
         assert_eq!(cfg.channel, "dev");
-        assert!(!cfg.versions.setup.is_empty());
-        assert!(!cfg.versions.daemon.is_empty());
-        assert!(!cfg.versions.plugin.is_empty());
+        assert_eq!(cfg.versions.setup, "0.5.1");
+        assert_eq!(cfg.versions.daemon, "0.5.1");
+        assert_eq!(cfg.versions.plugin, "0.5.1");
         assert!(!cfg.versions.protocol.is_empty());
+    }
+
+    #[test]
+    fn populate_install_fields_records_live_versions() {
+        let mut cfg = StudioStudConfig::default();
+        populate_install_fields(
+            &mut cfg,
+            Path::new("C:/Programs/StudioStud"),
+            Path::new("C:/Roblox/Plugins"),
+            "release",
+            env!("CARGO_PKG_VERSION"),
+            env!("CARGO_PKG_VERSION"),
+            "0.5.1",
+        );
+        assert_eq!(cfg.versions.setup, env!("CARGO_PKG_VERSION"));
+        assert_eq!(cfg.versions.daemon, env!("CARGO_PKG_VERSION"));
+        assert_eq!(cfg.versions.plugin, "0.5.1");
     }
 
     #[test]

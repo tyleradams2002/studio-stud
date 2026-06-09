@@ -5,8 +5,13 @@ use serde_json::{Value, json};
 use crate::util::{DoctorCheck, fail, pass, warn};
 
 use super::channels::{Channel, fetch_manifest_with_fallback, verify_manifest_signature};
-use super::config::{StudioStudConfig, load_config_or_default};
-use super::install::{LEGACY_TOOL_DIR, REPO_MARKER, default_plugins_dir};
+use super::config::{StudioStudConfig, config_path, load_config_or_default};
+use super::install::{
+    LEGACY_TOOL_DIR, REPO_MARKER, default_plugins_dir, user_path_contains,
+};
+
+const ADD_REPO_HINT: &str =
+    "run: studio-stud-setup add-repo \"C:\\path\\to\\your\\project\"";
 
 pub fn user_health_checks(cfg: &StudioStudConfig) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
@@ -15,32 +20,82 @@ pub fn user_health_checks(cfg: &StudioStudConfig) -> Vec<DoctorCheck> {
     if cfg.install_root.is_empty() {
         checks.push(fail(
             "installRoot",
-            "install root not configured".into(),
+            "install root not configured — reinstall with studio-stud-setup install".into(),
         ));
     } else if !exe.is_file() {
         checks.push(fail(
             "daemonExe",
-            format!("missing {}", exe.display()),
+            format!("missing {} — reinstall with studio-stud-setup install", exe.display()),
         ));
     } else {
         checks.push(pass("daemonExe", exe.display().to_string()));
     }
+
+    if cfg.install_root.is_empty() {
+        checks.push(fail(
+            "pathShim",
+            format!("install bin not on PATH — {ADD_REPO_HINT} after fixing install"),
+        ));
+    } else {
+        let bin = install_root.join("bin");
+        let bin_str = bin.display().to_string();
+        if user_path_contains(&bin_str) {
+            checks.push(pass("pathShim", bin_str));
+        } else {
+            checks.push(fail(
+                "pathShim",
+                format!(
+                    "{bin_str} not on user PATH — open a NEW terminal after install, or rerun studio-stud-setup repair"
+                ),
+            ));
+        }
+    }
+
     let plugin = Path::new(&cfg.plugins_dir).join("StudioStud.plugin.lua");
     if cfg.plugins_dir.is_empty() {
-        checks.push(warn(
-            "pluginsDir",
-            "plugins directory not configured".into(),
+        checks.push(fail(
+            "corePlugin",
+            "plugins directory not configured — reinstall with studio-stud-setup install".into(),
         ));
     } else if !plugin.is_file() {
         checks.push(fail(
             "corePlugin",
-            format!("missing {}", plugin.display()),
+            format!("missing {} — reinstall with studio-stud-setup install", plugin.display()),
         ));
     } else {
         checks.push(pass("corePlugin", plugin.display().to_string()));
     }
+
+    let cfg_path = config_path();
+    if !cfg_path.is_file() {
+        checks.push(fail(
+            "config",
+            format!("missing {} — reinstall with studio-stud-setup install", cfg_path.display()),
+        ));
+    } else if let Ok(text) = std::fs::read_to_string(&cfg_path) {
+        if serde_json::from_str::<StudioStudConfig>(&text).is_ok() {
+            checks.push(pass("config", cfg_path.display().to_string()));
+        } else {
+            checks.push(fail(
+                "config",
+                format!(
+                    "invalid JSON at {} — run studio-stud-setup repair or delete and reinstall",
+                    cfg_path.display()
+                ),
+            ));
+        }
+    } else {
+        checks.push(fail(
+            "config",
+            format!("unreadable {} — check file permissions", cfg_path.display()),
+        ));
+    }
+
     if cfg.repos.is_empty() {
-        checks.push(warn("repos", "no registered repos".into()));
+        checks.push(warn(
+            "repos",
+            format!("no registered repos — {ADD_REPO_HINT}"),
+        ));
     } else {
         checks.push(pass(
             "repos",
@@ -150,4 +205,90 @@ pub fn check_channel_versions(cfg: &StudioStudConfig) -> anyhow::Result<Vec<Doct
 
 pub fn default_plugins_dir_check() -> bool {
     default_plugins_dir().is_dir()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("studio-stud-health-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn health_fails_when_daemon_exe_missing() {
+        let base = temp_dir("missing-exe");
+        let install = base.join("install");
+        fs::create_dir_all(install.join("bin")).unwrap();
+        let cfg = StudioStudConfig {
+            install_root: install.display().to_string(),
+            plugins_dir: base.join("plugins").display().to_string(),
+            ..Default::default()
+        };
+        let checks = user_health_checks(&cfg);
+        assert!(checks.iter().any(|c| c.name == "daemonExe" && c.status == "fail"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn health_passes_daemon_exe_when_present() {
+        let base = temp_dir("present-exe");
+        let install = base.join("install");
+        let plugins = base.join("plugins");
+        fs::create_dir_all(install.join("bin")).unwrap();
+        fs::create_dir_all(&plugins).unwrap();
+        fs::write(install.join("bin").join("studio-stud.exe"), b"").unwrap();
+        fs::write(plugins.join("StudioStud.plugin.lua"), b"").unwrap();
+        let cfg_path = base.join("config.json");
+        let cfg = StudioStudConfig {
+            install_root: install.display().to_string(),
+            plugins_dir: plugins.display().to_string(),
+            repos: vec![super::super::config::RepoEntry {
+                path: "C:/repo".into(),
+                place_id: None,
+                enabled_addons: vec![],
+                registered_at: String::new(),
+            }],
+            ..Default::default()
+        };
+        fs::write(&cfg_path, serde_json::to_string(&cfg).unwrap()).unwrap();
+        unsafe {
+            std::env::set_var("STUDIO_STUD_CONFIG", cfg_path.display().to_string());
+        }
+        let checks = user_health_checks(&cfg);
+        assert!(checks.iter().any(|c| c.name == "daemonExe" && c.status == "pass"));
+        unsafe {
+            std::env::remove_var("STUDIO_STUD_CONFIG");
+        }
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn health_warns_when_zero_repos() {
+        let cfg = StudioStudConfig {
+            install_root: "C:/Programs/StudioStud".into(),
+            ..Default::default()
+        };
+        let checks = user_health_checks(&cfg);
+        let repos = checks.iter().find(|c| c.name == "repos").unwrap();
+        assert_eq!(repos.status, "warn");
+        assert!(repos.detail.contains("add-repo"));
+    }
+
+    #[test]
+    fn health_passes_when_repos_registered() {
+        let cfg = StudioStudConfig {
+            repos: vec![super::super::config::RepoEntry {
+                path: "C:/repo".into(),
+                place_id: None,
+                enabled_addons: vec![],
+                registered_at: String::new(),
+            }],
+            ..Default::default()
+        };
+        let checks = user_health_checks(&cfg);
+        let repos = checks.iter().find(|c| c.name == "repos").unwrap();
+        assert_eq!(repos.status, "pass");
+    }
 }

@@ -51,9 +51,32 @@ New-Item -ItemType Directory -Force $work | Out-Null
 function Invoke-Setup($dir) {
     $exe = Join-Path $dir 'studio-stud-setup.exe'
     if (-not (Test-Path $exe)) { throw "bundle missing studio-stud-setup.exe" }
-    Write-Host "Launching installer..."
+    Write-Host "Running silent installer..."
     # Pass the channel so the install is recorded against it (not the release default).
-    Start-Process -FilePath $exe -ArgumentList 'install', '--channel', $Channel -Wait
+    $proc = Start-Process -FilePath $exe -ArgumentList 'install', '--silent', '--channel', $Channel -PassThru -Wait
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "ERROR: studio-stud-setup install failed (exit $($proc.ExitCode))." -ForegroundColor Red
+        exit 1
+    }
+}
+
+function Confirm-Install {
+    $bin = Join-Path $env:LOCALAPPDATA 'Programs\StudioStud\bin\studio-stud.exe'
+    if (-not (Test-Path $bin)) {
+        Write-Host "ERROR: install reported success but $bin is missing." -ForegroundColor Red
+        exit 1
+    }
+    $verOut = & $bin --version 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: studio-stud --version failed after install." -ForegroundColor Red
+        Write-Host $verOut
+        exit 1
+    }
+    Write-Host "Installed: $bin"
+    Write-Host "Version: $verOut"
+    Write-Host ""
+    Write-Host "Open a NEW terminal to use studio-stud."
+    Write-Host "Next step: studio-stud-setup add-repo `"C:\path\to\your\project`""
 }
 
 # Decrypt helper (PBKDF2-SHA256x200000 -> AES-256-CBC + HMAC), matches examples/encrypt-artifact.rs.
@@ -96,10 +119,21 @@ if ($manifest.bundleEncUrl) {
         $env:STUDIO_STUD_CHANNEL_SEQUENCE = [string]$manifest.channelSequence
     }
     $env:STUDIO_STUD_CHANNEL_PASSWORD = $password
+    if ($env:STUDIO_STUD_REPO) {
+        Write-Host "STUDIO_STUD_REPO set — will register after install."
+    }
     try { Invoke-Setup $work }
     finally {
         Remove-Item Env:\STUDIO_STUD_CHANNEL_PASSWORD -ErrorAction SilentlyContinue
         Remove-Item Env:\STUDIO_STUD_CHANNEL_SEQUENCE -ErrorAction SilentlyContinue
+    }
+    Confirm-Install
+    $setupExe = Join-Path $env:LOCALAPPDATA 'Programs\StudioStud\bin\studio-stud-setup.exe'
+    if (Test-Path $setupExe) {
+        Write-Host ""
+        Write-Host "Post-install health:"
+        & $setupExe health
+        if ($LASTEXITCODE -ne 0) { exit 1 }
     }
     exit 0
 }
@@ -111,15 +145,31 @@ if ($manifest.bundleUrl) {
     if ($manifest.channelSequence) {
         $env:STUDIO_STUD_CHANNEL_SEQUENCE = [string]$manifest.channelSequence
     }
+    if ($env:STUDIO_STUD_REPO) {
+        Write-Host "STUDIO_STUD_REPO set — will register after install."
+    }
     try { Invoke-Setup $work }
     finally { Remove-Item Env:\STUDIO_STUD_CHANNEL_SEQUENCE -ErrorAction SilentlyContinue }
+    Confirm-Install
+    $setupExe = Join-Path $env:LOCALAPPDATA 'Programs\StudioStud\bin\studio-stud-setup.exe'
+    if (Test-Path $setupExe) {
+        Write-Host ""
+        Write-Host "Post-install health:"
+        & $setupExe health
+        if ($LASTEXITCODE -ne 0) { exit 1 }
+    }
     exit 0
 }
 # Legacy fallback: setup-only artifact (pre-bundle manifests)
 if ($manifest.setupUrl) {
     $dest = Join-Path $work 'studio-stud-setup.exe'
     Invoke-WebRequest $manifest.setupUrl -OutFile $dest -UseBasicParsing
-    Start-Process -FilePath $dest -ArgumentList 'install', '--channel', $Channel -Wait
+    $proc = Start-Process -FilePath $dest -ArgumentList 'install', '--silent', '--channel', $Channel -PassThru -Wait
+    if ($proc.ExitCode -ne 0) {
+        Write-Host "ERROR: studio-stud-setup install failed (exit $($proc.ExitCode))." -ForegroundColor Red
+        exit 1
+    }
+    Confirm-Install
     exit 0
 }
 throw "Manifest has no bundleUrl/bundleEncUrl/setupUrl."

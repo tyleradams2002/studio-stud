@@ -983,7 +983,7 @@ local __DARKLUA_BUNDLE_MODULES={cache={}::any}do do local function __modImpl()
 
 
 
-local PLUGIN_VERSION = "0.5.0"
+local PLUGIN_VERSION = "0.5.1"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
@@ -8248,6 +8248,11 @@ local PLUGIN_VERSION = Config.PLUGIN_VERSION
 local PROTOCOL_VERSION = Config.PROTOCOL_VERSION
 local MIN_DAEMON_PROTOCOL_VERSION = Config.MIN_DAEMON_PROTOCOL_VERSION
 
+local UNBOUND_STATUS = "unbound"
+local UNBOUND_MESSAGE = "Place not bound — run studio-stud-setup add-repo <your project> in a terminal."
+local NO_REGISTRY_MESSAGE =
+	"No repo registered — run studio-stud-setup add-repo <your project> in a terminal."
+
 -- `game` is a Studio/plugin global the analyzer types via globalTypes.d.luau; read
 -- directly where the monolith read it (PlaceId / Name in the connect result).
 
@@ -8465,6 +8470,28 @@ function CapturePanel.build(parent: Frame, ctx: ShellContext__DARKLUA_TYPE_ak): 
 					placeId = game.PlaceId,
 					placeName = game.Name,
 				}
+			end
+			local ctxOk, ctxResult = self.ctx.transport.requestJson(
+				"GET",
+				"/studio-stud/context?placeId=" .. tostring(game.PlaceId),
+				nil
+			)
+			if ctxOk and type(ctxResult) == "table" then
+				if ctxResult.status == "unbound" or ctxResult.status == "noRegistry" then
+					self.ctx.setConnected(false)
+					local message = if ctxResult.status == "noRegistry"
+						then NO_REGISTRY_MESSAGE
+						else UNBOUND_MESSAGE
+					self.ctx.setStatus(UNBOUND_STATUS, message)
+					self.errorLabel.Text = message
+					return {
+						ok = false,
+						error = ctxResult.status,
+						daemon = result,
+						placeId = game.PlaceId,
+						placeName = game.Name,
+					}
+				end
 			end
 			self.ctx.setConnected(true)
 			local updateNote = checkRemoteUpdate(result)
