@@ -9,6 +9,6 @@
   "setupUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/studio-stud-setup.exe",
   "bundleUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/studio-stud-bundle.zip",
   "installUrl": "https://tyleradams2002.github.io/studio-stud/install.ps1",
-  "channelSequence": 6,
-  "releasedAt": "2026-06-10T02:16:12Z"
+  "channelSequence": 7,
+  "releasedAt": "2026-06-10T05:06:17Z"
 }
