@@ -21,7 +21,6 @@ use crate::live::{
     verify_drift,
 };
 use crate::output::live_state_compact_json;
-use crate::policy::resolve_repo_root;
 use crate::query::cmd_query;
 use crate::stage3_cli::{
     PolicyArgs, WriteApplyArgs, WritePreviewArgs, WriteValidateArgs, cmd_policy, cmd_write_apply,
@@ -545,7 +544,7 @@ fn cmd_status(markdown: bool, include_paths: bool, common: &CommonArgs) -> Resul
         })
         .unwrap_or_else(|_| json!({ "state": "not-running" }));
     let mut places = Vec::new();
-    let places_dir = storage.root.join(&storage.project_key).join("places");
+    let places_dir = storage.project_root().join("places");
     if places_dir.is_dir() {
         for entry in fs::read_dir(&places_dir)? {
             let entry = entry?;
@@ -652,7 +651,7 @@ fn doctor_checks(common: &CommonArgs, include_paths: bool) -> Vec<DoctorCheck> {
 
 fn storage_check(common: &CommonArgs, include_paths: bool) -> DoctorCheck {
     match Storage::new(common.storage_root.clone(), &common.project_key).and_then(|storage| {
-        let root = storage.root.join(&storage.project_key);
+        let root = storage.project_root();
         fs::create_dir_all(&root)?;
         let test_path = root.join(".doctor-write-test");
         fs::write(&test_path, b"studio-stud")?;
@@ -674,7 +673,7 @@ fn storage_check(common: &CommonArgs, include_paths: bool) -> DoctorCheck {
 fn sqlite_check(common: &CommonArgs, include_paths: bool) -> DoctorCheck {
     let result =
         Storage::new(common.storage_root.clone(), &common.project_key).and_then(|storage| {
-            let root = storage.root.join(&storage.project_key);
+            let root = storage.project_root();
             fs::create_dir_all(&root)?;
             let db_path = root.join("doctor.sqlite");
             {
@@ -867,9 +866,11 @@ fn cmd_serve(
         let _ = crate::setup_core::save_config(&user_cfg);
         crate::obs::event("config", "self-healed installRoot/channel on serve");
     }
-    if let Ok(cwd_repo) = resolve_repo_root(None) {
-        let _ = crate::setup_core::register_repo(&mut user_cfg, &cwd_repo);
-    }
+    // NOTE: serve must NOT register its working directory as a repo. Doing so
+    // silently pollutes the registry whenever the daemon is launched from inside
+    // any git repo (e.g. the dev tree), producing a phantom second repo that
+    // breaks single-repo auto-bind. Repos are registered explicitly only — via
+    // the installer or `studio-stud-setup add-repo`.
     let install_root = if user_cfg.install_root.is_empty() {
         crate::setup_core::install::default_install_root()
     } else {

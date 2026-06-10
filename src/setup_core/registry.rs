@@ -97,6 +97,33 @@ impl RepoResolver {
         Ok(true)
     }
 
+    /// Auto-bind for the common single-repo install: when exactly one repo is
+    /// registered and it is not yet bound to any place, bind it to `place_id`.
+    /// Returns the bound repo path on success. This is what makes
+    /// "install -> add-repo -> open Studio" sync with no manual bind step.
+    /// Deliberately conservative: it does nothing when 0 or 2+ repos are
+    /// registered, or when the sole repo is already bound to a place.
+    pub fn autobind_sole_repo(&self, place_id: i64) -> Option<PathBuf> {
+        let mut guard = self.inner.write().ok()?;
+        if guard.repos.len() != 1 {
+            return None;
+        }
+        {
+            let entry = &mut guard.repos[0];
+            if entry.place_id.is_some() {
+                return None;
+            }
+            entry.place_id = Some(place_id);
+        }
+        let path = PathBuf::from(&guard.repos[0].path);
+        if let Err(e) = save_config(&guard) {
+            // In-memory bind is still effective for this session; surface the
+            // persistence failure but don't fail the bind.
+            eprintln!("Studio Stud: autobind save_config failed: {e}");
+        }
+        Some(path)
+    }
+
     /// Learn-on-connect: bind place from capture payload when repo path is known.
     pub fn learn_place_from_cwd(&self, place_id: i64) -> Result<(), String> {
         if let Ok(root) = crate::policy::resolve_repo_root(None) {

@@ -143,6 +143,12 @@ pub(crate) fn compact_db_after_bulk_write(conn: &Connection) -> Result<()> {
 }
 
 pub(crate) fn open_db(path: &Path) -> Result<Connection> {
+    // SQLite's Connection::open creates the db FILE but not its parent directories.
+    // Without this, the first write to a place whose dir doesn't exist yet (e.g. a fresh
+    // install / new place) fails with SQLITE_CANTOPEN (code 14). Create the place dir first.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     let conn = Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(60))?;
     conn.execute_batch(
