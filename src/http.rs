@@ -452,6 +452,16 @@ fn map_response_status(value: &Value) -> u16 {
     {
         return 426;
     }
+    // no_baseline / revision_mismatch are normal tick-protocol signals, not HTTP
+    // errors: the plugin only acts on them (trigger a baseline / resync revision)
+    // when the response is HTTP-OK. Returning a 4xx makes the plugin's transport
+    // treat them as a network failure, so it never baselines and loops forever.
+    if matches!(
+        value.get("error").and_then(Value::as_str),
+        Some("no_baseline") | Some("revision_mismatch")
+    ) {
+        return 200;
+    }
     if value.get("ok").and_then(Value::as_bool) == Some(false) {
         return 404;
     }
@@ -550,12 +560,30 @@ fn handle_context_route(query: &HashMap<String, String>, config: &ServeConfig) -
             "placeId": place_id,
             "repoRoot": repo.display().to_string(),
         })),
-        Err(RepoResolveError::Unbound { place_id, registered }) => Ok(json!({
-            "ok": true,
-            "status": "unbound",
-            "placeId": place_id,
-            "registeredRepos": registered,
-        })),
+        Err(RepoResolveError::Unbound { place_id, registered }) => {
+            // Single-repo installs: claim the sole unbound repo automatically so the
+            // user never has to run a manual bind. Falls through to "unbound" (with
+            // guidance) when binding is ambiguous (0 or 2+ repos).
+            if let Some(repo) = config.registry.autobind_sole_repo(place_id) {
+                eprintln!(
+                    "Studio Stud: auto-bound place {place_id} to {}",
+                    repo.display()
+                );
+                return Ok(json!({
+                    "ok": true,
+                    "status": "bound",
+                    "placeId": place_id,
+                    "repoRoot": repo.display().to_string(),
+                    "autobound": true,
+                }));
+            }
+            Ok(json!({
+                "ok": true,
+                "status": "unbound",
+                "placeId": place_id,
+                "registeredRepos": registered,
+            }))
+        }
         Err(RepoResolveError::NoRegistry) => Ok(RepoResolveError::NoRegistry.to_json()),
     }
 }

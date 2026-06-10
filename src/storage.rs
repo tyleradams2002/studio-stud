@@ -10,7 +10,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::util::{
-    APP_NAME, SCHEMA_VERSION, build_search_text, normalize_query_path, open_db, safe_key,
+    APP_NAME, DEFAULT_PROJECT_KEY, SCHEMA_VERSION, build_search_text, normalize_query_path,
+    open_db, safe_key,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -131,10 +132,21 @@ impl Storage {
         })
     }
 
+    /// Directory that holds this project's data. The default placeholder project
+    /// key (`ExampleProject`) is collapsed away, so a normal install lays out as
+    /// `<root>/places/<id>/...` instead of `<root>/ExampleProject/places/<id>/...`.
+    /// A real, explicitly-set project key still gets its own namespace folder.
+    pub(crate) fn project_root(&self) -> PathBuf {
+        if self.project_key == DEFAULT_PROJECT_KEY {
+            self.root.clone()
+        } else {
+            self.root.join(&self.project_key)
+        }
+    }
+
     pub(crate) fn place(&self, place_id: &str) -> PlaceStorage {
         let place_dir = self
-            .root
-            .join(&self.project_key)
+            .project_root()
             .join("places")
             .join(safe_key(place_id));
 
@@ -155,7 +167,7 @@ pub(crate) fn resolve_place(storage: &Storage, place: Option<&str>) -> Result<Pl
 
     // 1. Check the active_place file written by the daemon on every successful
     //    baseline or delta. This is the place the plugin is currently connected to.
-    let active_path = storage.root.join(&storage.project_key).join("active_place");
+    let active_path = storage.project_root().join("active_place");
     if let Ok(key) = fs::read_to_string(&active_path) {
         let key = key.trim().to_string();
         if !key.is_empty() {
@@ -167,7 +179,7 @@ pub(crate) fn resolve_place(storage: &Storage, place: Option<&str>) -> Result<Pl
     }
 
     // 2. Fallback: pick the place whose live_state.updated_at_utc is most recent.
-    let places_dir = storage.root.join(&storage.project_key).join("places");
+    let places_dir = storage.project_root().join("places");
 
     let mut candidates = Vec::new();
 
@@ -210,7 +222,7 @@ pub(crate) fn resolve_place(storage: &Storage, place: Option<&str>) -> Result<Pl
 /// Write the given place key as the currently active place so that CLI
 /// commands default to it without requiring an explicit place argument.
 pub(crate) fn set_active_place(storage: &Storage, place_key: &str) {
-    let path = storage.root.join(&storage.project_key).join("active_place");
+    let path = storage.project_root().join("active_place");
     let _ = fs::write(&path, place_key);
 }
 
@@ -878,6 +890,29 @@ mod tests {
     use super::*;
 
     use rusqlite::Connection;
+
+    #[test]
+    fn default_project_key_collapses_out_of_path() {
+        let root = PathBuf::from("/data");
+        // Default placeholder key -> no project folder: /data/places/<id>/syncs.db
+        let s = Storage::new(Some(root.clone()), DEFAULT_PROJECT_KEY).unwrap();
+        assert_eq!(s.project_root(), root);
+        assert_eq!(
+            s.place("139581542512435").db_path,
+            root.join("places").join("139581542512435").join("syncs.db")
+        );
+    }
+
+    #[test]
+    fn real_project_key_keeps_its_namespace() {
+        let root = PathBuf::from("/data");
+        let s = Storage::new(Some(root.clone()), "fisherslife").unwrap();
+        assert_eq!(s.project_root(), root.join("fisherslife"));
+        assert_eq!(
+            s.place("42").db_path,
+            root.join("fisherslife").join("places").join("42").join("syncs.db")
+        );
+    }
 
     #[test]
 
