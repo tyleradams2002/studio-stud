@@ -1,14 +1,14 @@
 {
-  "daemonVersion": "0.5.1",
-  "pluginVersion": "0.5.1",
+  "daemonVersion": "0.5.2",
+  "pluginVersion": "0.5.2",
   "protocolVersion": 2,
   "minPluginProtocolVersion": 2,
   "minDaemonProtocolVersion": 2,
-  "binaryUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.1/studio-stud.exe",
-  "pluginUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.1/StudioStud.plugin.lua",
-  "setupUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.1/studio-stud-setup.exe",
-  "bundleUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.1/studio-stud-bundle.zip",
+  "binaryUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/studio-stud.exe",
+  "pluginUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/StudioStud.plugin.lua",
+  "setupUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/studio-stud-setup.exe",
+  "bundleUrl": "https://github.com/tyleradams2002/studio-stud/releases/download/v0.5.2/studio-stud-bundle.zip",
   "installUrl": "https://tyleradams2002.github.io/studio-stud/install.ps1",
-  "channelSequence": 5,
-  "releasedAt": "2026-06-09T23:14:38Z"
+  "channelSequence": 6,
+  "releasedAt": "2026-06-10T02:16:12Z"
 }
