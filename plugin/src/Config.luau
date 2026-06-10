@@ -72,7 +72,7 @@ export type ConfigModule = {
 
 -- == Version / protocol ==
 
-local PLUGIN_VERSION = "0.5.2"
+local PLUGIN_VERSION = "0.5.3"
 local PROTOCOL_VERSION = 2
 -- Minimum daemon protocol this plugin can talk to. Half of the mutual version
 -- handshake: the daemon advertises minPluginProtocolVersion, the plugin enforces
